@@ -19,15 +19,12 @@ class FileNotFoundError(Exception):
     """File does not exist."""
 
 
-
 class FileTooLargeError(Exception):
     """File exceeds size limit."""
 
 
-
 class InvalidPathError(Exception):
     """Path is invalid or outside allowed sandbox."""
-
 
 
 class VirtualFilesystem:

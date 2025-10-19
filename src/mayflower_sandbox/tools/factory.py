@@ -2,7 +2,6 @@
 Tool factory for creating Mayflower Sandbox tools.
 """
 
-
 import asyncpg
 
 from mayflower_sandbox.tools.base import SandboxTool
