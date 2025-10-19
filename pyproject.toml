@@ -18,16 +18,83 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
-    "black>=23.7.0",
-    "ruff>=0.0.287",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+    "types-asyncpg>=0.27.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.black]
-line-length = 100
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
 
 [tool.ruff]
 line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+]
+
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B904",   # raise from inside except without explicit exception chaining
+    "B905",   # zip without strict parameter (Python 3.10+)
+    "SIM105", # use contextlib.suppress
+    "SIM108", # use ternary operator instead of if-else
+    "N806",   # variable in function should be lowercase (for XML elements)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "N802",   # function name should be lowercase
+    "N803",   # argument name should be lowercase
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_return_any = false
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# Ignore errors for external dependencies without stubs
+[[tool.mypy.overrides]]
+module = [
+    "asyncpg.*",
+    "langchain_core.*",
+    "langgraph.*",
+    "aiohttp.*",
+]
+ignore_missing_imports = true
+
+# Ignore errors in helper modules (optional dependencies)
+[[tool.mypy.overrides]]
+module = "mayflower_sandbox.helpers.*"
+ignore_errors = true
+
+# Relax type checking in tests
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = false
+ignore_errors = true

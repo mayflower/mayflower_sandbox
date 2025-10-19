@@ -2,12 +2,11 @@
 FileDeleteTool - Delete files from sandbox VFS.
 """
 
-from typing import Optional
-from pydantic import BaseModel, Field
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
+from pydantic import BaseModel, Field
 
-from mayflower_sandbox.tools.base import SandboxTool
 from mayflower_sandbox.filesystem import VirtualFilesystem
+from mayflower_sandbox.tools.base import SandboxTool
 
 
 class FileDeleteInput(BaseModel):
@@ -37,10 +36,10 @@ Returns:
 """
     args_schema: type[BaseModel] = FileDeleteInput
 
-    async def _arun(
+    async def _arun(  # type: ignore[override]
         self,
         file_path: str,
-        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+        run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Delete file from VFS."""
         vfs = VirtualFilesystem(self.db_pool, self.thread_id)

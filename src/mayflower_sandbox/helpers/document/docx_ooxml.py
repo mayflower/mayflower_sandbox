@@ -6,10 +6,9 @@ No external dependencies required.
 """
 
 import io
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime
-from typing import Dict
 
 # Namespace mappings for OOXML
 NS = {
@@ -25,7 +24,7 @@ for prefix, uri in NS.items():
         ET.register_namespace(prefix, uri)
 
 
-def unzip_docx_like(docx_bytes: bytes) -> Dict[str, bytes]:
+def unzip_docx_like(docx_bytes: bytes) -> dict[str, bytes]:
     """Extract all files from a docx (zip archive)."""
     parts = {}
     with zipfile.ZipFile(io.BytesIO(docx_bytes), "r") as zf:
@@ -34,7 +33,7 @@ def unzip_docx_like(docx_bytes: bytes) -> Dict[str, bytes]:
     return parts
 
 
-def zip_docx_like(parts: Dict[str, bytes]) -> bytes:
+def zip_docx_like(parts: dict[str, bytes]) -> bytes:
     """Create a docx (zip archive) from parts."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

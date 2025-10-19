@@ -2,14 +2,13 @@
 Base class for all Mayflower Sandbox tools.
 """
 
-from typing import Optional
-from pydantic import ConfigDict
-from langchain_core.tools import BaseTool
+import asyncpg
 from langchain_core.callbacks import (
     AsyncCallbackManagerForToolRun,
     CallbackManagerForToolRun,
 )
-import asyncpg
+from langchain_core.tools import BaseTool
+from pydantic import ConfigDict
 
 
 class SandboxTool(BaseTool):
@@ -26,7 +25,7 @@ class SandboxTool(BaseTool):
 
     def _run(
         self,
-        run_manager: Optional[CallbackManagerForToolRun] = None,
+        run_manager: CallbackManagerForToolRun | None = None,
         **kwargs,
     ) -> str:
         """Sync interface - runs async method in event loop."""
@@ -48,8 +47,8 @@ class SandboxTool(BaseTool):
 
     async def _arun(
         self,
-        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+        run_manager: AsyncCallbackManagerForToolRun | None = None,
         **kwargs,
-    ) -> str:
+    ) -> str:  # type: ignore[override]
         """Async implementation - override in subclasses."""
         raise NotImplementedError("Subclasses must implement _arun")

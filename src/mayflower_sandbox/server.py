@@ -4,9 +4,10 @@ HTTP server for serving files from sandbox VFS.
 Provides endpoints for downloading files created by sandbox executions.
 """
 
-from aiohttp import web
-import asyncpg
 import logging
+
+import asyncpg
+from aiohttp import web
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
 

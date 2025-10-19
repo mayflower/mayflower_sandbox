@@ -2,12 +2,11 @@
 FileListTool - List files in sandbox VFS.
 """
 
-from typing import Optional
-from pydantic import BaseModel, Field
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
+from pydantic import BaseModel, Field
 
-from mayflower_sandbox.tools.base import SandboxTool
 from mayflower_sandbox.filesystem import VirtualFilesystem
+from mayflower_sandbox.tools.base import SandboxTool
 
 
 class FileListInput(BaseModel):
@@ -40,10 +39,10 @@ Returns:
 """
     args_schema: type[BaseModel] = FileListInput
 
-    async def _arun(
+    async def _arun(  # type: ignore[override]
         self,
         prefix: str = "",
-        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+        run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """List files in VFS."""
         vfs = VirtualFilesystem(self.db_pool, self.thread_id)

@@ -3,12 +3,12 @@ ExecutePythonTool - Execute Python code in sandbox.
 """
 
 import logging
-from typing import Optional
-from pydantic import BaseModel, Field
-from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 
-from mayflower_sandbox.tools.base import SandboxTool
+from langchain_core.callbacks import AsyncCallbackManagerForToolRun
+from pydantic import BaseModel, Field
+
 from mayflower_sandbox.sandbox_executor import SandboxExecutor
+from mayflower_sandbox.tools.base import SandboxTool
 
 logger = logging.getLogger(__name__)
 
@@ -136,10 +136,10 @@ Examples:
 """
     args_schema: type[BaseModel] = ExecutePythonInput
 
-    async def _arun(
+    async def _arun(  # type: ignore[override]
         self,
         code: str,
-        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+        run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Execute Python code in sandbox."""
 

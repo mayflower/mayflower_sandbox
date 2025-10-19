@@ -6,9 +6,8 @@ No external dependencies required.
 """
 
 import io
-import zipfile
 import xml.etree.ElementTree as ET
-from typing import Dict
+import zipfile
 
 # Namespace mappings for PowerPoint OOXML
 NS = {
@@ -18,7 +17,7 @@ NS = {
 }
 
 
-def unzip_pptx_like(pptx_bytes: bytes) -> Dict[str, bytes]:
+def unzip_pptx_like(pptx_bytes: bytes) -> dict[str, bytes]:
     """Extract all files from a pptx (zip archive)."""
     parts = {}
     with zipfile.ZipFile(io.BytesIO(pptx_bytes), "r") as zf:
@@ -27,7 +26,7 @@ def unzip_pptx_like(pptx_bytes: bytes) -> Dict[str, bytes]:
     return parts
 
 
-def zip_pptx_like(parts: Dict[str, bytes]) -> bytes:
+def zip_pptx_like(parts: dict[str, bytes]) -> bytes:
     """Create a pptx (zip archive) from parts."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

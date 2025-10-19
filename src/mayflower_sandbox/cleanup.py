@@ -2,11 +2,11 @@
 Cleanup job for expired sessions and orphaned files.
 """
 
-import asyncpg
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
+
+import asyncpg
 
 from mayflower_sandbox.manager import SandboxManager
 
@@ -34,7 +34,7 @@ class CleanupJob:
         self.dry_run = dry_run
         self.manager = SandboxManager(db_pool)
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     async def cleanup_expired_sessions(self) -> dict:
         """Clean up expired sessions and their files.

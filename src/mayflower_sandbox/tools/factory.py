@@ -2,22 +2,22 @@
 Tool factory for creating Mayflower Sandbox tools.
 """
 
-import asyncpg
-from typing import List
 
+import asyncpg
+
+from mayflower_sandbox.tools.base import SandboxTool
 from mayflower_sandbox.tools.execute import ExecutePythonTool
+from mayflower_sandbox.tools.file_delete import FileDeleteTool
+from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
-from mayflower_sandbox.tools.file_list import FileListTool
-from mayflower_sandbox.tools.file_delete import FileDeleteTool
-from mayflower_sandbox.tools.base import SandboxTool
 
 
 def create_sandbox_tools(
     db_pool: asyncpg.Pool,
     thread_id: str,
-    include_tools: List[str] | None = None,
-) -> List[SandboxTool]:
+    include_tools: list[str] | None = None,
+) -> list[SandboxTool]:
     """
     Create a set of sandbox tools for LangGraph.
 

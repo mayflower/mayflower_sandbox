@@ -5,12 +5,12 @@ Enables stateful Python execution where variables persist across
 executor restarts by storing session state in PostgreSQL.
 """
 
-import asyncpg
-from typing import Optional
 import logging
 
-from mayflower_sandbox.sandbox_executor import SandboxExecutor, ExecutionResult
+import asyncpg
+
 from mayflower_sandbox.manager import SandboxManager
+from mayflower_sandbox.sandbox_executor import ExecutionResult, SandboxExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,8 @@ class SessionRecovery:
     async def save_session_bytes(
         self,
         thread_id: str,
-        session_bytes: Optional[bytes],
-        session_metadata: Optional[dict],
+        session_bytes: bytes | None,
+        session_metadata: dict | None,
     ) -> None:
         """Save session bytes to database.
 
@@ -69,7 +69,7 @@ class SessionRecovery:
     async def load_session_bytes(
         self,
         thread_id: str,
-    ) -> tuple[Optional[bytes], Optional[dict]]:
+    ) -> tuple[bytes | None, dict | None]:
         """Load session bytes from database.
 
         Args:

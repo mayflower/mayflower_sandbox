@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 import asyncpg
 
-
 logger = logging.getLogger(__name__)
 
 
