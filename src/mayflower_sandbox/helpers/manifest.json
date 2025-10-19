@@ -1,0 +1,235 @@
+{
+  "version": "1.0.0",
+  "helpers": {
+    "document.docx_ooxml": {
+      "description": "Pure OOXML manipulation for Word documents",
+      "functions": [
+        {
+          "name": "docx_extract_text",
+          "description": "Extract all text from document",
+          "parameters": ["docx_bytes"],
+          "returns": "str"
+        },
+        {
+          "name": "docx_extract_paragraphs",
+          "description": "Extract paragraphs as list",
+          "parameters": ["docx_bytes"],
+          "returns": "list[str]"
+        },
+        {
+          "name": "docx_read_tables",
+          "description": "Extract all tables",
+          "parameters": ["docx_bytes"],
+          "returns": "list[list[list[str]]]"
+        },
+        {
+          "name": "docx_find_replace",
+          "description": "Find and replace text",
+          "parameters": ["docx_bytes", "replacements"],
+          "returns": "bytes"
+        },
+        {
+          "name": "docx_to_markdown",
+          "description": "Convert to markdown (uses mammoth if available)",
+          "parameters": ["docx_bytes"],
+          "returns": "str"
+        },
+        {
+          "name": "docx_add_comment",
+          "description": "Add a comment to a paragraph",
+          "parameters": ["docx_bytes", "paragraph_index", "text", "author", "initials", "date_iso"],
+          "returns": "bytes"
+        },
+        {
+          "name": "unzip_docx_like",
+          "description": "Extract docx contents",
+          "parameters": ["docx_bytes"],
+          "returns": "Dict[str, bytes]"
+        },
+        {
+          "name": "zip_docx_like",
+          "description": "Create docx from parts",
+          "parameters": ["parts"],
+          "returns": "bytes"
+        }
+      ],
+      "dependencies": {
+        "stdlib": ["xml.etree.ElementTree", "zipfile", "io", "datetime"],
+        "micropip": ["mammoth (optional)"]
+      },
+      "examples": [
+        "from document.docx_ooxml import docx_extract_text, docx_read_tables, docx_find_replace",
+        "text = docx_extract_text(docx_bytes)",
+        "tables = docx_read_tables(docx_bytes)",
+        "modified = docx_find_replace(docx_bytes, {'Old': 'New'})"
+      ]
+    },
+    "document.pptx_ooxml": {
+      "description": "Pure OOXML manipulation for PowerPoint presentations",
+      "functions": [
+        {
+          "name": "pptx_extract_text",
+          "description": "Extract all text from slides",
+          "parameters": ["pptx_bytes"],
+          "returns": "dict[int, list[str]]"
+        },
+        {
+          "name": "pptx_inventory",
+          "description": "Inventory all text elements with metadata",
+          "parameters": ["pptx_bytes"],
+          "returns": "dict"
+        },
+        {
+          "name": "pptx_replace_text",
+          "description": "Find and replace text in slides",
+          "parameters": ["pptx_bytes", "replacements"],
+          "returns": "bytes"
+        },
+        {
+          "name": "pptx_rearrange",
+          "description": "Reorder slides",
+          "parameters": ["pptx_bytes", "new_order"],
+          "returns": "bytes"
+        },
+        {
+          "name": "pptx_contact_sheet_html",
+          "description": "Generate HTML preview of slide content",
+          "parameters": ["pptx_bytes"],
+          "returns": "str"
+        },
+        {
+          "name": "unzip_pptx_like",
+          "description": "Extract pptx contents",
+          "parameters": ["pptx_bytes"],
+          "returns": "Dict[str, bytes]"
+        },
+        {
+          "name": "zip_pptx_like",
+          "description": "Create pptx from parts",
+          "parameters": ["parts"],
+          "returns": "bytes"
+        }
+      ],
+      "dependencies": {
+        "stdlib": ["xml.etree.ElementTree", "zipfile", "io"],
+        "micropip": []
+      },
+      "examples": [
+        "from document.pptx_ooxml import pptx_extract_text, pptx_replace_text",
+        "texts = pptx_extract_text(pptx_bytes)",
+        "modified = pptx_replace_text(pptx_bytes, {'ppt/slides/slide1.xml': {'Old': 'New'}})"
+      ]
+    },
+    "document.pdf_manipulation": {
+      "description": "PDF manipulation using pypdf",
+      "functions": [
+        {
+          "name": "pdf_num_pages",
+          "description": "Get number of pages",
+          "parameters": ["pdf_bytes"],
+          "returns": "int"
+        },
+        {
+          "name": "pdf_merge",
+          "description": "Merge multiple PDFs",
+          "parameters": ["pdf_list"],
+          "returns": "bytes"
+        },
+        {
+          "name": "pdf_split",
+          "description": "Split into individual pages",
+          "parameters": ["pdf_bytes"],
+          "returns": "list[bytes]"
+        },
+        {
+          "name": "pdf_rotate",
+          "description": "Rotate pages",
+          "parameters": ["pdf_bytes", "angle", "pages"],
+          "returns": "bytes"
+        },
+        {
+          "name": "pdf_extract_text",
+          "description": "Extract all text",
+          "parameters": ["pdf_bytes"],
+          "returns": "str"
+        },
+        {
+          "name": "pdf_extract_text_by_page",
+          "description": "Extract text with page numbers",
+          "parameters": ["pdf_bytes"],
+          "returns": "list[dict]"
+        },
+        {
+          "name": "pdf_get_metadata",
+          "description": "Get PDF metadata",
+          "parameters": ["pdf_bytes"],
+          "returns": "dict"
+        }
+      ],
+      "dependencies": {
+        "stdlib": ["io"],
+        "micropip": ["pypdf"]
+      },
+      "examples": [
+        "import micropip",
+        "await micropip.install('pypdf')",
+        "from document.pdf_manipulation import pdf_merge, pdf_extract_text",
+        "merged = pdf_merge([pdf1, pdf2])",
+        "text = pdf_extract_text(pdf_bytes)"
+      ]
+    },
+    "document.xlsx_helpers": {
+      "description": "Excel helpers using openpyxl",
+      "functions": [
+        {
+          "name": "xlsx_get_sheet_names",
+          "description": "Get list of sheet names",
+          "parameters": ["xlsx_bytes"],
+          "returns": "list[str]"
+        },
+        {
+          "name": "xlsx_read_cells",
+          "description": "Read specific cells from a sheet",
+          "parameters": ["xlsx_bytes", "sheet_name", "cells"],
+          "returns": "dict[str, Any]"
+        },
+        {
+          "name": "xlsx_write_cells",
+          "description": "Write values to specific cells",
+          "parameters": ["xlsx_bytes", "sheet_name", "cells"],
+          "returns": "bytes"
+        },
+        {
+          "name": "xlsx_to_dict",
+          "description": "Convert sheet to list of dictionaries",
+          "parameters": ["xlsx_bytes", "sheet_name", "has_header"],
+          "returns": "list[dict[str, Any]]"
+        },
+        {
+          "name": "xlsx_has_formulas",
+          "description": "Check which cells contain formulas",
+          "parameters": ["xlsx_bytes"],
+          "returns": "dict[str, list[str]]"
+        },
+        {
+          "name": "xlsx_read_with_formulas",
+          "description": "Read both values and formulas",
+          "parameters": ["xlsx_bytes"],
+          "returns": "dict[str, dict[str, Any]]"
+        }
+      ],
+      "dependencies": {
+        "stdlib": ["io"],
+        "micropip": ["openpyxl"]
+      },
+      "examples": [
+        "import micropip",
+        "await micropip.install('openpyxl')",
+        "from document.xlsx_helpers import xlsx_read_cells, xlsx_write_cells, xlsx_to_dict",
+        "values = xlsx_read_cells(xlsx_bytes, 'Sheet1', ['A1', 'B2'])",
+        "modified = xlsx_write_cells(xlsx_bytes, 'Sheet1', {'A1': 'Updated'})",
+        "data = xlsx_to_dict(xlsx_bytes, 'Sheet1')"
+      ]
+    }
+  }
+}

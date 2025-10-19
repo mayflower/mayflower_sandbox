@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@std/cli": "jsr:@std/cli@^1.0.23",
+    "@std/path": "jsr:@std/path@^1.1.2",
+    "pyodide": "npm:pyodide@^0.28.3"
+  }
+}
