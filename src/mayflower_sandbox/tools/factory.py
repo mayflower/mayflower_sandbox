@@ -7,6 +7,7 @@ import asyncpg
 from mayflower_sandbox.tools.base import SandboxTool
 from mayflower_sandbox.tools.execute import ExecutePythonTool
 from mayflower_sandbox.tools.file_delete import FileDeleteTool
+from mayflower_sandbox.tools.file_edit import FileEditTool
 from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
@@ -25,7 +26,7 @@ def create_sandbox_tools(
         thread_id: Thread ID for session isolation
         include_tools: List of tool names to include (default: all tools)
                       Options: "execute_python", "read_file", "write_file",
-                              "list_files", "delete_file"
+                              "list_files", "delete_file", "str_replace"
 
     Returns:
         List of configured SandboxTool instances
@@ -59,6 +60,7 @@ def create_sandbox_tools(
         "write_file": FileWriteTool,
         "list_files": FileListTool,
         "delete_file": FileDeleteTool,
+        "str_replace": FileEditTool,
     }
 
     if include_tools is None:
