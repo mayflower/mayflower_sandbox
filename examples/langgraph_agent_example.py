@@ -12,8 +12,9 @@ Run this example:
 """
 
 import asyncio
-import asyncpg
 import os
+
+import asyncpg
 from langchain_anthropic import ChatAnthropic
 from langgraph.prebuilt import create_react_agent
 
@@ -40,7 +41,7 @@ async def main():
         print(f"  - {tool.name}: {tool.description.split(chr(10))[0]}")
 
     # 3. Create LangGraph ReAct agent
-    llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", temperature=0)
+    llm = ChatAnthropic(model="claude-sonnet-4.5", temperature=0)
     agent = create_react_agent(llm, tools)
 
     # 4. Example interactions

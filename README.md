@@ -55,7 +55,7 @@ db_pool = await asyncpg.create_pool(
 tools = create_sandbox_tools(db_pool, thread_id="user_123")
 
 # Create LangGraph agent
-llm = ChatAnthropic(model="claude-3-5-sonnet-20241022")
+llm = ChatAnthropic(model="claude-sonnet-4.5")
 agent = create_react_agent(llm, tools)
 
 # Use the agent
