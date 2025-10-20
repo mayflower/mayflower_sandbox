@@ -1,13 +1,13 @@
 # Tools Reference
 
-Mayflower Sandbox provides 5 LangChain tools that extend `BaseTool` for use with LangGraph agents.
+Mayflower Sandbox provides 6 LangChain tools that extend `BaseTool` for use with LangGraph agents.
 
 ## Creating Tools
 
 ```python
 from mayflower_sandbox.tools import create_sandbox_tools
 
-# Create all 5 tools for a specific thread
+# Create all 6 tools for a specific thread
 tools = create_sandbox_tools(
     db_pool=db_pool,
     thread_id="user_123",
@@ -114,6 +114,75 @@ Success message with file path.
 
 ### Size Limit
 Files are limited to 20MB, enforced at the database level.
+
+## FileEditTool (str_replace)
+
+Edit existing files by replacing a unique string with a new string. The tool requires the old string to appear exactly once in the file for safety.
+
+### Features
+- Safe string replacement with uniqueness validation
+- Prevents unintended multiple replacements
+- Clear error messages for debugging
+- Supports multiline string replacement
+
+### Usage
+
+```python
+from mayflower_sandbox.tools import FileEditTool
+
+tool = FileEditTool(db_pool=pool, thread_id="user_1")
+
+# Edit a configuration file
+result = await tool._arun(
+    file_path="/tmp/config.py",
+    old_string="DEBUG = False",
+    new_string="DEBUG = True"
+)
+
+# Edit code with multiline strings
+result = await tool._arun(
+    file_path="/tmp/script.py",
+    old_string='def hello():\n    print("Hello")',
+    new_string='def hello():\n    print("Hi there")'
+)
+```
+
+### Parameters
+- `file_path` (str, required): Absolute path to the file to edit
+- `old_string` (str, required): Unique string to find and replace (must appear exactly once)
+- `new_string` (str, required): New string to replace it with
+
+### Returns
+Success message with the replaced text, or error message if:
+- String not found in file
+- String appears more than once (must be unique)
+- File doesn't exist
+
+### Best Practices
+- Provide enough context in `old_string` to make it unique
+- For code edits, include surrounding context (e.g., function name + line)
+- Use multiline strings for complex replacements
+- If string appears multiple times, provide more context to make it unique
+
+### Example: Making a String Unique
+
+```python
+# This will fail - "x = " appears twice
+result = await tool._arun(
+    file_path="/tmp/vars.py",
+    old_string="x = ",
+    new_string="x = "
+)
+# Error: String appears 2 times (must be unique)
+
+# This succeeds - "x = 1" is unique
+result = await tool._arun(
+    file_path="/tmp/vars.py",
+    old_string="x = 1",
+    new_string="x = 10"
+)
+# Success!
+```
 
 ## FileListTool
 
