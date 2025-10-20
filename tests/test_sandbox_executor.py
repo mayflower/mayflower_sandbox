@@ -3,10 +3,11 @@ Tests for the new clean SandboxExecutor architecture.
 Tests VFS integration, Pyodide execution, and file sync.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -198,10 +199,11 @@ async def test_stateful_execution(db_pool, clean_files):
     assert "42" in result2.stdout
 
 
-@pytest.mark.skip(reason="NumPy requires pre-loading package - future enhancement")
 async def test_numpy_execution(executor, clean_files):
-    """Test numpy works."""
+    """Test numpy works with micropip installation."""
     code = """
+import micropip
+await micropip.install("numpy")
 import numpy as np
 arr = np.array([1, 2, 3, 4, 5])
 print(f"Sum: {arr.sum()}")

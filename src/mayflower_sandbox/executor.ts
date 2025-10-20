@@ -126,10 +126,9 @@ async function execute(options: ExecutionOptions): Promise<ExecutionResult> {
     // Load Pyodide (let it use default paths from npm package)
     const pyodide = await loadPyodide();
 
-    // Load micropip if stateful (needed for dill)
-    if (options.stateful) {
-      await pyodide.loadPackage("micropip");
-    }
+    // Always load micropip - it's lightweight and commonly needed for package installation
+    // (needed for dill in stateful mode, and for NumPy/SciPy packages in general)
+    await pyodide.loadPackage("micropip");
 
     // Capture stdout/stderr
     let stdoutBuffer = "";

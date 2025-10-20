@@ -42,7 +42,10 @@ Returns:
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Read file from VFS."""
-        vfs = VirtualFilesystem(self.db_pool, self.thread_id)
+        # Get thread_id from context
+        thread_id = self._get_thread_id(run_manager)
+
+        vfs = VirtualFilesystem(self.db_pool, thread_id)
 
         try:
             file_info = await vfs.read_file(file_path)

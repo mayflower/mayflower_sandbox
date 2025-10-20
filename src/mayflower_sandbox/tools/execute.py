@@ -57,10 +57,15 @@ class ExecutePythonTool(SandboxTool):
 The sandbox has access to a persistent filesystem backed by PostgreSQL.
 Files created in /tmp or /data will persist across executions.
 
-PRE-INSTALLED PACKAGES (use directly):
-- Standard library: json, csv, math, random, datetime, sqlite3, etc.
-- Data science: numpy, pandas, matplotlib, scipy
-- HTTP: requests, aiohttp
+PRE-INSTALLED PACKAGES (standard library - use directly):
+- json, csv, math, random, datetime, sqlite3, etc.
+
+SCIENTIFIC PACKAGES (install via micropip):
+⚠️ IMPORTANT: NumPy, pandas, matplotlib, scipy are available but must be installed first!
+
+  import micropip
+  await micropip.install('numpy')
+  import numpy as np
 
 DOCUMENT PROCESSING PACKAGES (install via micropip):
 ⚠️ IMPORTANT: You MUST use 'await' with micropip.install()!
@@ -143,8 +148,11 @@ Examples:
     ) -> str:
         """Execute Python code in sandbox."""
 
+        # Get thread_id from context
+        thread_id = self._get_thread_id(run_manager)
+
         # Get error history
-        error_history = get_error_history(self.thread_id)
+        error_history = get_error_history(thread_id)
 
         # Check for similar previous errors
         code_snippet = code[:200]
@@ -153,16 +161,14 @@ Examples:
         ]
 
         # Create executor with network access for micropip
-        executor = SandboxExecutor(
-            self.db_pool, self.thread_id, allow_net=True, timeout_seconds=60.0
-        )
+        executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True, timeout_seconds=60.0)
 
         # Execute
         result = await executor.execute(code)
 
         # Track errors
         if not result.success and result.stderr:
-            add_error_to_history(self.thread_id, code_snippet, result.stderr)
+            add_error_to_history(thread_id, code_snippet, result.stderr)
 
         # Format response
         response_parts = []

@@ -62,7 +62,10 @@ Examples:
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Search file contents with regex."""
-        vfs = VirtualFilesystem(self.db_pool, self.thread_id)
+        # Get thread_id from context
+        thread_id = self._get_thread_id(run_manager)
+
+        vfs = VirtualFilesystem(self.db_pool, thread_id)
 
         # Validate output_mode
         valid_modes = {"files_with_matches", "content", "count"}

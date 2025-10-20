@@ -278,3 +278,81 @@ async def test_thread_isolation(db_pool):
     result_2 = await list_2._arun()
     assert "/tmp/thread2.txt" in result_2
     assert "/tmp/thread1.txt" not in result_2
+
+
+async def test_context_aware_thread_id(db_pool):
+    """Test that tools can read thread_id from callback context."""
+    from unittest.mock import MagicMock
+
+    # Clean test threads
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM sandbox_filesystem WHERE thread_id IN ('context_thread_1', 'context_thread_2')"
+        )
+        await conn.execute("""
+            INSERT INTO sandbox_sessions (thread_id, expires_at)
+            VALUES ('context_thread_1', NOW() + INTERVAL '1 day'),
+                   ('context_thread_2', NOW() + INTERVAL '1 day')
+            ON CONFLICT (thread_id) DO NOTHING
+        """)
+
+    # Create tools without thread_id (context-aware)
+    tools = create_sandbox_tools(db_pool, thread_id=None)
+    write_tool = next(t for t in tools if t.name == "write_file")
+    list_tool = next(t for t in tools if t.name == "list_files")
+
+    # Create mock callback managers with different thread_ids
+    mock_manager_1 = MagicMock()
+    mock_manager_1.metadata = {"configurable": {"thread_id": "context_thread_1"}}
+    mock_manager_1.tags = []
+
+    mock_manager_2 = MagicMock()
+    mock_manager_2.metadata = {"configurable": {"thread_id": "context_thread_2"}}
+    mock_manager_2.tags = []
+
+    # Write to thread_1 via context
+    await write_tool._arun(
+        file_path="/tmp/context1.txt",
+        content="Context thread 1 data",
+        run_manager=mock_manager_1,
+    )
+
+    # Write to thread_2 via context
+    await write_tool._arun(
+        file_path="/tmp/context2.txt",
+        content="Context thread 2 data",
+        run_manager=mock_manager_2,
+    )
+
+    # List with thread_1 context should only see thread_1 file
+    result_1 = await list_tool._arun(run_manager=mock_manager_1)
+    assert "/tmp/context1.txt" in result_1
+    assert "/tmp/context2.txt" not in result_1
+
+    # List with thread_2 context should only see thread_2 file
+    result_2 = await list_tool._arun(run_manager=mock_manager_2)
+    assert "/tmp/context2.txt" in result_2
+    assert "/tmp/context1.txt" not in result_2
+
+
+async def test_context_aware_fallback_to_default(db_pool, clean_files):
+    """Test that tools fall back to 'default' when no thread_id is provided."""
+    # Create tool without thread_id
+    write_tool = FileWriteTool(db_pool=db_pool, thread_id=None)
+    list_tool = FileListTool(db_pool=db_pool, thread_id=None)
+
+    # Ensure default session exists
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO sandbox_sessions (thread_id, expires_at)
+            VALUES ('default', NOW() + INTERVAL '1 day')
+            ON CONFLICT (thread_id) DO NOTHING
+        """)
+        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'default'")
+
+    # Write without callback manager (should use "default" thread_id)
+    await write_tool._arun(file_path="/tmp/default.txt", content="Default thread data")
+
+    # List should see the file
+    result = await list_tool._arun()
+    assert "/tmp/default.txt" in result

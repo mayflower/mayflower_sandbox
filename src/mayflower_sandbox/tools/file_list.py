@@ -45,7 +45,10 @@ Returns:
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """List files in VFS."""
-        vfs = VirtualFilesystem(self.db_pool, self.thread_id)
+        # Get thread_id from context
+        thread_id = self._get_thread_id(run_manager)
+
+        vfs = VirtualFilesystem(self.db_pool, thread_id)
 
         try:
             # Convert prefix to SQL LIKE pattern

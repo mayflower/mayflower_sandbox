@@ -17,7 +17,7 @@ from mayflower_sandbox.tools.file_write import FileWriteTool
 
 def create_sandbox_tools(
     db_pool: asyncpg.Pool,
-    thread_id: str,
+    thread_id: str | None = None,
     include_tools: list[str] | None = None,
 ) -> list[SandboxTool]:
     """
@@ -25,7 +25,9 @@ def create_sandbox_tools(
 
     Args:
         db_pool: PostgreSQL connection pool
-        thread_id: Thread ID for session isolation
+        thread_id: Thread ID for session isolation. If None, tools will read
+                  thread_id from callback context at runtime (recommended for LangGraph).
+                  If provided, tools will use this thread_id for all operations.
         include_tools: List of tool names to include (default: all tools)
                       Options: "execute_python", "read_file", "write_file",
                               "list_files", "delete_file", "str_replace",
@@ -41,13 +43,16 @@ def create_sandbox_tools(
 
         db_pool = await asyncpg.create_pool(...)
 
-        # Create all tools
-        tools = create_sandbox_tools(db_pool, "user_123")
+        # Create context-aware tools (recommended for LangGraph)
+        tools = create_sandbox_tools(db_pool, thread_id=None)
+
+        # Create tools with fixed thread_id
+        tools = create_sandbox_tools(db_pool, thread_id="user_123")
 
         # Create only specific tools
         tools = create_sandbox_tools(
             db_pool,
-            "user_123",
+            thread_id=None,
             include_tools=["execute_python", "read_file", "write_file"]
         )
 

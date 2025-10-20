@@ -59,7 +59,10 @@ Example:
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Edit file using string replacement."""
-        vfs = VirtualFilesystem(self.db_pool, self.thread_id)
+        # Get thread_id from context
+        thread_id = self._get_thread_id(run_manager)
+
+        vfs = VirtualFilesystem(self.db_pool, thread_id)
 
         try:
             # Read file
