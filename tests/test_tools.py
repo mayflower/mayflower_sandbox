@@ -2,20 +2,21 @@
 Tests for Mayflower Sandbox MCP Tools.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from mayflower_sandbox.tools import (
-    create_sandbox_tools,
     ExecutePythonTool,
+    FileDeleteTool,
+    FileListTool,
     FileReadTool,
     FileWriteTool,
-    FileListTool,
-    FileDeleteTool,
+    create_sandbox_tools,
 )
 
 
@@ -58,9 +59,16 @@ async def test_tool_factory_all_tools(db_pool, clean_files):
     """Test creating all tools via factory."""
     tools = create_sandbox_tools(db_pool, "test_tools")
 
-    assert len(tools) == 5
+    assert len(tools) == 6
     tool_names = {tool.name for tool in tools}
-    assert tool_names == {"execute_python", "read_file", "write_file", "list_files", "delete_file"}
+    assert tool_names == {
+        "execute_python",
+        "read_file",
+        "write_file",
+        "list_files",
+        "delete_file",
+        "str_replace",
+    }
 
 
 async def test_tool_factory_specific_tools(db_pool, clean_files):
@@ -207,10 +215,11 @@ print(f"Processing complete: {len(lines)} lines")
     assert "Processing complete: 3 lines" in exec_result
     assert "/tmp/output.txt" in exec_result
 
-    # 3. List files
-    list_result = await tool_map["list_files"]._arun()
-    assert "Found 2 file(s)" in list_result
+    # 3. List files (filter for user files, not helper modules)
+    list_result = await tool_map["list_files"]._arun(prefix="/data/")
     assert "/data/input.csv" in list_result
+
+    list_result = await tool_map["list_files"]._arun(prefix="/tmp/")
     assert "/tmp/output.txt" in list_result
 
     # 4. Read output
@@ -221,8 +230,11 @@ print(f"Processing complete: {len(lines)} lines")
     await tool_map["delete_file"]._arun(file_path="/data/input.csv")
     await tool_map["delete_file"]._arun(file_path="/tmp/output.txt")
 
-    # 6. Verify clean
-    list_result = await tool_map["list_files"]._arun()
+    # 6. Verify clean (check user directories, helper modules persist)
+    list_result = await tool_map["list_files"]._arun(prefix="/data/")
+    assert "No files found" in list_result
+
+    list_result = await tool_map["list_files"]._arun(prefix="/tmp/")
     assert "No files found" in list_result
 
 
