@@ -1,13 +1,13 @@
 # Tools Reference
 
-Mayflower Sandbox provides 6 LangChain tools that extend `BaseTool` for use with LangGraph agents.
+Mayflower Sandbox provides 8 LangChain tools that extend `BaseTool` for use with LangGraph agents.
 
 ## Creating Tools
 
 ```python
 from mayflower_sandbox.tools import create_sandbox_tools
 
-# Create all 6 tools for a specific thread
+# Create all 8 tools for a specific thread
 tools = create_sandbox_tools(
     db_pool=db_pool,
     thread_id="user_123",
@@ -230,6 +230,96 @@ Success message if file was deleted.
 ### Errors
 - Returns error if file doesn't exist
 - Returns error if path validation fails
+
+## FileGlobTool (glob_files)
+
+Find files matching glob patterns like `*.py`, `**/*.txt`, `/data/*.json`.
+
+### Features
+- Simple wildcard matching (`*.py`)
+- Recursive matching (`**/*.txt`)
+- Directory-specific patterns (`/tmp/*.json`)
+
+### Usage
+
+```python
+from mayflower_sandbox.tools import FileGlobTool
+
+tool = FileGlobTool(db_pool=pool, thread_id="user_1")
+
+# Find all Python files
+result = await tool._arun(pattern="*.py")
+
+# Find all text files recursively
+result = await tool._arun(pattern="**/*.txt")
+
+# Find JSON files in specific directory
+result = await tool._arun(pattern="/data/*.json")
+```
+
+### Parameters
+- `pattern` (str, required): Glob pattern to match file paths
+
+### Returns
+List of matching file paths with sizes and types.
+
+### Pattern Examples
+- `*.py` - All Python files
+- `**/*.txt` - All text files recursively
+- `/tmp/*.json` - All JSON files in /tmp
+- `/data/**/*.csv` - All CSV files under /data
+
+## FileGrepTool (grep_files)
+
+Search file contents using regular expressions with multiple output modes.
+
+### Features
+- Regex pattern matching
+- Case-insensitive search
+- Multiple output modes (files, content, count)
+- Efficient content scanning
+
+### Usage
+
+```python
+from mayflower_sandbox.tools import FileGrepTool
+
+tool = FileGrepTool(db_pool=pool, thread_id="user_1")
+
+# Find files containing "TODO"
+result = await tool._arun(pattern="TODO")
+
+# Show matching lines with content
+result = await tool._arun(pattern="ERROR", output_mode="content")
+
+# Count matches per file
+result = await tool._arun(pattern="import", output_mode="count")
+
+# Case-insensitive search
+result = await tool._arun(pattern="error", case_insensitive=True)
+```
+
+### Parameters
+- `pattern` (str, required): Regular expression pattern
+- `output_mode` (str, optional): `files_with_matches`, `content`, or `count` (default: `files_with_matches`)
+- `case_insensitive` (bool, optional): Perform case-insensitive search (default: `False`)
+
+### Returns
+Search results formatted according to output_mode:
+- `files_with_matches`: List of file paths
+- `content`: Matching lines with line numbers
+- `count`: Match counts per file
+
+### Output Modes
+- **files_with_matches**: Shows only file paths containing matches (default)
+- **content**: Shows matching lines with line numbers (limited to 10 per file)
+- **count**: Shows number of matches per file
+
+### Pattern Examples
+- `TODO` - Find literal text
+- `def \w+\(` - Find function definitions
+- `^import ` - Find lines starting with "import"
+- `error|warning` - Find either "error" or "warning"
 
 ## Thread Isolation
 

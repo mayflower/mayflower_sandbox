@@ -59,7 +59,7 @@ async def test_tool_factory_all_tools(db_pool, clean_files):
     """Test creating all tools via factory."""
     tools = create_sandbox_tools(db_pool, "test_tools")
 
-    assert len(tools) == 6
+    assert len(tools) == 8
     tool_names = {tool.name for tool in tools}
     assert tool_names == {
         "execute_python",
@@ -68,6 +68,8 @@ async def test_tool_factory_all_tools(db_pool, clean_files):
         "list_files",
         "delete_file",
         "str_replace",
+        "glob_files",
+        "grep_files",
     }
 
 

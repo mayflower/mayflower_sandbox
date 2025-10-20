@@ -74,7 +74,7 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 - **[Examples](docs/examples.md)** - Complete working examples
 
 ### Reference
-- **[Tools Reference](docs/tools.md)** - Documentation for the 6 LangChain tools
+- **[Tools Reference](docs/tools.md)** - Documentation for the 8 LangChain tools
 - **[Helpers Reference](docs/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
 - **[Advanced Features](docs/advanced.md)** - Stateful execution, file server, cleanup
 - **[API Reference](docs/api.md)** - Low-level API documentation
@@ -89,7 +89,9 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 │ ├─ FileWriteTool                                    │
 │ ├─ FileEditTool (str_replace)                       │
 │ ├─ FileListTool                                     │
-│ └─ FileDeleteTool                                   │
+│ ├─ FileDeleteTool                                   │
+│ ├─ FileGlobTool (glob_files)                        │
+│ └─ FileGrepTool (grep_files)                        │
 └──────────────────┬──────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────┐
@@ -108,9 +110,9 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 6 Tools
+## The 8 Tools
 
-Mayflower Sandbox provides 6 LangChain tools:
+Mayflower Sandbox provides 8 LangChain tools:
 
 1. **ExecutePythonTool** - Execute Python code with automatic VFS sync
 2. **FileReadTool** - Read files from PostgreSQL VFS
@@ -118,6 +120,8 @@ Mayflower Sandbox provides 6 LangChain tools:
 4. **FileEditTool** (str_replace) - Edit files by replacing unique strings
 5. **FileListTool** - List files with optional prefix filtering
 6. **FileDeleteTool** - Delete files from VFS
+7. **FileGlobTool** (glob_files) - Find files matching glob patterns
+8. **FileGrepTool** (grep_files) - Search file contents with regex
 
 See [Tools Reference](docs/tools.md) for detailed documentation.
 
