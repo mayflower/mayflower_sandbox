@@ -20,7 +20,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "mypy>=1.5.0",
     "ruff>=0.1.0",
-    "types-asyncpg>=0.27.0",
+    "asyncpg-stubs>=0.30.0",
 ]
 examples = [
     "langgraph>=0.2.0",
