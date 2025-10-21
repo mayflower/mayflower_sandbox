@@ -54,12 +54,14 @@ class VirtualFilesystem:
 
         Creates session if it doesn't exist. This is called automatically
         before file operations to prevent foreign key constraint violations.
+
+        Sets a default expiration of 1 day from now if creating a new session.
         """
         async with self.db.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO sandbox_sessions (thread_id, metadata)
-                VALUES ($1, '{}')
+                INSERT INTO sandbox_sessions (thread_id, expires_at, metadata)
+                VALUES ($1, NOW() + INTERVAL '1 day', '{}')
                 ON CONFLICT (thread_id) DO NOTHING
                 """,
                 self.thread_id,
