@@ -141,16 +141,16 @@ async function execute(options: ExecutionOptions): Promise<ExecutionResult> {
     if (options.stateful && options.sessionBytes) {
       try {
         await pyodide.runPythonAsync(`
-# Install dill if needed
+# Install cloudpickle if needed
 try:
-    import dill
+    import cloudpickle
 except ImportError:
     import micropip
-    await micropip.install('dill')
-    import dill
+    await micropip.install('cloudpickle')
+    import cloudpickle
 
 _session_bytes = bytes(${JSON.stringify(Array.from(options.sessionBytes))})
-_session_obj = dill.loads(_session_bytes)
+_session_obj = cloudpickle.loads(_session_bytes)
 globals().update(_session_obj)
 `);
       } catch (e) {
@@ -192,16 +192,16 @@ importlib.invalidate_caches()
     if (options.stateful && result.success) {
       try {
         const sessionBytesResult = await pyodide.runPythonAsync(`
-# Install dill if needed for session serialization
+# Install cloudpickle if needed for session serialization
 try:
-    import dill
+    import cloudpickle
 except ImportError:
     import micropip
-    await micropip.install('dill')
-    import dill
+    await micropip.install('cloudpickle')
+    import cloudpickle
 
 _session_dict = {k: v for k, v in globals().items() if not k.startswith('_')}
-list(dill.dumps(_session_dict))
+list(cloudpickle.dumps(_session_dict))
 `);
         result.sessionBytes = sessionBytesResult.toJs();
         result.sessionMetadata = {
