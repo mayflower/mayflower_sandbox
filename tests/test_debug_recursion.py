@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 load_dotenv()
 
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import create_react_agent
 
 from mayflower_sandbox.tools import create_sandbox_tools
 
@@ -61,7 +61,7 @@ async def test_check_available_data_packages(db_pool, clean_files):
     """Test what data processing packages are available."""
     tools = create_sandbox_tools(db_pool, thread_id="debug_test")
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
-    agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
+    agent = create_agent(llm, tools, checkpointer=MemorySaver())
 
     result = await agent.ainvoke(
         {
@@ -94,7 +94,7 @@ async def test_micropip_install(db_pool, clean_files):
     """Test if micropip can install packages."""
     tools = create_sandbox_tools(db_pool, thread_id="debug_test")
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
-    agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
+    agent = create_agent(llm, tools, checkpointer=MemorySaver())
 
     result = await agent.ainvoke(
         {

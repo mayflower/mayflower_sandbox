@@ -17,9 +17,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Load environment variables
 load_dotenv()
 
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import create_react_agent
 
 from mayflower_sandbox.tools import create_sandbox_tools
 
@@ -72,7 +72,7 @@ async def agent(db_pool):
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
     # Create ReAct agent with checkpointer
-    agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
+    agent = create_agent(llm, tools, checkpointer=MemorySaver())
 
     return agent
 
