@@ -75,21 +75,27 @@ CONTEXT:
 - Pyodide is Python compiled to WebAssembly - most pure Python packages work
 - Built-in packages: pillow, numpy, pandas, matplotlib, scipy, networkx, scikit-learn
 - Packages that work via micropip: fpdf2, pypdf, python-pptx, python-docx, openpyxl
-- Packages that DON'T work: reportlab (C extensions), some packages with complex native dependencies
+- Packages that DON'T work: reportlab (C extensions - use fpdf2 instead!), lxml (use defusedxml)
 - Install packages: await micropip.install('package')
-- Check Pyodide package list: https://pyodide.org/en/stable/usage/packages-in-pyodide.html
+
+CRITICAL RECOMMENDATIONS FOR COMMON TASKS:
+- PDF creation: Use fpdf2 (NOT reportlab)
+- PDF manipulation: Use pypdf
+- Image processing: Use pillow (already built-in)
+- Data analysis: Use pandas/numpy (already built-in)
 
 Provide:
 1. Explanation: What's actually happening? (1-2 sentences)
 2. Recommendation: What to try next? (1-2 sentences)
-   If package not available → suggest working alternatives
+   - If trying reportlab → recommend fpdf2
+   - If package not available → suggest working alternatives
 
 Format:
 EXPLANATION: [explanation]
 RECOMMENDATION: [recommendation]"""
 
         response = await llm.ainvoke(analysis_prompt)
-        response_text = response.content
+        response_text = str(response.content)
 
         # Parse
         explanation = ""
@@ -172,10 +178,12 @@ For Excel files:
   await micropip.install('openpyxl')
   from openpyxl import Workbook
 
-For PDF creation:
+For PDF creation (use fpdf2, NOT reportlab):
   import micropip
   await micropip.install('fpdf2')
   from fpdf import FPDF
+  # fpdf2 is pure Python and works in Pyodide
+  # reportlab has C extensions and does NOT work
 
 For PDF manipulation (merge, split, extract):
   import micropip
@@ -229,12 +237,17 @@ See HELPERS.md for complete documentation and examples.
 
 Examples:
 - Create Excel with formulas using openpyxl
-- Generate PDFs with fpdf2
-- Merge PDFs with pypdf
+- Generate PDFs with fpdf2 (simple, pure Python - works great!)
+- Merge/split PDFs with pypdf
 - Create presentations with python-pptx
 - Process Word documents with python-docx
 - Add comments to Word docs using docx_add_comment helper
 - Data analysis with pandas and matplotlib
+
+⚠️ IMPORTANT PACKAGE NOTES:
+- Use fpdf2 for PDF creation (NOT reportlab - it doesn't work in Pyodide)
+- Use pypdf for PDF manipulation (merge, split, extract text)
+- pillow, numpy, pandas, matplotlib are built-in (no install needed)
 """
     args_schema: type[BaseModel] = ExecutePythonInput
 
