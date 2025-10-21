@@ -140,6 +140,10 @@ async function execute(options: ExecutionOptions): Promise<ExecutionResult> {
     // Load session state if provided
     if (options.stateful && options.sessionBytes) {
       try {
+        // Temporarily suppress stdout during cloudpickle installation to avoid polluting JSON output
+        const originalStdout = stdoutBuffer;
+        pyodide.setStdout({ batched: () => {} }); // Suppress micropip output
+
         await pyodide.runPythonAsync(`
 # Install cloudpickle if needed
 try:
@@ -148,13 +152,21 @@ except ImportError:
     import micropip
     await micropip.install('cloudpickle')
     import cloudpickle
+`);
 
+        // Restore stdout capture
+        pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+
+        // Now restore the session
+        await pyodide.runPythonAsync(`
 _session_bytes = bytes(${JSON.stringify(Array.from(options.sessionBytes))})
 _session_obj = cloudpickle.loads(_session_bytes)
 globals().update(_session_obj)
 `);
       } catch (e) {
         stderrBuffer += `Session restore error: ${e}\n`;
+        // Restore stdout capture in case of error
+        pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
       }
     }
 
@@ -191,7 +203,10 @@ importlib.invalidate_caches()
     // Save session state if stateful
     if (options.stateful && result.success) {
       try {
-        const sessionBytesResult = await pyodide.runPythonAsync(`
+        // Temporarily suppress stdout during cloudpickle installation to avoid polluting JSON output
+        pyodide.setStdout({ batched: () => {} }); // Suppress micropip output
+
+        await pyodide.runPythonAsync(`
 # Install cloudpickle if needed for session serialization
 try:
     import cloudpickle
@@ -199,7 +214,13 @@ except ImportError:
     import micropip
     await micropip.install('cloudpickle')
     import cloudpickle
+`);
 
+        // Restore stdout capture (but don't append since we're done with user code)
+        pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+
+        // Now serialize the session
+        const sessionBytesResult = await pyodide.runPythonAsync(`
 # Filter out unpicklable objects (file handles, built-in types, etc.)
 import types
 _globals_snapshot = dict(globals())  # Snapshot to avoid "changed size during iteration"
@@ -226,6 +247,8 @@ list(cloudpickle.dumps(_session_dict))
       } catch (e) {
         stderrBuffer += `Session save error: ${e}\n`;
         result.stderr = stderrBuffer;
+        // Restore stdout capture in case of error
+        pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
       }
     }
 

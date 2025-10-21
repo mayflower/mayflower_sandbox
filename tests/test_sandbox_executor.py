@@ -176,9 +176,6 @@ with open('/tmp/output.txt', 'w') as f:
         assert b"Processed 3 lines" in output_file["content"]
 
 
-@pytest.mark.skip(
-    reason="Stateful execution needs more work - micropip output interferes with JSON parsing"
-)
 async def test_stateful_execution(db_pool, clean_files):
     """Test stateful session preserves variables."""
     executor = SandboxExecutor(db_pool, "test_sandbox", allow_net=True, stateful=True)
