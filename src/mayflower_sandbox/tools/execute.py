@@ -308,9 +308,16 @@ Examples:
         else:
             message = "\n\n".join(response_parts) if response_parts else "Execution failed"
 
-        # Return tuple (state_updates, message) to update agent state with created files
-        # This allows LangGraph to track files in the file_list state field
+        # Update agent state with created files if using LangGraph
+        # Return Command to update created_files in state, or plain message otherwise
         if result.created_files:
-            return ({"file_list": result.created_files}, message)
+            try:
+                from langgraph.types import Command
+
+                # Return Command with state update
+                return Command(update={"created_files": result.created_files}, resume=message)
+            except ImportError:
+                # LangGraph not available, return plain message
+                return message
         else:
             return message
