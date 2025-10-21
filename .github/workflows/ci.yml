@@ -92,4 +92,4 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_PORT: 5432
         run: |
-          pytest -v --cov=src/mayflower_sandbox --cov-report=term-missing --ignore=tests/test_session_recovery.py
+          pytest -v --cov=src/mayflower_sandbox --cov-report=term-missing

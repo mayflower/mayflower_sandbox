@@ -5,6 +5,7 @@ Enables stateful Python execution where variables persist across
 executor restarts by storing session state in PostgreSQL.
 """
 
+import json
 import logging
 
 import asyncpg
@@ -61,7 +62,7 @@ class SessionRecovery:
             """,
                 thread_id,
                 session_bytes,
-                session_metadata or {},
+                json.dumps(session_metadata or {}),
             )
 
             logger.debug(f"Saved session bytes for thread {thread_id} ({len(session_bytes)} bytes)")
@@ -93,7 +94,11 @@ class SessionRecovery:
                     f"Loaded session bytes for thread {thread_id} "
                     f"({len(result['session_bytes'])} bytes)"
                 )
-                return result["session_bytes"], result["session_metadata"]
+                metadata = result["session_metadata"]
+                # Parse JSON string to dict if needed
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+                return result["session_bytes"], metadata
 
             return None, None
 
