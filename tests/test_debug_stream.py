@@ -58,7 +58,7 @@ async def clean_files(db_pool):
 async def test_stream_csv_processing(db_pool, clean_files):
     """Stream the agent output to see what's happening."""
     tools = create_sandbox_tools(db_pool, thread_id="debug_stream")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
     agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
 
     print("\n" + "=" * 80)

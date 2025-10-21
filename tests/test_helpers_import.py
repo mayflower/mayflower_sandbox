@@ -61,7 +61,7 @@ async def clean_files(db_pool):
 def agent(db_pool):
     """Create LangGraph agent with sandbox tools."""
     tools = create_sandbox_tools(db_pool, thread_id="helpers_test")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
     agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
     return agent
 

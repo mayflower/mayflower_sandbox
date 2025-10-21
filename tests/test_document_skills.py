@@ -8,20 +8,22 @@ Tests all operations from:
 - word_skill.py
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 load_dotenv()
 
-from mayflower_sandbox.tools import create_sandbox_tools
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
+
+from mayflower_sandbox.tools import create_sandbox_tools
 
 
 @pytest.fixture
@@ -33,6 +35,9 @@ async def db_pool():
         "user": os.getenv("POSTGRES_USER", "postgres"),
         "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
         "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        "min_size": 10,
+        "max_size": 50,
+        "command_timeout": 60,
     }
 
     pool = await asyncpg.create_pool(**db_config)
@@ -64,10 +69,10 @@ async def clean_files(db_pool):
 
 
 @pytest.fixture
-def agent(db_pool):
+async def agent(db_pool):
     """Create LangGraph agent with sandbox tools."""
     tools = create_sandbox_tools(db_pool, thread_id="doc_skills")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
     agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
     return agent
 

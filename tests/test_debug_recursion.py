@@ -58,7 +58,7 @@ async def clean_files(db_pool):
 async def test_check_available_data_packages(db_pool, clean_files):
     """Test what data processing packages are available."""
     tools = create_sandbox_tools(db_pool, thread_id="debug_test")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
     agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
 
     result = await agent.ainvoke(
@@ -91,7 +91,7 @@ Print SUCCESS for each one that works, or FAIL with error for those that don't."
 async def test_micropip_install(db_pool, clean_files):
     """Test if micropip can install packages."""
     tools = create_sandbox_tools(db_pool, thread_id="debug_test")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
     agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
 
     result = await agent.ainvoke(

@@ -3,6 +3,7 @@ ExecutePythonTool - Execute Python code in sandbox.
 """
 
 import logging
+import os
 
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 from pydantic import BaseModel, Field
@@ -12,28 +13,124 @@ from mayflower_sandbox.tools.base import SandboxTool
 
 logger = logging.getLogger(__name__)
 
-# Error history cache: thread_id -> list of errors
+# Error history cache: thread_id -> list of analyses
 _error_history: dict[str, list[dict]] = {}
 
-# Maximum errors to keep
+# Maximum analyses to keep
 MAX_ERROR_HISTORY = 5
 
 
 def get_error_history(thread_id: str) -> list[dict]:
-    """Get error history for thread."""
+    """Get error analysis history for thread."""
     return _error_history.get(thread_id, [])
 
 
-def add_error_to_history(thread_id: str, code_snippet: str, error: str):
-    """Add error to history."""
+async def analyze_error_with_llm(
+    current_code: str,
+    current_error: str,
+    previous_analysis: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """
+    Use LLM to analyze current error, building on previous analysis.
+
+    Returns dict with 'explanation' and 'recommendation' keys.
+    """
+    try:
+        if not os.getenv("OPENAI_API_KEY"):
+            return {}
+
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+
+        # Build context from previous analysis
+        previous_context = ""
+        if previous_analysis and (
+            previous_analysis.get("explanation") or previous_analysis.get("recommendation")
+        ):
+            previous_context = f"""
+Previous error analysis:
+- Explanation: {previous_analysis.get("explanation", "N/A")}
+- Recommendation: {previous_analysis.get("recommendation", "N/A")}
+
+The user tried again and got another error. Analyze if this is:
+1. The same root issue (e.g., package unavailable) → recommend completely different approach
+2. Progress being made → refine the recommendation
+3. A new issue → provide fresh guidance
+"""
+
+        analysis_prompt = f"""Analyze this Python execution error in Pyodide (WebAssembly Python).
+{previous_context}
+Current code:
+```python
+{current_code}
+```
+
+Error:
+```
+{current_error}
+```
+
+CONTEXT:
+- Pyodide is Python compiled to WebAssembly - most pure Python packages work
+- Built-in packages: pillow, numpy, pandas, matplotlib, scipy, networkx, scikit-learn
+- Packages that work via micropip: fpdf2, pypdf, python-pptx, python-docx, openpyxl
+- Packages that DON'T work: reportlab (C extensions), some packages with complex native dependencies
+- Install packages: await micropip.install('package')
+- Check Pyodide package list: https://pyodide.org/en/stable/usage/packages-in-pyodide.html
+
+Provide:
+1. Explanation: What's actually happening? (1-2 sentences)
+2. Recommendation: What to try next? (1-2 sentences)
+   If package not available → suggest working alternatives
+
+Format:
+EXPLANATION: [explanation]
+RECOMMENDATION: [recommendation]"""
+
+        response = await llm.ainvoke(analysis_prompt)
+        response_text = response.content
+
+        # Parse
+        explanation = ""
+        recommendation = ""
+
+        if "EXPLANATION:" in response_text:
+            explanation = response_text.split("EXPLANATION:")[1].split("RECOMMENDATION:")[0].strip()
+        if "RECOMMENDATION:" in response_text:
+            recommendation = response_text.split("RECOMMENDATION:")[1].strip()
+
+        return {"explanation": explanation, "recommendation": recommendation}
+
+    except Exception as e:
+        logger.warning(f"Failed to analyze error with LLM: {e}")
+        return {}
+
+
+async def add_error_to_history(thread_id: str, code: str, error: str) -> dict[str, str]:
+    """Analyze error and add to history. Returns the analysis."""
     if thread_id not in _error_history:
         _error_history[thread_id] = []
 
-    _error_history[thread_id].append({"code_snippet": code_snippet, "error": error})
+    # Get previous analysis
+    previous = _error_history[thread_id][-1] if _error_history[thread_id] else None
 
-    # Keep only recent errors
+    # Analyze building on previous
+    analysis = await analyze_error_with_llm(code, error, previous)
+
+    # Store only analysis
+    _error_history[thread_id].append(
+        {
+            "explanation": analysis.get("explanation", ""),
+            "recommendation": analysis.get("recommendation", ""),
+        }
+    )
+
+    # Keep recent only
     if len(_error_history[thread_id]) > MAX_ERROR_HISTORY:
         _error_history[thread_id] = _error_history[thread_id][-MAX_ERROR_HISTORY:]
+
+    return analysis
 
 
 class ExecutePythonInput(BaseModel):
@@ -151,36 +248,31 @@ Examples:
         # Get thread_id from context
         thread_id = self._get_thread_id(run_manager)
 
-        # Get error history
-        error_history = get_error_history(thread_id)
-
-        # Check for similar previous errors
-        code_snippet = code[:200]
-        previous_errors = [
-            entry["error"] for entry in error_history if entry.get("code_snippet", "")[:100] in code
-        ]
-
         # Create executor with network access for micropip
         executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True, timeout_seconds=60.0)
 
         # Execute
         result = await executor.execute(code)
 
-        # Track errors
+        # Track errors with LLM analysis
+        analysis = {}
         if not result.success and result.stderr:
-            add_error_to_history(thread_id, code_snippet, result.stderr)
+            analysis = await add_error_to_history(thread_id, code, result.stderr)
 
         # Format response
         response_parts = []
 
-        # Show previous errors FIRST if they exist
-        if previous_errors:
-            response_parts.append(
-                "⚠️ **WARNING - Previous Similar Attempt Failed:**\n"
-                "This code is similar to code that failed before:\n"
-                + "\n".join(f"```\n{err[:500]}\n```" for err in previous_errors[-2:])
-                + "\n**Consider trying a completely different approach.**\n"
-            )
+        # Show LLM analysis if this execution failed
+        if not result.success and analysis:
+            warning_parts = ["⚠️ **Error Analysis:**"]
+
+            if analysis.get("explanation"):
+                warning_parts.append(f"**What happened:** {analysis['explanation']}")
+
+            if analysis.get("recommendation"):
+                warning_parts.append(f"**Try this instead:** {analysis['recommendation']}")
+
+            response_parts.append("\n".join(warning_parts) + "\n")
 
         if result.stdout:
             response_parts.append(f"Output:\n{result.stdout}")
