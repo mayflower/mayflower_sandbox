@@ -5,10 +5,11 @@ These tests demonstrate how to use the PyodideSandbox with document processing
 skills similar to the maistack skills implementation.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -16,10 +17,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Load environment variables
 load_dotenv()
 
-from mayflower_sandbox.tools import create_sandbox_tools
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
+
+from mayflower_sandbox.tools import create_sandbox_tools
 
 
 @pytest.fixture
@@ -66,7 +68,7 @@ def agent(db_pool):
     tools = create_sandbox_tools(db_pool, thread_id="langgraph_skills_test")
 
     # Create LLM
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
     # Create ReAct agent with checkpointer
     agent = create_react_agent(llm, tools, checkpointer=MemorySaver())

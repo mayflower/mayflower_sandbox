@@ -5,10 +5,11 @@ These tests use real LLM calls to verify the sandbox tools work correctly
 with LangGraph agents.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -16,9 +17,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Load environment variables
 load_dotenv()
 
-from mayflower_sandbox.tools import create_sandbox_tools
-from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent  # noqa: F401
+from langchain_openai import ChatOpenAI
+
+from mayflower_sandbox.tools import create_sandbox_tools
 
 
 @pytest.fixture
@@ -63,7 +65,7 @@ def agent(db_pool):
     tools = create_sandbox_tools(db_pool, thread_id="langgraph_test")
 
     # Create LLM
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
     # Create ReAct agent
     agent = create_agent(llm, tools)
