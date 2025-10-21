@@ -200,7 +200,22 @@ except ImportError:
     await micropip.install('cloudpickle')
     import cloudpickle
 
-_session_dict = {k: v for k, v in globals().items() if not k.startswith('_')}
+# Filter out unpicklable objects (file handles, built-in types, etc.)
+import types
+_globals_snapshot = dict(globals())  # Snapshot to avoid "changed size during iteration"
+_session_dict = {}
+for k, v in _globals_snapshot.items():
+    if k.startswith('_'):
+        continue
+    # Skip built-in types (classes like int, str, etc.)
+    if isinstance(v, type) and v.__module__ == 'builtins':
+        continue
+    # Skip file-like objects (closed file handles cause pickle errors)
+    if hasattr(v, 'read') or hasattr(v, 'write'):
+        continue
+    # cloudpickle can handle modules by reference, so include them
+    _session_dict[k] = v
+
 list(cloudpickle.dumps(_session_dict))
 `);
         result.sessionBytes = sessionBytesResult.toJs();

@@ -2,10 +2,11 @@
 Tests for session recovery and stateful execution.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -182,7 +183,7 @@ async def test_stateful_executor_isolates_threads(db_pool, clean_db):
     await executor2.execute("x = 200")
 
     # Thread 1 should still have x=100
-    result1 = await executor2.execute("print(x)")
+    result1 = await executor1.execute("print(x)")
     assert "100" in result1.stdout
 
     # Thread 2 should have x=200
