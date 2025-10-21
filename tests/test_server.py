@@ -2,16 +2,17 @@
 Tests for file serving HTTP API.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from mayflower_sandbox.server import FileServer
 from mayflower_sandbox.filesystem import VirtualFilesystem
+from mayflower_sandbox.server import FileServer
 
 
 @pytest.fixture

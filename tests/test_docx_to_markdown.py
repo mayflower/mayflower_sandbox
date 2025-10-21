@@ -2,20 +2,22 @@
 Test docx to markdown conversion using mammoth.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 load_dotenv()
 
-from mayflower_sandbox.tools import create_sandbox_tools
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
+
+from mayflower_sandbox.tools import create_sandbox_tools
 
 
 @pytest.fixture

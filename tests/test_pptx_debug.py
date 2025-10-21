@@ -2,10 +2,11 @@
 Debug test for PPTX helpers.
 """
 
-import pytest
-import asyncpg
 import os
 import sys
+
+import asyncpg
+import pytest
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))

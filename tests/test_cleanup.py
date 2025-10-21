@@ -2,11 +2,12 @@
 Tests for cleanup job.
 """
 
-import pytest
-import asyncpg
 import asyncio
 import os
 import sys
+
+import asyncpg
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
