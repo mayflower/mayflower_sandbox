@@ -33,6 +33,9 @@ async def db_pool():
         "user": os.getenv("POSTGRES_USER", "postgres"),
         "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
         "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        "min_size": 10,
+        "max_size": 50,  # Increase pool size for concurrent LangGraph agent operations
+        "command_timeout": 60,
     }
 
     pool = await asyncpg.create_pool(**db_config)

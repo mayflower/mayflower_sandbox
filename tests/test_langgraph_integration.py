@@ -17,8 +17,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Load environment variables
 load_dotenv()
 
-from langchain.agents import create_agent  # noqa: F401
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
 
 from mayflower_sandbox.tools import create_sandbox_tools
 
@@ -32,6 +33,9 @@ async def db_pool():
         "user": os.getenv("POSTGRES_USER", "postgres"),
         "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
         "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        "min_size": 10,
+        "max_size": 50,  # Increase pool size for concurrent LangGraph agent operations
+        "command_timeout": 60,
     }
 
     pool = await asyncpg.create_pool(**db_config)
@@ -59,7 +63,7 @@ async def clean_files(db_pool):
 
 
 @pytest.fixture
-def agent(db_pool):
+async def agent(db_pool):
     """Create LangGraph agent with sandbox tools."""
     # Create sandbox tools
     tools = create_sandbox_tools(db_pool, thread_id="langgraph_test")
@@ -67,8 +71,8 @@ def agent(db_pool):
     # Create LLM
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
-    # Create ReAct agent
-    agent = create_agent(llm, tools)
+    # Create ReAct agent with checkpointer
+    agent = create_react_agent(llm, tools, checkpointer=MemorySaver())
 
     return agent
 
@@ -78,12 +82,13 @@ def agent(db_pool):
 )
 async def test_agent_file_creation(agent, clean_files):
     """Test agent can create files using write_file tool."""
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {
             "messages": [
                 ("user", "Create a file called /tmp/hello.txt with the content 'Hello, World!'")
             ]
-        }
+        },
+        config={"configurable": {"thread_id": "test-file-creation"}},
     )
 
     # Check the agent's response
@@ -91,7 +96,10 @@ async def test_agent_file_creation(agent, clean_files):
     assert last_message.content is not None
 
     # Verify file was created by checking with list_files
-    result2 = agent.invoke({"messages": [("user", "List all files in /tmp/")]})
+    result2 = await agent.ainvoke(
+        {"messages": [("user", "List all files in /tmp/")]},
+        config={"configurable": {"thread_id": "test-file-creation"}},
+    )
 
     last_message2 = result2["messages"][-1]
     response = last_message2.content.lower()
@@ -103,7 +111,7 @@ async def test_agent_file_creation(agent, clean_files):
 )
 async def test_agent_python_execution(agent, clean_files):
     """Test agent can execute Python code."""
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {
             "messages": [
                 (
@@ -111,7 +119,8 @@ async def test_agent_python_execution(agent, clean_files):
                     "Execute Python code to calculate the sum of numbers from 1 to 10 and print the result",
                 )
             ]
-        }
+        },
+        config={"configurable": {"thread_id": "test-python"}},
     )
 
     last_message = result["messages"][-1]
@@ -126,7 +135,7 @@ async def test_agent_python_execution(agent, clean_files):
 )
 async def test_agent_file_operations_workflow(agent, clean_files):
     """Test agent can perform complete file workflow: write, read, process."""
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {
             "messages": [
                 (
@@ -137,7 +146,8 @@ async def test_agent_file_operations_workflow(agent, clean_files):
 3. Tell me the average age""",
                 )
             ]
-        }
+        },
+        config={"configurable": {"thread_id": "test-workflow"}},
     )
 
     last_message = result["messages"][-1]
@@ -163,8 +173,9 @@ async def test_agent_read_file(agent, db_pool, clean_files):
             18,
         )
 
-    result = agent.invoke(
-        {"messages": [("user", "Read the file /tmp/secret.txt and tell me what it says")]}
+    result = await agent.ainvoke(
+        {"messages": [("user", "Read the file /tmp/secret.txt and tell me what it says")]},
+        config={"configurable": {"thread_id": "test-read"}},
     )
 
     last_message = result["messages"][-1]
@@ -192,8 +203,9 @@ async def test_agent_list_and_delete(agent, db_pool, clean_files):
         )
 
     # Ask agent to list and delete
-    result = agent.invoke(
-        {"messages": [("user", "List all files in /tmp/ and then delete /tmp/file1.txt")]}
+    result = await agent.ainvoke(
+        {"messages": [("user", "List all files in /tmp/ and then delete /tmp/file1.txt")]},
+        config={"configurable": {"thread_id": "test-list-delete"}},
     )
 
     last_message = result["messages"][-1]
@@ -208,7 +220,7 @@ async def test_agent_list_and_delete(agent, db_pool, clean_files):
 )
 async def test_agent_data_analysis_task(agent, clean_files):
     """Test agent can perform a complete data analysis task."""
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {
             "messages": [
                 (
@@ -221,7 +233,8 @@ async def test_agent_data_analysis_task(agent, clean_files):
 5. Tell me the total revenue""",
                 )
             ]
-        }
+        },
+        config={"configurable": {"thread_id": "test-analysis"}},
     )
 
     last_message = result["messages"][-1]
@@ -238,12 +251,13 @@ async def test_agent_data_analysis_task(agent, clean_files):
 async def test_agent_error_handling(agent, clean_files):
     """Test agent handles errors gracefully."""
     # Ask agent to read non-existent file
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {
             "messages": [
                 ("user", "Read the file /tmp/this_does_not_exist.txt and tell me what it says")
             ]
-        }
+        },
+        config={"configurable": {"thread_id": "test-error"}},
     )
 
     last_message = result["messages"][-1]
@@ -263,7 +277,7 @@ async def test_agent_error_handling(agent, clean_files):
 )
 async def test_agent_python_with_file_output(agent, clean_files):
     """Test agent can execute Python that creates files."""
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {
             "messages": [
                 (
@@ -274,7 +288,8 @@ async def test_agent_python_with_file_output(agent, clean_files):
 3. Prints 'Done!'""",
                 )
             ]
-        }
+        },
+        config={"configurable": {"thread_id": "test-file-output"}},
     )
 
     last_message = result["messages"][-1]
