@@ -41,13 +41,28 @@ async def db_pool():
 
     # Connect to test database
     pool = await asyncpg.create_pool(**db_config)
+
+    # Check if tables already exist (created by CI setup)
+    async with pool.acquire() as conn:
+        tables_exist = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public'
+                AND table_name = 'sandbox_sessions'
+            )
+        """)
+
+    tables_existed_before = tables_exist
+
     yield pool
 
-    # Cleanup: drop all tables after tests
-    async with pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS sandbox_session_bytes CASCADE")
-        await conn.execute("DROP TABLE IF EXISTS sandbox_filesystem CASCADE")
-        await conn.execute("DROP TABLE IF EXISTS sandbox_sessions CASCADE")
+    # Cleanup: only drop tables if WE created them (not if they existed before)
+    # This prevents breaking other tests when running in CI
+    if not tables_existed_before:
+        async with pool.acquire() as conn:
+            await conn.execute("DROP TABLE IF EXISTS sandbox_session_bytes CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS sandbox_filesystem CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS sandbox_sessions CASCADE")
 
     await pool.close()
 
