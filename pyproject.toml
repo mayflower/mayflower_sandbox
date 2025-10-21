@@ -23,6 +23,8 @@ dev = [
     "asyncpg-stubs>=0.30.0",
     "python-dotenv>=1.0.0",
     "aiohttp>=3.9.0",
+    "langchain-openai>=0.3.0",
+    "langgraph>=0.2.0",
 ]
 examples = [
     "langgraph>=0.2.0",
