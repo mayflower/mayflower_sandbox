@@ -169,7 +169,7 @@ class VirtualFilesystem:
 
             logger.debug(f"Wrote file {normalized_path} ({size} bytes) for thread {self.thread_id}")
 
-            return dict(result)
+            return dict(result) if result else {}
 
     async def read_file(self, file_path: str) -> dict:
         """Read file from filesystem.

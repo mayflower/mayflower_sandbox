@@ -90,7 +90,7 @@ class SandboxManager:
             )
 
             logger.info(f"Created new session for thread {thread_id}, expires {expires_at}")
-            return dict(session)
+            return dict(session) if session else {}
 
     async def get_session(self, thread_id: str) -> dict:
         """Get existing session.
