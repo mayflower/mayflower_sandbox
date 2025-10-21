@@ -49,6 +49,22 @@ class VirtualFilesystem:
         self.db = db_pool
         self.thread_id = thread_id
 
+    async def ensure_session(self) -> None:
+        """Ensure session exists in database for this thread_id.
+
+        Creates session if it doesn't exist. This is called automatically
+        before file operations to prevent foreign key constraint violations.
+        """
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sandbox_sessions (thread_id, metadata)
+                VALUES ($1, '{}')
+                ON CONFLICT (thread_id) DO NOTHING
+                """,
+                self.thread_id,
+            )
+
     def validate_path(self, file_path: str) -> str:
         """Validate and normalize file path.
 
@@ -131,6 +147,9 @@ class VirtualFilesystem:
             InvalidPathError: If path is invalid
             FileTooLargeError: If content exceeds 20MB
         """
+        # Ensure session exists before writing
+        await self.ensure_session()
+
         # Validate path
         normalized_path = self.validate_path(file_path)
 
