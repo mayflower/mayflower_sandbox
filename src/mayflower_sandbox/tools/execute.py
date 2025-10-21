@@ -298,11 +298,19 @@ Examples:
             files_str = "\n".join(f"  - {path}" for path in result.created_files)
             response_parts.append(f"Created files:\n{files_str}")
 
+        # Build response message
         if result.success:
-            return (
+            message = (
                 "\n\n".join(response_parts)
                 if response_parts
                 else "Execution successful (no output)"
             )
         else:
-            return "\n\n".join(response_parts) if response_parts else "Execution failed"
+            message = "\n\n".join(response_parts) if response_parts else "Execution failed"
+
+        # Return tuple (state_updates, message) to update agent state with created files
+        # This allows LangGraph to track files in the file_list state field
+        if result.created_files:
+            return ({"file_list": result.created_files}, message)
+        else:
+            return message
