@@ -2,7 +2,10 @@
 FileWriteTool - Write files to sandbox VFS.
 """
 
+from typing import Annotated
+
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
+from langchain_core.tools import InjectedToolCallId
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
@@ -14,6 +17,7 @@ class FileWriteInput(BaseModel):
 
     file_path: str = Field(description="Path where to write the file (e.g., /tmp/data.txt)")
     content: str = Field(description="Content to write to the file")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 class FileWriteTool(SandboxTool):
@@ -42,6 +46,7 @@ Returns:
         self,
         file_path: str,
         content: str,
+        tool_call_id: str,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Write file to VFS."""
@@ -57,9 +62,16 @@ Returns:
 
             # Update agent state with created file if using LangGraph
             try:
+                from langchain_core.messages import ToolMessage
                 from langgraph.types import Command
 
-                return Command(update={"created_files": [file_path]}, resume=message)
+                # Build state update with both custom field and ToolMessage
+                state_update = {
+                    "created_files": [file_path],
+                    "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
+                }
+
+                return Command(update=state_update, resume=message)  # type: ignore[return-value]
             except ImportError:
                 return message
         except ValueError as e:

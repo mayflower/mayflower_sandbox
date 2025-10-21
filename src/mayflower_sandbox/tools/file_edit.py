@@ -2,7 +2,10 @@
 FileEditTool - Edit files using string replacement.
 """
 
+from typing import Annotated
+
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
+from langchain_core.tools import InjectedToolCallId
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
@@ -15,6 +18,7 @@ class FileEditInput(BaseModel):
     file_path: str = Field(description="Path to the file to edit (e.g., /tmp/config.txt)")
     old_string: str = Field(description="Unique string to replace (must appear exactly once)")
     new_string: str = Field(description="New string to replace it with")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 class FileEditTool(SandboxTool):
@@ -56,6 +60,7 @@ Example:
         file_path: str,
         old_string: str,
         new_string: str,
+        tool_call_id: str,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Edit file using string replacement."""
@@ -93,9 +98,16 @@ Example:
 
             # Update agent state with modified file if using LangGraph
             try:
+                from langchain_core.messages import ToolMessage
                 from langgraph.types import Command
 
-                return Command(update={"created_files": [file_path]}, resume=message)
+                # Build state update with both custom field and ToolMessage
+                state_update = {
+                    "created_files": [file_path],
+                    "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
+                }
+
+                return Command(update=state_update, resume=message)  # type: ignore[return-value]
             except ImportError:
                 return message
 

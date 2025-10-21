@@ -4,8 +4,10 @@ ExecutePythonTool - Execute Python code in sandbox.
 
 import logging
 import os
+from typing import Annotated
 
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
+from langchain_core.tools import InjectedToolCallId
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.sandbox_executor import SandboxExecutor
@@ -145,6 +147,7 @@ class ExecutePythonInput(BaseModel):
     code: str = Field(
         description="Python code to execute in the sandbox. Use print() to show output."
     )
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 class ExecutePythonTool(SandboxTool):
@@ -254,6 +257,7 @@ Examples:
     async def _arun(  # type: ignore[override]
         self,
         code: str,
+        tool_call_id: str,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Execute Python code in sandbox."""
@@ -312,10 +316,16 @@ Examples:
         # Return Command to update created_files in state, or plain message otherwise
         if result.created_files:
             try:
+                from langchain_core.messages import ToolMessage
                 from langgraph.types import Command
 
-                # Return Command with state update
-                return Command(update={"created_files": result.created_files}, resume=message)
+                # Build state update with both custom field and ToolMessage
+                state_update = {
+                    "created_files": result.created_files,
+                    "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
+                }
+
+                return Command(update=state_update, resume=message)  # type: ignore[return-value]
             except ImportError:
                 # LangGraph not available, return plain message
                 return message

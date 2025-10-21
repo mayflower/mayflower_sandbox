@@ -63,7 +63,9 @@ async def test_write_file_tool_updates_state(db_pool, clean_files):
 
     tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
 
-    result = await tool._arun(file_path="/tmp/test.txt", content="Hello State!")
+    result = await tool._arun(
+        file_path="/tmp/test.txt", content="Hello State!", tool_call_id="test_call_123"
+    )
 
     # Check if result is a Command object with state update
     from langgraph.types import Command
@@ -83,12 +85,17 @@ async def test_file_edit_tool_updates_state(db_pool, clean_files):
 
     # First create a file
     write_tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
-    await write_tool._arun(file_path="/tmp/edit_test.txt", content="Old content")
+    await write_tool._arun(
+        file_path="/tmp/edit_test.txt", content="Old content", tool_call_id="test_call_write"
+    )
 
     # Now edit it
     edit_tool = FileEditTool(db_pool=db_pool, thread_id="agent_state_test")
     result = await edit_tool._arun(
-        file_path="/tmp/edit_test.txt", old_string="Old content", new_string="New content"
+        file_path="/tmp/edit_test.txt",
+        old_string="Old content",
+        new_string="New content",
+        tool_call_id="test_call_edit",
     )
 
     # Check if result is a Command object with state update
@@ -112,7 +119,7 @@ with open('/tmp/python_test.txt', 'w') as f:
 print('File created')
 """
 
-    result = await tool._arun(code=code)
+    result = await tool._arun(code=code, tool_call_id="test_call_execute")
 
     # Check if result is a Command object with state update
     assert isinstance(result, Command), f"Expected Command, got {type(result)}"
