@@ -27,6 +27,9 @@ examples = [
     "langchain-anthropic>=0.3.0",
 ]
 
+[tool.setuptools.package-data]
+mayflower_sandbox = ["*.ts", "*.js", "helpers/**/*.py"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
