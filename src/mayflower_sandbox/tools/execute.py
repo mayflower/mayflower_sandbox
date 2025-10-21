@@ -257,7 +257,7 @@ Examples:
     async def _arun(  # type: ignore[override]
         self,
         code: str,
-        tool_call_id: str,
+        tool_call_id: str = "",
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Execute Python code in sandbox."""
@@ -312,9 +312,8 @@ Examples:
         else:
             message = "\n\n".join(response_parts) if response_parts else "Execution failed"
 
-        # Update agent state with created files if using LangGraph
-        # Return Command to update created_files in state, or plain message otherwise
-        if result.created_files:
+        # Update agent state with created files if using LangGraph and tool_call_id provided
+        if result.created_files and tool_call_id:
             try:
                 from langchain_core.messages import ToolMessage
                 from langgraph.types import Command
@@ -327,7 +326,6 @@ Examples:
 
                 return Command(update=state_update, resume=message)  # type: ignore[return-value]
             except ImportError:
-                # LangGraph not available, return plain message
-                return message
-        else:
-            return message
+                pass
+
+        return message

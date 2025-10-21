@@ -46,7 +46,7 @@ Returns:
         self,
         file_path: str,
         content: str,
-        tool_call_id: str,
+        tool_call_id: str = "",
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Write file to VFS."""
@@ -60,20 +60,23 @@ Returns:
             await vfs.write_file(file_path, content_bytes)
             message = f"Successfully wrote {len(content_bytes)} bytes to {file_path}"
 
-            # Update agent state with created file if using LangGraph
-            try:
-                from langchain_core.messages import ToolMessage
-                from langgraph.types import Command
+            # Update agent state with created file if using LangGraph and tool_call_id provided
+            if tool_call_id:
+                try:
+                    from langchain_core.messages import ToolMessage
+                    from langgraph.types import Command
 
-                # Build state update with both custom field and ToolMessage
-                state_update = {
-                    "created_files": [file_path],
-                    "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
-                }
+                    # Build state update with both custom field and ToolMessage
+                    state_update = {
+                        "created_files": [file_path],
+                        "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
+                    }
 
-                return Command(update=state_update, resume=message)  # type: ignore[return-value]
-            except ImportError:
-                return message
+                    return Command(update=state_update, resume=message)  # type: ignore[return-value]
+                except ImportError:
+                    pass
+
+            return message
         except ValueError as e:
             return f"Error: {e}"
         except Exception as e:

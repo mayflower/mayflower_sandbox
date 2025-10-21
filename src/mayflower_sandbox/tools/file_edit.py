@@ -60,7 +60,7 @@ Example:
         file_path: str,
         old_string: str,
         new_string: str,
-        tool_call_id: str,
+        tool_call_id: str = "",
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Edit file using string replacement."""
@@ -96,20 +96,23 @@ Example:
                 f"Successfully edited {file_path}\n\nReplaced:\n{old_string}\n\nWith:\n{new_string}"
             )
 
-            # Update agent state with modified file if using LangGraph
-            try:
-                from langchain_core.messages import ToolMessage
-                from langgraph.types import Command
+            # Update agent state with modified file if using LangGraph and tool_call_id provided
+            if tool_call_id:
+                try:
+                    from langchain_core.messages import ToolMessage
+                    from langgraph.types import Command
 
-                # Build state update with both custom field and ToolMessage
-                state_update = {
-                    "created_files": [file_path],
-                    "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
-                }
+                    # Build state update with both custom field and ToolMessage
+                    state_update = {
+                        "created_files": [file_path],
+                        "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
+                    }
 
-                return Command(update=state_update, resume=message)  # type: ignore[return-value]
-            except ImportError:
-                return message
+                    return Command(update=state_update, resume=message)  # type: ignore[return-value]
+                except ImportError:
+                    pass
+
+            return message
 
         except FileNotFoundError:
             return f"Error: File not found: {file_path}"
