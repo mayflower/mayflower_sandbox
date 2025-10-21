@@ -87,9 +87,17 @@ Example:
             # Write back
             await vfs.write_file(file_path, new_content_bytes)
 
-            return (
+            message = (
                 f"Successfully edited {file_path}\n\nReplaced:\n{old_string}\n\nWith:\n{new_string}"
             )
+
+            # Update agent state with modified file if using LangGraph
+            try:
+                from langgraph.types import Command
+
+                return Command(update={"created_files": [file_path]}, resume=message)
+            except ImportError:
+                return message
 
         except FileNotFoundError:
             return f"Error: File not found: {file_path}"

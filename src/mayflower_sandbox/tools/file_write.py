@@ -53,7 +53,15 @@ Returns:
         try:
             content_bytes = content.encode("utf-8")
             await vfs.write_file(file_path, content_bytes)
-            return f"Successfully wrote {len(content_bytes)} bytes to {file_path}"
+            message = f"Successfully wrote {len(content_bytes)} bytes to {file_path}"
+
+            # Update agent state with created file if using LangGraph
+            try:
+                from langgraph.types import Command
+
+                return Command(update={"created_files": [file_path]}, resume=message)
+            except ImportError:
+                return message
         except ValueError as e:
             return f"Error: {e}"
         except Exception as e:
