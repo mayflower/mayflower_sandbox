@@ -160,14 +160,29 @@ class ExecutePythonTool(SandboxTool):
     name: str = "execute_python"
     description: str = """Execute Python code in a secure Pyodide sandbox environment.
 
-The sandbox has access to a persistent filesystem backed by PostgreSQL.
-Files created in /tmp or /data will persist across executions.
+⚠️ CRITICAL: You MUST use print() to display output! The sandbox only shows what you print.
 
-PRE-INSTALLED PACKAGES (standard library - use directly):
-- json, csv, math, random, datetime, sqlite3, etc.
+**FILE CREATION SUPPORT**: You CAN create files (txt, Excel, CSV, PDF, images, etc.)!
+Files created in /tmp or /data directories are automatically saved to PostgreSQL and
+displayed to the user. They persist across executions.
 
-SCIENTIFIC PACKAGES (install via micropip):
-⚠️ IMPORTANT: NumPy, pandas, matplotlib, scipy are available but must be installed first!
+Example - Create a plot:
+```python
+import micropip
+await micropip.install('matplotlib')
+import matplotlib.pyplot as plt
+import numpy as np
+x = [0, 1, 2, 3, 4]
+plt.plot(x, [v**2 for v in x])
+plt.savefig('/tmp/plot.png')
+print("Plot created at /tmp/plot.png")
+```
+
+PRE-INSTALLED PACKAGES (standard library - use directly, no installation needed):
+- json, csv, math, random, datetime, sqlite3, pathlib, re, etc.
+
+SCIENTIFIC & DATA PACKAGES (must install via micropip - use await!):
+⚠️ IMPORTANT: These packages are NOT pre-installed. You MUST install them first:
 
   import micropip
   await micropip.install('numpy')
@@ -250,7 +265,7 @@ Examples:
 ⚠️ IMPORTANT PACKAGE NOTES:
 - Use fpdf2 for PDF creation (NOT reportlab - it doesn't work in Pyodide)
 - Use pypdf for PDF manipulation (merge, split, extract text)
-- pillow, numpy, pandas, matplotlib are built-in (no install needed)
+- ALL packages (numpy, pandas, matplotlib, etc.) must be installed via micropip
 """
     args_schema: type[BaseModel] = ExecutePythonInput
 
@@ -297,10 +312,29 @@ Examples:
         if result.stderr:
             response_parts.append(f"Error:\n{result.stderr}")
 
-        # List created files
+        # List created files with inline images
         if result.created_files:
-            files_str = "\n".join(f"  - {path}" for path in result.created_files)
-            response_parts.append(f"Created files:\n{files_str}")
+            # Separate image files from other files
+            image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp"}
+            image_files = []
+            other_files = []
+
+            for path in result.created_files:
+                ext = os.path.splitext(path)[1].lower()
+                if ext in image_extensions:
+                    image_files.append(path)
+                else:
+                    other_files.append(path)
+
+            # Format image files as inline markdown images
+            if image_files:
+                images_md = "\n\n".join(f"![Generated image]({path})" for path in image_files)
+                response_parts.append(f"Generated images:\n\n{images_md}")
+
+            # Format other files as a list
+            if other_files:
+                files_str = "\n".join(f"  - {path}" for path in other_files)
+                response_parts.append(f"Created files:\n{files_str}")
 
         # Build response message
         if result.success:
