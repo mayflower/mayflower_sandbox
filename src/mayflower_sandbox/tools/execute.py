@@ -86,11 +86,24 @@ CRITICAL RECOMMENDATIONS FOR COMMON TASKS:
 - Image processing: Use pillow (already built-in)
 - Data analysis: Use pandas/numpy (already built-in)
 
+UNICODE/PDF SPECIFIC GUIDANCE:
+- fpdf2's built-in fonts (Helvetica, Times, Courier) only support Latin-1 (no π, °, €, etc.)
+- For Unicode characters in PDFs: YOU CAN load TrueType fonts in Pyodide!
+- Correct approach for Unicode in fpdf2:
+  1. Fetch font from CDN: from pyodide.http import pyfetch; response = await pyfetch('https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans.ttf')
+  2. Write to virtual FS: with open('/tmp/DejaVuSans.ttf', 'wb') as f: f.write(await response.bytes())
+  3. Add font: pdf.add_font('DejaVu', '', '/tmp/DejaVuSans.ttf')
+  4. Use it: pdf.set_font('DejaVu', size=12)
+- Alternative (simpler): Replace Unicode chars with ASCII (π→"pi", °→"deg") if font loading fails
+- For new_x/new_y deprecation: Use new_x=XPos.LMARGIN, new_y=YPos.NEXT (from fpdf import XPos, YPos)
+
 Provide:
-1. Explanation: What's actually happening? (1-2 sentences)
-2. Recommendation: What to try next? (1-2 sentences)
+1. Explanation: What's actually happening? (1-2 sentences, be specific)
+2. Recommendation: What to try next? (1-2 sentences, ONLY suggest solutions that work in Pyodide)
+   - If Unicode error in fpdf2 → recommend fetching DejaVu font from jsdelivr CDN (see example above)
    - If trying reportlab → recommend fpdf2
    - If package not available → suggest working alternatives
+   - Font files CAN be loaded in Pyodide by fetching from CDN and writing to virtual FS
 
 Format:
 EXPLANATION: [explanation]
@@ -199,7 +212,34 @@ For Excel files:
 For PDF creation (use fpdf2, NOT reportlab):
   import micropip
   await micropip.install('fpdf2')
-  from fpdf import FPDF
+  from fpdf import FPDF, XPos, YPos
+
+  # Basic PDF (ASCII only):
+  pdf = FPDF()
+  pdf.add_page()
+  pdf.set_font("Helvetica", size=12)
+  pdf.cell(0, 10, "Hello World", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+  pdf.output('/tmp/basic.pdf')
+
+  # PDF with Unicode (π, °, €, etc.) - Load font from CDN:
+  from pyodide.http import pyfetch
+  font_response = await pyfetch('https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans.ttf')
+  with open('/tmp/DejaVuSans.ttf', 'wb') as f:
+      f.write(await font_response.bytes())
+
+  pdf = FPDF()
+  pdf.add_page()
+  pdf.add_font('DejaVu', '', '/tmp/DejaVuSans.ttf')  # Register Unicode font
+  pdf.set_font('DejaVu', size=12)
+  pdf.cell(0, 10, "Temperature: 180°C (π radians)", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+  pdf.output('/tmp/unicode.pdf')
+  print("PDF with Unicode created!")
+
+  # Or use helper:
+  from document.pdf_creation import pdf_create_with_unicode
+  paragraphs = ['Temperature: 180°C', 'Cost: €125.50']
+  path = await pdf_create_with_unicode('Lab Report', paragraphs)
+
   # fpdf2 is pure Python and works in Pyodide
   # reportlab has C extensions and does NOT work
 

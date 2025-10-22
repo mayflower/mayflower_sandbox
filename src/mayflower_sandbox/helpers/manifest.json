@@ -178,6 +178,45 @@
         "text = pdf_extract_text(pdf_bytes)"
       ]
     },
+    "document.pdf_creation": {
+      "description": "PDF creation with Unicode support using fpdf2",
+      "functions": [
+        {
+          "name": "load_dejavu_font",
+          "description": "Fetch DejaVu Sans TTF from CDN",
+          "parameters": [],
+          "returns": "bytes"
+        },
+        {
+          "name": "pdf_create_with_unicode",
+          "description": "Create PDF with Unicode characters (π, °, €, etc.)",
+          "parameters": ["title", "content_paragraphs", "output_path"],
+          "returns": "str"
+        },
+        {
+          "name": "pdf_create_simple",
+          "description": "Create PDF with built-in fonts (ASCII only)",
+          "parameters": ["title", "content_paragraphs", "output_path", "ascii_replacements"],
+          "returns": "str"
+        }
+      ],
+      "dependencies": {
+        "stdlib": [],
+        "micropip": ["fpdf2"],
+        "pyodide": ["pyodide.http.pyfetch"]
+      },
+      "examples": [
+        "import micropip",
+        "await micropip.install('fpdf2')",
+        "from document.pdf_creation import pdf_create_with_unicode, pdf_create_simple",
+        "# Unicode support:",
+        "paragraphs = ['Temperature: 180°C (π radians)', 'Cost: €125.50']",
+        "path = await pdf_create_with_unicode('Lab Report', paragraphs)",
+        "# ASCII only:",
+        "replacements = {'π': 'pi', '°': 'deg'}",
+        "path = pdf_create_simple('Report', paragraphs, ascii_replacements=replacements)"
+      ]
+    },
     "document.xlsx_helpers": {
       "description": "Excel helpers using openpyxl",
       "functions": [

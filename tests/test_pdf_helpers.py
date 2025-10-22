@@ -9,25 +9,23 @@ import asyncpg
 import pytest
 from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 load_dotenv()
 
-from mayflower_sandbox.sandbox_executor import SandboxExecutor
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from mayflower_sandbox.sandbox_executor import SandboxExecutor  # noqa: E402
 
 
 @pytest.fixture
 async def db_pool():
     """Create test database connection pool."""
-    db_config = {
-        "host": os.getenv("POSTGRES_HOST", "localhost"),
-        "database": os.getenv("POSTGRES_DB", "mayflower_test"),
-        "user": os.getenv("POSTGRES_USER", "postgres"),
-        "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-        "port": int(os.getenv("POSTGRES_PORT", "5432")),
-    }
-
-    pool = await asyncpg.create_pool(**db_config)
+    pool = await asyncpg.create_pool(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        database=os.getenv("POSTGRES_DB", "mayflower_test"),
+        user=os.getenv("POSTGRES_USER", "postgres"),
+        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+    )
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -202,3 +200,128 @@ print("✓ pdf_extract_text works")
 
     assert result.success, f"Test failed: {result.stderr}"
     assert "pdf_extract_text works" in result.stdout
+
+
+async def test_pdf_create_simple(db_pool):
+    """Test pdf_create_simple function (ASCII only)."""
+    executor = SandboxExecutor(
+        db_pool, "pdf_helpers_test", allow_net=True, stateful=True, timeout_seconds=90.0
+    )
+
+    code = """
+import micropip
+await micropip.install('fpdf2')
+
+from document.pdf_creation import pdf_create_simple
+
+# Create a simple PDF with ASCII content
+paragraphs = [
+    "This is the first paragraph.",
+    "This is the second paragraph with some data.",
+    "Final paragraph of the document."
+]
+
+path = pdf_create_simple(
+    title="Test Report",
+    content_paragraphs=paragraphs,
+    output_path="/tmp/simple_test.pdf"
+)
+
+# Verify file exists and is not empty
+import os
+assert os.path.exists(path), "PDF file was not created"
+file_size = os.path.getsize(path)
+assert file_size > 0, "PDF file is empty"
+
+# Print success message
+print(f"PDF created successfully at {path} ({file_size} bytes)")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success, f"Test failed: {result.stderr}"
+    assert result.created_files is not None
+    assert "/tmp/simple_test.pdf" in result.created_files
+
+
+async def test_pdf_create_with_unicode(db_pool):
+    """Test pdf_create_with_unicode function with special characters."""
+    executor = SandboxExecutor(
+        db_pool, "pdf_helpers_test", allow_net=True, stateful=True, timeout_seconds=120.0
+    )
+
+    code = """
+import micropip
+await micropip.install('fpdf2')
+
+from document.pdf_creation import pdf_create_with_unicode
+
+# Create a PDF with Unicode characters
+paragraphs = [
+    "Temperature: 180°C (π radians)",
+    "Measurement: 5.2µm ± 0.1µm",
+    "Cost: €125.50 (≈ $135)",
+    "Greek letters: α β γ δ θ λ σ Ω"
+]
+
+path = await pdf_create_with_unicode(
+    title="Lab Report with Unicode",
+    content_paragraphs=paragraphs,
+    output_path="/tmp/unicode_test.pdf"
+)
+
+# Verify file exists and has reasonable size
+import os
+assert os.path.exists(path), "PDF file was not created"
+file_size = os.path.getsize(path)
+assert file_size > 1000, f"PDF file too small: {file_size} bytes"
+
+print(f"Unicode PDF created successfully ({file_size} bytes)")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success, f"Test failed: {result.stderr}"
+    assert result.created_files is not None
+    assert "/tmp/unicode_test.pdf" in result.created_files
+
+
+async def test_pdf_create_simple_with_replacements(db_pool):
+    """Test pdf_create_simple with ASCII replacements for Unicode characters."""
+    executor = SandboxExecutor(
+        db_pool, "pdf_helpers_test", allow_net=True, stateful=True, timeout_seconds=90.0
+    )
+
+    code = """
+import micropip
+await micropip.install('fpdf2')
+
+from document.pdf_creation import pdf_create_simple, COMMON_UNICODE_REPLACEMENTS
+
+# Create a PDF with Unicode characters replaced with ASCII
+paragraphs = [
+    "Temperature: 180°C (π radians)",
+    "Measurement: 5.2µm ± 0.1µm",
+]
+
+path = pdf_create_simple(
+    title="Report with ASCII replacements",
+    content_paragraphs=paragraphs,
+    output_path="/tmp/ascii_replaced.pdf",
+    ascii_replacements=COMMON_UNICODE_REPLACEMENTS
+)
+
+# Verify file exists
+import os
+assert os.path.exists(path), "PDF file was not created"
+file_size = os.path.getsize(path)
+assert file_size > 0, "PDF file is empty"
+
+print(f"PDF with ASCII replacements created ({file_size} bytes)")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success, f"Test failed: {result.stderr}"
+    assert result.created_files is not None
+    assert "/tmp/ascii_replaced.pdf" in result.created_files
