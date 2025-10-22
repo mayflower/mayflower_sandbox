@@ -27,6 +27,22 @@ interface ExecutionResult {
 }
 
 /**
+ * Filter out micropip package loading messages from stdout
+ */
+function filterMicropipMessages(stdout: string): string {
+  const lines = stdout.split('\n');
+  const filtered = lines.filter(line => {
+    // Filter out micropip loading messages
+    if (line.startsWith('Loading ')) return false;
+    if (line.startsWith('Didn\'t find package ')) return false;
+    if (line.startsWith('Package ') && line.includes(' loaded from ')) return false;
+    if (line.startsWith('Loaded ')) return false;
+    return true;
+  });
+  return filtered.join('\n');
+}
+
+/**
  * Read binary file data from stdin
  */
 async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
@@ -75,6 +91,38 @@ async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
 }
 
 /**
+ * Create a snapshot of file metadata (path + size) for comparison
+ */
+function snapshotFiles(pyodide: any, paths: string[]): Map<string, number> {
+  const snapshot = new Map<string, number>();
+
+  for (const path of paths) {
+    try {
+      const exists = pyodide.FS.analyzePath(path).exists;
+      if (!exists) continue;
+
+      const stat = pyodide.FS.stat(path);
+      if (pyodide.FS.isDir(stat.mode)) {
+        const entries = pyodide.FS.readdir(path);
+        for (const entry of entries) {
+          if (entry === "." || entry === "..") continue;
+          const fullPath = path === "/" ? `/${entry}` : `${path}/${entry}`;
+          const subSnapshot = snapshotFiles(pyodide, [fullPath]);
+          subSnapshot.forEach((size, filePath) => snapshot.set(filePath, size));
+        }
+      } else {
+        // Store file path and size
+        snapshot.set(path, stat.size);
+      }
+    } catch (e) {
+      // Skip files we can't read
+    }
+  }
+
+  return snapshot;
+}
+
+/**
  * Collect files from Pyodide filesystem
  */
 function collectFiles(pyodide: any, paths: string[]): Array<{ path: string; content: number[] }> {
@@ -109,6 +157,29 @@ function collectFiles(pyodide: any, paths: string[]): Array<{ path: string; cont
   }
 
   return files;
+}
+
+/**
+ * Collect only new or modified files by comparing snapshots
+ */
+function collectChangedFiles(
+  pyodide: any,
+  paths: string[],
+  beforeSnapshot: Map<string, number>
+): Array<{ path: string; content: number[] }> {
+  const allFiles = collectFiles(pyodide, paths);
+  const changedFiles: Array<{ path: string; content: number[] }> = [];
+
+  for (const file of allFiles) {
+    const previousSize = beforeSnapshot.get(file.path);
+
+    // Include if file is new (didn't exist before) or modified (size changed)
+    if (previousSize === undefined || previousSize !== file.content.length) {
+      changedFiles.push(file);
+    }
+  }
+
+  return changedFiles;
 }
 
 /**
@@ -203,6 +274,9 @@ if 'matplotlib' not in sys.modules:
       // Setup failed, continue anyway (matplotlib might not be used)
     }
 
+    // Snapshot files before execution to track only new/modified files
+    const beforeSnapshot = snapshotFiles(pyodide, ["/tmp", "/data"]);
+
     // Execute code
     try {
       const execResult = await pyodide.runPythonAsync(options.code);
@@ -213,7 +287,8 @@ if 'matplotlib' not in sys.modules:
       result.success = false;
     }
 
-    result.stdout = stdoutBuffer;
+    // Filter out micropip loading messages to keep output clean
+    result.stdout = filterMicropipMessages(stdoutBuffer);
     result.stderr = stderrBuffer;
 
     // Save session state if stateful
@@ -268,8 +343,8 @@ list(cloudpickle.dumps(_session_dict))
       }
     }
 
-    // Collect created files
-    result.files = collectFiles(pyodide, ["/tmp", "/data"]);
+    // Collect only new or modified files (compare against pre-execution snapshot)
+    result.files = collectChangedFiles(pyodide, ["/tmp", "/data"], beforeSnapshot);
 
     return result;
   } catch (e) {

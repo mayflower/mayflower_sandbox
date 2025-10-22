@@ -291,7 +291,7 @@ Examples:
         if not result.success and result.stderr:
             analysis = await add_error_to_history(thread_id, code, result.stderr)
 
-        # Format response
+        # Format response - keep it clean and user-friendly
         response_parts = []
 
         # Show LLM analysis if this execution failed
@@ -306,13 +306,14 @@ Examples:
 
             response_parts.append("\n".join(warning_parts) + "\n")
 
+        # Show stdout without "Output:" label (user's print statements are the message)
         if result.stdout:
-            response_parts.append(f"Output:\n{result.stdout}")
+            response_parts.append(result.stdout.strip())
 
         if result.stderr:
             response_parts.append(f"Error:\n{result.stderr}")
 
-        # List created files with inline images
+        # Show created/modified files with inline images
         if result.created_files:
             # Separate image files from other files
             image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp"}
@@ -326,15 +327,18 @@ Examples:
                 else:
                     other_files.append(path)
 
-            # Format image files as inline markdown images
+            # Show image files inline (without header - images speak for themselves)
             if image_files:
+                # Just show the images, no extra labels
                 images_md = "\n\n".join(f"![Generated image]({path})" for path in image_files)
-                response_parts.append(f"Generated images:\n\n{images_md}")
+                response_parts.append(images_md)
 
-            # Format other files as a list
+            # Show other files as markdown links for easy download
             if other_files:
-                files_str = "\n".join(f"  - {path}" for path in other_files)
-                response_parts.append(f"Created files:\n{files_str}")
+                files_md = "\n".join(
+                    f"- [{os.path.basename(path)}]({path})" for path in other_files
+                )
+                response_parts.append(files_md)
 
         # Build response message
         if result.success:
