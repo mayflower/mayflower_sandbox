@@ -237,3 +237,36 @@ print("All files created")
         """)
 
         assert len(files) == 3
+
+
+async def test_matplotlib_auto_backend(executor, clean_files):
+    """Test matplotlib works without manual backend configuration."""
+    code = """
+import micropip
+await micropip.install("matplotlib")
+
+# Import matplotlib without setting backend manually
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Create a simple plot
+x = np.linspace(0, 2 * np.pi, 100)
+y = np.sin(x)
+
+plt.figure(figsize=(8, 6))
+plt.plot(x, y)
+plt.title('Sine Wave')
+plt.xlabel('x')
+plt.ylabel('sin(x)')
+plt.grid(True)
+
+# Save the plot
+plt.savefig('/tmp/sine_plot.png', dpi=150)
+print("Plot created successfully")
+"""
+    result = await executor.execute(code)
+
+    assert result.success is True, f"Execution failed: {result.stderr}"
+    assert "Plot created successfully" in result.stdout
+    assert result.created_files is not None
+    assert "/tmp/sine_plot.png" in result.created_files

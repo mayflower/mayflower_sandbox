@@ -187,6 +187,22 @@ importlib.invalidate_caches()
 `);
     }
 
+    // Pre-configure environment for common packages
+    // Set matplotlib backend to Agg for Deno/Node.js compatibility
+    // See: https://github.com/pyodide/matplotlib-pyodide/issues/36
+    try {
+      await pyodide.runPythonAsync(`
+import os
+import sys
+
+# Set Agg backend for matplotlib (required for Deno/Node.js/non-browser contexts)
+if 'matplotlib' not in sys.modules:
+    os.environ['MPLBACKEND'] = 'Agg'
+`);
+    } catch (e) {
+      // Setup failed, continue anyway (matplotlib might not be used)
+    }
+
     // Execute code
     try {
       const execResult = await pyodide.runPythonAsync(options.code);
