@@ -101,8 +101,15 @@ Returns:
         # Execute the code
         executor = SandboxExecutor(self.db_pool, thread_id)
         try:
-            result = await executor.execute_from_file(file_path, timeout=300)
+            exec_result = await executor.execute(code)
             logger.info("execute_code: Execution completed")
+
+            # Format result similar to ExecutePythonTool
+            result = exec_result.output if exec_result.output else "Code executed successfully"
+
+            # Add file creation info if files were created
+            if exec_result.created_files:
+                result += f"\n\nFiles created: {', '.join(exec_result.created_files)}"
 
             # Clear pending_code from state after successful execution
             if tool_call_id:
@@ -112,6 +119,7 @@ Returns:
 
                     state_update = {
                         "pending_code": "",  # Clear after execution
+                        "created_files": exec_result.created_files,
                         "messages": [ToolMessage(content=result, tool_call_id=tool_call_id)],
                     }
 
