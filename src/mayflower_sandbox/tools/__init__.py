@@ -14,10 +14,12 @@ from mayflower_sandbox.tools.file_grep import FileGrepTool
 from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
+from mayflower_sandbox.tools.run_file import RunPythonFileTool
 
 __all__ = [
     "SandboxTool",
     "ExecutePythonTool",
+    "RunPythonFileTool",
     "FileReadTool",
     "FileWriteTool",
     "FileListTool",

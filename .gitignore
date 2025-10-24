@@ -59,6 +59,7 @@ Thumbs.db
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Temporary files
 *.tmp

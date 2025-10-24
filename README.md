@@ -85,6 +85,7 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 ┌─────────────────────────────────────────────────────┐
 │ LangGraph Agent                                     │
 │ ├─ ExecutePythonTool (with helper modules)         │
+│ ├─ RunPythonFileTool (run existing .py files)      │
 │ ├─ FileReadTool                                     │
 │ ├─ FileWriteTool                                    │
 │ ├─ FileEditTool (str_replace)                       │
@@ -110,18 +111,19 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 8 Tools
+## The 9 Tools
 
-Mayflower Sandbox provides 8 LangChain tools:
+Mayflower Sandbox provides 9 LangChain tools:
 
 1. **ExecutePythonTool** - Execute Python code with automatic VFS sync
-2. **FileReadTool** - Read files from PostgreSQL VFS
-3. **FileWriteTool** - Write files to PostgreSQL VFS (20MB limit)
-4. **FileEditTool** (str_replace) - Edit files by replacing unique strings
-5. **FileListTool** - List files with optional prefix filtering
-6. **FileDeleteTool** - Delete files from VFS
-7. **FileGlobTool** (glob_files) - Find files matching glob patterns
-8. **FileGrepTool** (grep_files) - Search file contents with regex
+2. **RunPythonFileTool** - Execute existing Python files from VFS
+3. **FileReadTool** - Read files from PostgreSQL VFS
+4. **FileWriteTool** - Write files to PostgreSQL VFS (20MB limit)
+5. **FileEditTool** (str_replace) - Edit files by replacing unique strings
+6. **FileListTool** - List files with optional prefix filtering
+7. **FileDeleteTool** - Delete files from VFS
+8. **FileGlobTool** (glob_files) - Find files matching glob patterns
+9. **FileGrepTool** (grep_files) - Search file contents with regex
 
 See [Tools Reference](docs/tools.md) for detailed documentation.
 

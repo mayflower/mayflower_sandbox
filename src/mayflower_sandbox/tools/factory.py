@@ -13,6 +13,7 @@ from mayflower_sandbox.tools.file_grep import FileGrepTool
 from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
+from mayflower_sandbox.tools.run_file import RunPythonFileTool
 
 
 def create_sandbox_tools(
@@ -29,7 +30,7 @@ def create_sandbox_tools(
                   thread_id from callback context at runtime (recommended for LangGraph).
                   If provided, tools will use this thread_id for all operations.
         include_tools: List of tool names to include (default: all tools)
-                      Options: "execute_python", "read_file", "write_file",
+                      Options: "execute_python", "run_python_file", "read_file", "write_file",
                               "list_files", "delete_file", "str_replace",
                               "glob_files", "grep_files"
 
@@ -64,6 +65,7 @@ def create_sandbox_tools(
     """
     all_tools = {
         "execute_python": ExecutePythonTool,
+        "run_python_file": RunPythonFileTool,
         "read_file": FileReadTool,
         "write_file": FileWriteTool,
         "list_files": FileListTool,

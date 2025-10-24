@@ -1,10 +1,10 @@
 .PHONY: help install test lint format typecheck quality clean
 
-# Use the mayflower-sandbox conda environment
-PYTHON := /home/johann/anaconda3/envs/mayflower-sandbox/bin/python
-PYTEST := /home/johann/anaconda3/envs/mayflower-sandbox/bin/pytest
-RUFF := /home/johann/anaconda3/envs/mayflower-sandbox/bin/ruff
-MYPY := /home/johann/anaconda3/envs/mayflower-sandbox/bin/mypy
+# Use commands from current environment
+PYTHON := python3
+PYTEST := pytest
+RUFF := ruff
+MYPY := mypy
 
 help:
 	@echo "Mayflower Sandbox - Development Commands"
