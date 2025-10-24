@@ -41,7 +41,7 @@ class FileWriteTool(SandboxTool):
     2. Extract from response: Set extract_from_response=True (for large files)
     """
 
-    name: str = "write_file"
+    name: str = "file_write"
     description: str = """Write content to a file in the sandbox filesystem.
 
 Files are stored in PostgreSQL with a 20MB size limit per file.

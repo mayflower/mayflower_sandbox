@@ -35,7 +35,7 @@ class RunPythonFileTool(SandboxTool):
     Useful for running previously created or uploaded scripts.
     """
 
-    name: str = "run_python_file"
+    name: str = "python_run_file"
     description: str = """Execute a Python file from the sandbox filesystem.
 
 Use this to run Python scripts that have been previously created or uploaded.

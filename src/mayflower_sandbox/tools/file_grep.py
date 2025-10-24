@@ -31,7 +31,7 @@ class FileGrepTool(SandboxTool):
     Supports multiple output modes for different use cases.
     """
 
-    name: str = "grep_files"
+    name: str = "file_grep"
     description: str = """Search file contents using regex patterns.
 
 Output modes:

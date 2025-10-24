@@ -43,7 +43,7 @@ class ExecuteCodeTool(SandboxTool):
     This avoids passing code through tool call parameters entirely.
     """
 
-    name: str = "execute_code"
+    name: str = "python_run_prepared"
     description: str = """Execute Python code from graph state.
 
 Use this for complex Python code (20+ lines, subplots, multi-step analysis).

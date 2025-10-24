@@ -22,7 +22,7 @@ class FileDeleteTool(SandboxTool):
     Removes files from PostgreSQL storage.
     """
 
-    name: str = "delete_file"
+    name: str = "file_delete"
     description: str = """Delete a file from the sandbox filesystem.
 
 Permanently removes a file from PostgreSQL storage.

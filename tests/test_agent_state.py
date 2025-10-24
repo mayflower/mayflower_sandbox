@@ -134,7 +134,7 @@ print('File created')
 async def test_agent_state_tracks_created_files(db_pool, clean_files):
     """Test that created files are tracked in agent state via write_file tool."""
     tools = create_sandbox_tools(db_pool, "agent_state_test")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
     # Create agent with custom state schema
     agent = create_agent(llm, tools, checkpointer=MemorySaver(), state_schema=SandboxAgentState)
@@ -172,7 +172,7 @@ async def test_agent_state_tracks_created_files(db_pool, clean_files):
 async def test_agent_state_tracks_multiple_files(db_pool, clean_files):
     """Test that multiple created files are all tracked in state."""
     tools = create_sandbox_tools(db_pool, "agent_state_test")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
     agent = create_agent(llm, tools, checkpointer=MemorySaver(), state_schema=SandboxAgentState)
 
@@ -206,7 +206,7 @@ async def test_agent_state_tracks_multiple_files(db_pool, clean_files):
 async def test_agent_can_reference_created_files(db_pool, clean_files):
     """Test that agent can reference files from state in subsequent actions."""
     tools = create_sandbox_tools(db_pool, "agent_state_test")
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
     agent = create_agent(llm, tools, checkpointer=MemorySaver(), state_schema=SandboxAgentState)
 

@@ -1,4 +1,4 @@
-.PHONY: help install test lint format typecheck quality clean
+.PHONY: help install test lint format typecheck quality clean db-up db-down db-setup
 
 # Use commands from current environment
 PYTHON := python3
@@ -9,7 +9,12 @@ MYPY := mypy
 help:
 	@echo "Mayflower Sandbox - Development Commands"
 	@echo ""
-	@echo "Available commands:"
+	@echo "Database:"
+	@echo "  make db-setup   - Setup PostgreSQL in Docker and run migrations"
+	@echo "  make db-up      - Start PostgreSQL container"
+	@echo "  make db-down    - Stop PostgreSQL container"
+	@echo ""
+	@echo "Development:"
 	@echo "  make install    - Install package and dependencies"
 	@echo "  make test       - Run all tests"
 	@echo "  make lint       - Run ruff linter"
@@ -62,3 +67,15 @@ clean:
 	find . -type d -name .pytest_cache -exec rm -rf {} +
 	find . -type d -name .mypy_cache -exec rm -rf {} +
 	find . -type d -name .ruff_cache -exec rm -rf {} +
+
+# Database commands
+db-setup:
+	@bash scripts/setup-test-db.sh
+
+db-up:
+	@docker compose up -d postgres
+	@echo "✓ PostgreSQL started on localhost:5432"
+
+db-down:
+	@docker compose down
+	@echo "✓ PostgreSQL stopped"

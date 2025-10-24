@@ -214,6 +214,6 @@ x = 3
 
 async def test_tool_name_and_description(edit_tool):
     """Test tool has correct name and description."""
-    assert edit_tool.name == "str_replace"
+    assert edit_tool.name == "file_edit"
     assert "unique string" in edit_tool.description.lower()
     assert "exactly once" in edit_tool.description.lower()

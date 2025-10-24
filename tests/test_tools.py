@@ -59,29 +59,31 @@ async def test_tool_factory_all_tools(db_pool, clean_files):
     """Test creating all tools via factory."""
     tools = create_sandbox_tools(db_pool, "test_tools")
 
-    assert len(tools) == 8
+    assert len(tools) == 10
     tool_names = {tool.name for tool in tools}
     assert tool_names == {
-        "execute_python",
-        "read_file",
-        "write_file",
-        "list_files",
-        "delete_file",
-        "str_replace",
-        "glob_files",
-        "grep_files",
+        "python_run",
+        "python_run_file",
+        "python_run_prepared",
+        "file_read",
+        "file_write",
+        "file_list",
+        "file_delete",
+        "file_edit",
+        "file_glob",
+        "file_grep",
     }
 
 
 async def test_tool_factory_specific_tools(db_pool, clean_files):
     """Test creating specific tools."""
     tools = create_sandbox_tools(
-        db_pool, "test_tools", include_tools=["execute_python", "read_file"]
+        db_pool, "test_tools", include_tools=["python_run", "file_read"]
     )
 
     assert len(tools) == 2
     tool_names = {tool.name for tool in tools}
-    assert tool_names == {"execute_python", "read_file"}
+    assert tool_names == {"python_run", "file_read"}
 
 
 async def test_tool_factory_invalid_tool(db_pool, clean_files):
@@ -97,7 +99,7 @@ async def test_execute_python_tool(db_pool, clean_files):
     # Test successful execution
     result = await tool._arun(code="print('Hello from tool!')")
     assert "Hello from tool!" in result
-    assert "Output:" in result
+    # Output format is now cleaner without "Output:" label
 
     # Test error handling
     result = await tool._arun(code="raise ValueError('test error')")
@@ -118,7 +120,7 @@ print('File created')
 
     result = await tool._arun(code=code)
     assert "File created" in result
-    assert "Created files:" in result
+    # Output format is now cleaner, files shown directly
     assert "/tmp/test_output.txt" in result
 
 
@@ -198,7 +200,7 @@ async def test_integration_workflow(db_pool, clean_files):
     tool_map = {tool.name: tool for tool in tools}
 
     # 1. Write input file
-    write_result = await tool_map["write_file"]._arun(
+    write_result = await tool_map["file_write"]._arun(
         file_path="/data/input.csv", content="a,b\n1,2\n3,4"
     )
     assert "Successfully wrote" in write_result
@@ -213,30 +215,30 @@ with open('/tmp/output.txt', 'w') as f:
 
 print(f"Processing complete: {len(lines)} lines")
 """
-    exec_result = await tool_map["execute_python"]._arun(code=code)
+    exec_result = await tool_map["python_run"]._arun(code=code)
     assert "Processing complete: 3 lines" in exec_result
     assert "/tmp/output.txt" in exec_result
 
     # 3. List files (filter for user files, not helper modules)
-    list_result = await tool_map["list_files"]._arun(prefix="/data/")
+    list_result = await tool_map["file_list"]._arun(prefix="/data/")
     assert "/data/input.csv" in list_result
 
-    list_result = await tool_map["list_files"]._arun(prefix="/tmp/")
+    list_result = await tool_map["file_list"]._arun(prefix="/tmp/")
     assert "/tmp/output.txt" in list_result
 
     # 4. Read output
-    read_result = await tool_map["read_file"]._arun(file_path="/tmp/output.txt")
+    read_result = await tool_map["file_read"]._arun(file_path="/tmp/output.txt")
     assert "Processed 3 lines" in read_result
 
     # 5. Clean up
-    await tool_map["delete_file"]._arun(file_path="/data/input.csv")
-    await tool_map["delete_file"]._arun(file_path="/tmp/output.txt")
+    await tool_map["file_delete"]._arun(file_path="/data/input.csv")
+    await tool_map["file_delete"]._arun(file_path="/tmp/output.txt")
 
     # 6. Verify clean (check user directories, helper modules persist)
-    list_result = await tool_map["list_files"]._arun(prefix="/data/")
+    list_result = await tool_map["file_list"]._arun(prefix="/data/")
     assert "No files found" in list_result
 
-    list_result = await tool_map["list_files"]._arun(prefix="/tmp/")
+    list_result = await tool_map["file_list"]._arun(prefix="/tmp/")
     assert "No files found" in list_result
 
 
@@ -258,10 +260,10 @@ async def test_thread_isolation(db_pool):
     tools_1 = create_sandbox_tools(db_pool, "thread_1")
     tools_2 = create_sandbox_tools(db_pool, "thread_2")
 
-    write_1 = next(t for t in tools_1 if t.name == "write_file")
-    write_2 = next(t for t in tools_2 if t.name == "write_file")
-    list_1 = next(t for t in tools_1 if t.name == "list_files")
-    list_2 = next(t for t in tools_2 if t.name == "list_files")
+    write_1 = next(t for t in tools_1 if t.name == "file_write")
+    write_2 = next(t for t in tools_2 if t.name == "file_write")
+    list_1 = next(t for t in tools_1 if t.name == "file_list")
+    list_2 = next(t for t in tools_2 if t.name == "file_list")
 
     # Write to thread_1
     await write_1._arun(file_path="/tmp/thread1.txt", content="Thread 1 data")
@@ -298,8 +300,8 @@ async def test_context_aware_thread_id(db_pool):
 
     # Create tools without thread_id (context-aware)
     tools = create_sandbox_tools(db_pool, thread_id=None)
-    write_tool = next(t for t in tools if t.name == "write_file")
-    list_tool = next(t for t in tools if t.name == "list_files")
+    write_tool = next(t for t in tools if t.name == "file_write")
+    list_tool = next(t for t in tools if t.name == "file_list")
 
     # Create mock callback managers with different thread_ids
     mock_manager_1 = MagicMock()

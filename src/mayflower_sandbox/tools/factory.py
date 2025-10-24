@@ -31,9 +31,9 @@ def create_sandbox_tools(
                   thread_id from callback context at runtime (recommended for LangGraph).
                   If provided, tools will use this thread_id for all operations.
         include_tools: List of tool names to include (default: all tools)
-                      Options: "execute_python", "run_python_file", "execute_code",
-                              "read_file", "write_file", "list_files", "delete_file",
-                              "str_replace", "glob_files", "grep_files"
+                      Options: "python_run", "python_run_file", "python_run_prepared",
+                              "file_read", "file_write", "file_list", "file_delete",
+                              "file_edit", "file_glob", "file_grep"
 
     Returns:
         List of configured SandboxTool instances
@@ -55,7 +55,7 @@ def create_sandbox_tools(
         tools = create_sandbox_tools(
             db_pool,
             thread_id=None,
-            include_tools=["execute_python", "read_file", "write_file"]
+            include_tools=["python_run", "file_read", "file_write"]
         )
 
         # Use with LangGraph
@@ -65,16 +65,16 @@ def create_sandbox_tools(
         ```
     """
     all_tools = {
-        "execute_python": ExecutePythonTool,
-        "run_python_file": RunPythonFileTool,
-        "execute_code": ExecuteCodeTool,
-        "read_file": FileReadTool,
-        "write_file": FileWriteTool,
-        "list_files": FileListTool,
-        "delete_file": FileDeleteTool,
-        "str_replace": FileEditTool,
-        "glob_files": FileGlobTool,
-        "grep_files": FileGrepTool,
+        "python_run": ExecutePythonTool,
+        "python_run_file": RunPythonFileTool,
+        "python_run_prepared": ExecuteCodeTool,
+        "file_read": FileReadTool,
+        "file_write": FileWriteTool,
+        "file_list": FileListTool,
+        "file_delete": FileDeleteTool,
+        "file_edit": FileEditTool,
+        "file_glob": FileGlobTool,
+        "file_grep": FileGrepTool,
     }
 
     if include_tools is None:

@@ -143,5 +143,5 @@ async def test_grep_invalid_output_mode(grep_tool, clean_files):
 
 async def test_tool_name_and_description(grep_tool):
     """Test tool has correct name and description."""
-    assert grep_tool.name == "grep_files"
+    assert grep_tool.name == "file_grep"
     assert "regex" in grep_tool.description.lower()

@@ -198,12 +198,17 @@ async def test_stateful_execution(db_pool, clean_files):
 
 async def test_numpy_execution(executor, clean_files):
     """Test numpy works with micropip installation."""
+    # Note: For async code, print output may not be captured
+    # We verify success and that numpy can be imported and used
     code = """
 import micropip
 await micropip.install("numpy")
 import numpy as np
 arr = np.array([1, 2, 3, 4, 5])
-print(f"Sum: {arr.sum()}")
+result = arr.sum()
+print(f"Sum: {result}")
+# Return value so we can verify it worked
+result
 """
     result = await executor.execute(code)
 

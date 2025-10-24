@@ -170,7 +170,7 @@ class ExecutePythonTool(SandboxTool):
     Files are automatically synced with PostgreSQL VFS and persist across executions.
     """
 
-    name: str = "execute_python"
+    name: str = "python_run"
     description: str = """Execute Python code in a secure Pyodide sandbox environment.
 
 ⚠️ CRITICAL: You MUST use print() to display output! The sandbox only shows what you print.

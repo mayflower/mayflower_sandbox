@@ -74,7 +74,7 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 - **[Examples](docs/examples.md)** - Complete working examples
 
 ### Reference
-- **[Tools Reference](docs/tools.md)** - Documentation for the 8 LangChain tools
+- **[Tools Reference](docs/tools.md)** - Documentation for the 10 LangChain tools
 - **[Helpers Reference](docs/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
 - **[Advanced Features](docs/advanced.md)** - Stateful execution, file server, cleanup
 - **[API Reference](docs/api.md)** - Low-level API documentation
@@ -84,8 +84,9 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 ```
 ┌─────────────────────────────────────────────────────┐
 │ LangGraph Agent                                     │
-│ ├─ ExecutePythonTool (with helper modules)         │
+│ ├─ ExecutePythonTool (direct code execution)       │
 │ ├─ RunPythonFileTool (run existing .py files)      │
+│ ├─ ExecuteCodeTool (state-based for large code)    │
 │ ├─ FileReadTool                                     │
 │ ├─ FileWriteTool                                    │
 │ ├─ FileEditTool (str_replace)                       │
@@ -111,21 +112,71 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 9 Tools
+## The 10 Tools
 
-Mayflower Sandbox provides 9 LangChain tools:
+Mayflower Sandbox provides 10 LangChain tools:
 
-1. **ExecutePythonTool** - Execute Python code with automatic VFS sync
-2. **RunPythonFileTool** - Execute existing Python files from VFS
-3. **FileReadTool** - Read files from PostgreSQL VFS
-4. **FileWriteTool** - Write files to PostgreSQL VFS (20MB limit)
-5. **FileEditTool** (str_replace) - Edit files by replacing unique strings
-6. **FileListTool** - List files with optional prefix filtering
-7. **FileDeleteTool** - Delete files from VFS
-8. **FileGlobTool** (glob_files) - Find files matching glob patterns
-9. **FileGrepTool** (grep_files) - Search file contents with regex
+### Code Execution Tools
+
+1. **ExecutePythonTool** (`python_run`) - Execute Python code directly via tool parameter
+   - Best for: Small code snippets, simple calculations, quick operations
+   - Code passed as tool parameter (subject to serialization limits)
+
+2. **RunPythonFileTool** (`python_run_file`) - Execute existing Python files from VFS
+   - Best for: Re-running scripts, organized multi-file projects
+   - Reads and executes .py files already stored in VFS
+
+3. **ExecuteCodeTool** (`python_run_prepared`) - Execute code from graph state (state-based extraction)
+   - Best for: Large/complex code (20+ lines), subplots, multi-step analysis
+   - Solves AG-UI/LangGraph tool parameter serialization issues
+   - LLM generates code, stores in graph state, tool extracts and executes
+   - **Use this for complex visualizations and large code blocks**
+
+### File Management Tools
+
+4. **FileReadTool** (`file_read`) - Read files from PostgreSQL VFS
+5. **FileWriteTool** (`file_write`) - Write files to PostgreSQL VFS (20MB limit)
+6. **FileEditTool** (`file_edit`) - Edit files by replacing unique strings
+7. **FileListTool** (`file_list`) - List files with optional prefix filtering
+8. **FileDeleteTool** (`file_delete`) - Delete files from VFS
+
+### File Search Tools
+
+9. **FileGlobTool** (`file_glob`) - Find files matching glob patterns
+10. **FileGrepTool** (`file_grep`) - Search file contents with regex
 
 See [Tools Reference](docs/tools.md) for detailed documentation.
+
+### When to Use Which Execution Tool?
+
+**Use `python_run`** for:
+- Simple calculations and data processing
+- Code under ~10 lines
+- Quick operations where code fits comfortably in tool parameters
+
+**Use `python_run_file`** for:
+- Re-running previously created scripts
+- Organized multi-file projects
+- Scripts stored permanently in VFS
+
+**Use `python_run_prepared`** for:
+- Complex visualizations with subplots
+- Large code blocks (20+ lines)
+- Multi-step data analysis pipelines
+- When you encounter "missing required parameter" errors with `python_run`
+- Any code too large for tool parameter serialization
+
+**State-Based Code Execution Pattern (`python_run_prepared`):**
+
+The `python_run_prepared` tool solves a critical issue with LangGraph/AG-UI: when LLMs try to pass large code blocks through tool parameters, the serialization layer can drop or truncate them, causing "missing required parameter" errors.
+
+How it works:
+1. LLM generates Python code (automatically stored in graph state's `pending_code` field)
+2. LLM calls `python_run_prepared(file_path="/tmp/viz.py", description="Create subplot visualization")`
+3. Tool extracts code from state, saves to VFS, and executes
+4. Code is cleared from state after successful execution
+
+This pattern enables complex visualizations and large-scale data processing without serialization limits.
 
 ## Document Processing Helpers
 
@@ -140,13 +191,36 @@ See [Helpers Reference](docs/helpers.md) for complete documentation.
 
 ## Testing
 
+### Quick Start with Docker
+
 ```bash
+# Setup PostgreSQL in Docker and run migrations
+make db-setup
+
+# Install dependencies and run tests
+uv venv
+uv pip install -e ".[dev]"
+POSTGRES_PORT=5433 uv run pytest -v
+
+# When done, stop database
+make db-down
+```
+
+### Manual Testing
+
+```bash
+# Start database
+make db-up
+
 # Run all tests
 pytest -v
 
 # Run specific test suites
 pytest tests/test_executor.py -v
 pytest tests/test_pptx_helpers.py -v
+
+# Stop database
+make db-down
 ```
 
 ### Test Status

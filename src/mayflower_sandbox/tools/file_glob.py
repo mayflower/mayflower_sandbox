@@ -24,7 +24,7 @@ class FileGlobTool(SandboxTool):
     Supports standard glob patterns like *.py, **/*.txt, /data/*.json
     """
 
-    name: str = "glob_files"
+    name: str = "file_glob"
     description: str = """Find files matching a glob pattern.
 
 Supports patterns like:

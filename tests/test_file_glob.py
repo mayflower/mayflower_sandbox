@@ -115,5 +115,5 @@ async def test_glob_multiple_extensions(filesystem, glob_tool, clean_files):
 
 async def test_tool_name_and_description(glob_tool):
     """Test tool has correct name and description."""
-    assert glob_tool.name == "glob_files"
+    assert glob_tool.name == "file_glob"
     assert "glob pattern" in glob_tool.description.lower()

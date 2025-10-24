@@ -25,7 +25,7 @@ class FileListTool(SandboxTool):
     Shows all files for the current thread_id.
     """
 
-    name: str = "list_files"
+    name: str = "file_list"
     description: str = """List all files in the sandbox filesystem.
 
 Shows files stored in PostgreSQL for the current session.

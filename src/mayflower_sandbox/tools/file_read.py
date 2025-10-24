@@ -22,7 +22,7 @@ class FileReadTool(SandboxTool):
     Files are stored in PostgreSQL and isolated by thread_id.
     """
 
-    name: str = "read_file"
+    name: str = "file_read"
     description: str = """Read a file from the sandbox filesystem.
 
 The sandbox has a persistent filesystem backed by PostgreSQL.

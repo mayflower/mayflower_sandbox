@@ -2,6 +2,8 @@
 Test RunPythonFileTool - executing Python files from VFS.
 """
 
+import os
+
 import asyncpg
 import pytest
 
@@ -13,10 +15,11 @@ from mayflower_sandbox.filesystem import VirtualFilesystem
 async def db_pool():
     """Create PostgreSQL connection pool for testing."""
     pool = await asyncpg.create_pool(
-        host="localhost",
-        database="mayflower_test",
-        user="postgres",
-        password="postgres",
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        database=os.getenv("POSTGRES_DB", "mayflower_test"),
+        user=os.getenv("POSTGRES_USER", "postgres"),
+        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
     )
     yield pool
     await pool.close()

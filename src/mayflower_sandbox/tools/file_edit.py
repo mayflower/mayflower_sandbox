@@ -29,7 +29,7 @@ class FileEditTool(SandboxTool):
     in the file for the operation to succeed.
     """
 
-    name: str = "str_replace"
+    name: str = "file_edit"
     description: str = """Edit a file by replacing a unique string with a new string.
 
 The old_string must appear exactly once in the file. If it appears zero times
