@@ -6,7 +6,7 @@ import asyncpg
 
 from mayflower_sandbox.tools.base import SandboxTool
 from mayflower_sandbox.tools.execute import ExecutePythonTool
-from mayflower_sandbox.tools.execute_from_response import ExecuteFromResponseTool
+from mayflower_sandbox.tools.execute_code import ExecuteCodeTool
 from mayflower_sandbox.tools.file_delete import FileDeleteTool
 from mayflower_sandbox.tools.file_edit import FileEditTool
 from mayflower_sandbox.tools.file_glob import FileGlobTool
@@ -14,7 +14,6 @@ from mayflower_sandbox.tools.file_grep import FileGrepTool
 from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
-from mayflower_sandbox.tools.prepare_code import PrepareCodeTool
 from mayflower_sandbox.tools.run_file import RunPythonFileTool
 
 
@@ -32,10 +31,9 @@ def create_sandbox_tools(
                   thread_id from callback context at runtime (recommended for LangGraph).
                   If provided, tools will use this thread_id for all operations.
         include_tools: List of tool names to include (default: all tools)
-                      Options: "execute_python", "run_python_file", "prepare_code",
-                              "execute_prepared_code", "read_file", "write_file",
-                              "list_files", "delete_file", "str_replace",
-                              "glob_files", "grep_files"
+                      Options: "execute_python", "run_python_file", "execute_code",
+                              "read_file", "write_file", "list_files", "delete_file",
+                              "str_replace", "glob_files", "grep_files"
 
     Returns:
         List of configured SandboxTool instances
@@ -69,8 +67,7 @@ def create_sandbox_tools(
     all_tools = {
         "execute_python": ExecutePythonTool,
         "run_python_file": RunPythonFileTool,
-        "prepare_code": PrepareCodeTool,
-        "execute_prepared_code": ExecuteFromResponseTool,
+        "execute_code": ExecuteCodeTool,
         "read_file": FileReadTool,
         "write_file": FileWriteTool,
         "list_files": FileListTool,
