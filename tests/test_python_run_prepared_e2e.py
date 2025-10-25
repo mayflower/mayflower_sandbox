@@ -344,3 +344,152 @@ async def test_python_run_prepared_state_clearing(db_pool, clean_files):
     # Check that pending_code was cleared (should be empty string after execution)
     # Note: This verifies the Command pattern properly updates state
     assert result.get("pending_code", "NOTSET") == "" or result.get("pending_code") == "NOTSET"
+
+
+# Tests for sandbox document helpers
+
+
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
+async def test_python_run_prepared_with_excel_helpers(db_pool, clean_files):
+    """Test python_run_prepared with xlsx_helpers for Excel manipulation."""
+    app = create_agent_graph(db_pool)
+
+    result = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Write Python code to:\n"
+                    "1. Install openpyxl using micropip\n"
+                    "2. Create an Excel file at /tmp/data.xlsx with a sheet named 'Sales'\n"
+                    "3. Write values: A1='Product', B1='Quantity', A2='Widget', B2=42\n"
+                    "4. Save the file\n"
+                    "5. Read it back using xlsx_read_cells from document.xlsx_helpers\n"
+                    "6. Print the values from cells A1, B1, A2, B2\n"
+                    "Use python_run_prepared to execute.",
+                )
+            ],
+            "pending_code": "",
+        },
+        config={"configurable": {"thread_id": "test-excel"}},
+    )
+
+    messages = result["messages"]
+    final_message = messages[-1]
+    content = str(final_message.content)
+
+    # Verify Excel helper was imported and used successfully
+    assert "Product" in content
+    assert "Widget" in content or "42" in content
+    assert "Quantity" in content
+
+
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
+async def test_python_run_prepared_with_pdf_creation(db_pool, clean_files):
+    """Test python_run_prepared with pdf_creation helpers for PDF generation."""
+    app = create_agent_graph(db_pool)
+
+    result = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Write Python code to:\n"
+                    "1. Install fpdf2 using micropip\n"
+                    "2. Use pdf_create_with_unicode from document.pdf_creation to create a PDF\n"
+                    "3. Set title to 'Test Report' and add paragraphs with Unicode: "
+                    "'Temperature: 25°C', 'Area: π × r²', 'Price: 100€'\n"
+                    "4. Save to /tmp/report.pdf\n"
+                    "5. Print success message\n"
+                    "Use python_run_prepared to execute.",
+                )
+            ],
+            "pending_code": "",
+        },
+        config={"configurable": {"thread_id": "test-pdf"}},
+    )
+
+    messages = result["messages"]
+    final_message = messages[-1]
+    content = str(final_message.content)
+
+    # Verify PDF was created (check for file creation or success message)
+    assert "/tmp/report.pdf" in content or "Created" in content or "success" in content.lower()
+
+
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
+async def test_python_run_prepared_with_pptx_extraction(db_pool, clean_files):
+    """Test python_run_prepared with pptx_ooxml for PowerPoint text extraction."""
+    app = create_agent_graph(db_pool)
+
+    result = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Write Python code to:\n"
+                    "1. Install python-pptx using micropip\n"
+                    "2. Create a PowerPoint presentation with 2 slides\n"
+                    "3. Slide 1 title: 'Q4 Results', content: 'Revenue increased 25%'\n"
+                    "4. Slide 2 title: 'Next Steps', content: 'Launch new product'\n"
+                    "5. Save to /tmp/presentation.pptx\n"
+                    "6. Read the file and use pptx_extract_text from document.pptx_ooxml\n"
+                    "7. Print the extracted text from all slides\n"
+                    "Use python_run_prepared to execute.",
+                )
+            ],
+            "pending_code": "",
+        },
+        config={"configurable": {"thread_id": "test-pptx"}},
+    )
+
+    messages = result["messages"]
+    final_message = messages[-1]
+    content = str(final_message.content)
+
+    # Verify PowerPoint text was extracted
+    assert "Q4 Results" in content or "Results" in content
+    assert "Revenue" in content or "Next Steps" in content
+
+
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
+async def test_python_run_prepared_with_docx_manipulation(db_pool, clean_files):
+    """Test python_run_prepared with docx_ooxml for Word document manipulation."""
+    app = create_agent_graph(db_pool)
+
+    result = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Write Python code to:\n"
+                    "1. Install python-docx using micropip\n"
+                    "2. Create a Word document with 2 paragraphs: "
+                    "'Introduction paragraph' and 'Main content paragraph'\n"
+                    "3. Save to /tmp/document.docx\n"
+                    "4. Read the file and use docx_add_comment from document.docx_ooxml\n"
+                    "5. Add a comment 'Review this' to the first paragraph\n"
+                    "6. Save the modified document\n"
+                    "7. Print success message\n"
+                    "Use python_run_prepared to execute.",
+                )
+            ],
+            "pending_code": "",
+        },
+        config={"configurable": {"thread_id": "test-docx"}},
+    )
+
+    messages = result["messages"]
+    final_message = messages[-1]
+    content = str(final_message.content)
+
+    # Verify Word document was manipulated (check for file or success message)
+    assert "/tmp/document.docx" in content or "success" in content.lower() or "comment" in content.lower()
