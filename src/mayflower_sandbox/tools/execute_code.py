@@ -105,11 +105,11 @@ Returns:
             logger.info("execute_code: Execution completed")
 
             # Format result similar to ExecutePythonTool
-            result = exec_result.output if exec_result.output else "Code executed successfully"
+            result = exec_result.stdout if exec_result.stdout else "Code executed successfully"
 
             # Add file creation info if files were created
             if exec_result.created_files:
-                result += f"\n\nFiles created: {', '.join(exec_result.created_files)}"
+                result += f"\n\nCreated files: {', '.join(exec_result.created_files)}"
 
             # Clear pending_code from state after successful execution
             if tool_call_id:
