@@ -275,3 +275,51 @@ print("Plot created successfully")
     assert "Plot created successfully" in result.stdout
     assert result.created_files is not None
     assert "/tmp/sine_plot.png" in result.created_files
+
+
+async def test_compiled_library_vfs_fallback(executor, db_pool, clean_files):
+    """Test VFS fallback detects files from compiled libraries (openpyxl).
+
+    Compiled libraries may use low-level I/O that bypasses Pyodide's snapshot
+    mechanism. This test verifies the VFS fallback correctly detects such files.
+    """
+    code = """
+import micropip
+await micropip.install("openpyxl")
+
+from openpyxl import Workbook
+
+# Create Excel file using openpyxl (compiled library)
+wb = Workbook()
+ws = wb.active
+ws['A1'] = 'Product'
+ws['B1'] = 'Quantity'
+ws['A2'] = 'Widget'
+ws['B2'] = 42
+
+wb.save('/tmp/report.xlsx')
+print("Excel file created")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success is True, f"Execution failed: {result.stderr}"
+    assert "Excel file created" in result.stdout
+
+    # Verify file was tracked (via VFS fallback if TypeScript snapshot missed it)
+    assert result.created_files is not None, "created_files should not be None"
+    assert "/tmp/report.xlsx" in result.created_files, (
+        f"Excel file not tracked. created_files: {result.created_files}"
+    )
+
+    # Verify file was saved to PostgreSQL VFS
+    async with db_pool.acquire() as conn:
+        file_data = await conn.fetchrow("""
+            SELECT content, size FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/tmp/report.xlsx'
+        """)
+
+        assert file_data is not None, "File not found in VFS"
+        assert file_data["size"] > 0, "File size should be > 0"
+        # Excel files start with PK magic bytes (ZIP format)
+        assert file_data["content"][:2] == b"PK", "File should be valid Excel format"
