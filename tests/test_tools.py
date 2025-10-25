@@ -131,7 +131,9 @@ async def test_file_write_and_read_tools(db_pool, clean_files):
 
     # Write file
     write_result = await write_tool._arun(
-        file_path="/tmp/test.txt", content="Hello from write tool!"
+        file_path="/tmp/test.txt",
+        description="Test file",
+        _state={"pending_content": "Hello from write tool!"}
     )
     assert "Successfully wrote" in write_result
     assert "/tmp/test.txt" in write_result
@@ -152,8 +154,8 @@ async def test_file_list_tool(db_pool, clean_files):
     assert "No files found" in result
 
     # Write some files
-    await write_tool._arun(file_path="/tmp/file1.txt", content="Content 1")
-    await write_tool._arun(file_path="/data/file2.csv", content="a,b,c")
+    await write_tool._arun(file_path="/tmp/file1.txt", description="File 1", _state={"pending_content": "Content 1"})
+    await write_tool._arun(file_path="/data/file2.csv", description="CSV file", _state={"pending_content": "a,b,c"})
 
     # List all files
     result = await list_tool._arun()
@@ -175,7 +177,7 @@ async def test_file_delete_tool(db_pool, clean_files):
     list_tool = FileListTool(db_pool=db_pool, thread_id="test_tools")
 
     # Write file
-    await write_tool._arun(file_path="/tmp/to_delete.txt", content="Delete me")
+    await write_tool._arun(file_path="/tmp/to_delete.txt", description="File to delete", _state={"pending_content": "Delete me"})
 
     # Verify exists
     result = await list_tool._arun()
@@ -201,7 +203,9 @@ async def test_integration_workflow(db_pool, clean_files):
 
     # 1. Write input file
     write_result = await tool_map["file_write"]._arun(
-        file_path="/data/input.csv", content="a,b\n1,2\n3,4"
+        file_path="/data/input.csv",
+        description="Input CSV",
+        _state={"pending_content": "a,b\n1,2\n3,4"}
     )
     assert "Successfully wrote" in write_result
 
@@ -266,10 +270,10 @@ async def test_thread_isolation(db_pool):
     list_2 = next(t for t in tools_2 if t.name == "file_list")
 
     # Write to thread_1
-    await write_1._arun(file_path="/tmp/thread1.txt", content="Thread 1 data")
+    await write_1._arun(file_path="/tmp/thread1.txt", description="Thread 1 file", _state={"pending_content": "Thread 1 data"})
 
     # Write to thread_2
-    await write_2._arun(file_path="/tmp/thread2.txt", content="Thread 2 data")
+    await write_2._arun(file_path="/tmp/thread2.txt", description="Thread 2 file", _state={"pending_content": "Thread 2 data"})
 
     # Thread 1 should only see its file
     result_1 = await list_1._arun()
@@ -315,14 +319,16 @@ async def test_context_aware_thread_id(db_pool):
     # Write to thread_1 via context
     await write_tool._arun(
         file_path="/tmp/context1.txt",
-        content="Context thread 1 data",
+        description="Context 1 file",
+        _state={"pending_content": "Context thread 1 data"},
         run_manager=mock_manager_1,
     )
 
     # Write to thread_2 via context
     await write_tool._arun(
         file_path="/tmp/context2.txt",
-        content="Context thread 2 data",
+        description="Context 2 file",
+        _state={"pending_content": "Context thread 2 data"},
         run_manager=mock_manager_2,
     )
 
@@ -353,7 +359,7 @@ async def test_context_aware_fallback_to_default(db_pool, clean_files):
         await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'default'")
 
     # Write without callback manager (should use "default" thread_id)
-    await write_tool._arun(file_path="/tmp/default.txt", content="Default thread data")
+    await write_tool._arun(file_path="/tmp/default.txt", description="Default file", _state={"pending_content": "Default thread data"})
 
     # List should see the file
     result = await list_tool._arun()

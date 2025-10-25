@@ -78,7 +78,7 @@ Returns:
             thread_id = self._get_thread_id(run_manager)
 
         # Access code from graph state
-        code = _state.get("pending_code", "")
+        code = _state.get("pending_content", "")
 
         if not code:
             logger.error("execute_code: No code found in state")
@@ -111,14 +111,14 @@ Returns:
             if exec_result.created_files:
                 result += f"\n\nCreated files: {', '.join(exec_result.created_files)}"
 
-            # Clear pending_code from state after successful execution
+            # Clear pending_content from state after successful execution
             if tool_call_id:
                 try:
                     from langchain_core.messages import ToolMessage
                     from langgraph.types import Command
 
                     state_update = {
-                        "pending_code": "",  # Clear after execution
+                        "pending_content": "",  # Clear after execution
                         "created_files": exec_result.created_files,
                         "messages": [ToolMessage(content=result, tool_call_id=tool_call_id)],
                     }

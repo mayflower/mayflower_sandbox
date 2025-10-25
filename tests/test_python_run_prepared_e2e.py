@@ -3,7 +3,7 @@ E2E tests for python_run_prepared with LangGraph state-based code extraction.
 
 These tests validate the complete workflow used in maistack:
 1. LLM generates Python code in markdown block
-2. Custom node extracts code and stores in state["pending_code"]
+2. Custom node extracts code and stores in state["pending_content"]
 3. LLM calls python_run_prepared tool
 4. Tool executes code from state
 5. Results are returned to agent
@@ -37,7 +37,7 @@ class AgentState(TypedDict):
     """State matching maistack usage."""
 
     messages: Annotated[list, add_messages]
-    pending_code: str  # Code extracted from AI message for python_run_prepared
+    pending_content: str  # Content extracted from AI message (used by python_run_prepared and file_write)
 
 
 @pytest.fixture
@@ -79,13 +79,16 @@ async def clean_files(db_pool):
     yield
 
 
-def create_agent_graph(db_pool):
-    """Create LangGraph agent with custom node for code extraction (matching maistack)."""
-    # Create tools - only include python_run_prepared
+def create_agent_graph(db_pool, include_tools=None):
+    """Create LangGraph agent with custom node for content extraction (generalized pattern)."""
+    # Create tools
+    if include_tools is None:
+        include_tools = ["python_run_prepared"]
+
     tools = create_sandbox_tools(
         db_pool,
         thread_id="e2e_prepared_test",
-        include_tools=["python_run_prepared"],
+        include_tools=include_tools,
     )
 
     llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
@@ -101,7 +104,7 @@ def create_agent_graph(db_pool):
         return {"messages": [response]}
 
     async def custom_tool_node(state: AgentState, config: RunnableConfig) -> dict:
-        """Custom tool node that extracts code before calling tools (matches maistack)."""
+        """Custom tool node that extracts content before calling tools (generalized pattern)."""
         messages = state.get("messages", [])
         last_message = messages[-1]
 
@@ -111,32 +114,38 @@ def create_agent_graph(db_pool):
         tool_state = {}
         msgs = []
 
-        # Extract code from AI message if python_run_prepared is being called
-        # This matches the maistack pattern exactly
+        # Map tool names to their state field for content extraction
+        content_extraction_map = {
+            "python_run_prepared": "pending_content",
+            "file_write": "pending_content",
+        }
+
+        # Extract content from AI message for any tool that needs it
         tool_names = [tc["name"] for tc in last_message.tool_calls]
-        if "python_run_prepared" in tool_names:
-            if isinstance(last_message, AIMessage) and last_message.content:
-                content = last_message.content
+        for tool_name in tool_names:
+            if tool_name in content_extraction_map:
+                state_field = content_extraction_map[tool_name]
 
-                # Handle case where content is a list of blocks
-                if isinstance(content, list):
-                    text_parts = []
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif isinstance(block, str):
-                            text_parts.append(block)
-                    content = "\n".join(text_parts)
+                if isinstance(last_message, AIMessage) and last_message.content:
+                    content = last_message.content
 
-                # Extract Python code from markdown block
-                code_match = re.search(r"```python\n(.*?)\n```", content, re.DOTALL)
-                if not code_match:
-                    # Try without language specifier
-                    code_match = re.search(r"```\n(.*?)\n```", content, re.DOTALL)
+                    # Handle case where content is a list of blocks
+                    if isinstance(content, list):
+                        text_parts = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif isinstance(block, str):
+                                text_parts.append(block)
+                        content = "\n".join(text_parts)
 
-                if code_match:
-                    extracted_code = code_match.group(1)
-                    tool_state["pending_code"] = extracted_code
+                    # Extract content from markdown block
+                    # Try with language specifier first (python, csv, json, etc.)
+                    content_match = re.search(r"```(?:\w+)?\n(.*?)\n```", content, re.DOTALL)
+
+                    if content_match:
+                        extracted_content = content_match.group(1)
+                        tool_state[state_field] = extracted_content
 
         # Execute tool calls
         for tool_call in last_message.tool_calls:
@@ -156,12 +165,12 @@ def create_agent_graph(db_pool):
                 # Prepare arguments
                 kwargs = tool_call.get("args", {})
 
-                # Inject state for python_run_prepared
-                if tool_name == "python_run_prepared":
-                    # Only pass pending_code, not full messages (avoids serialization issues)
+                # Inject state for content-based tools (generalized pattern)
+                if tool_name in content_extraction_map:
+                    state_field = content_extraction_map[tool_name]
+                    # Only pass the relevant state field (avoids serialization issues)
                     serializable_state = {
-                        "pending_code": state.get("pending_code", "")
-                        or tool_state.get("pending_code", ""),
+                        state_field: state.get(state_field, "") or tool_state.get(state_field, ""),
                     }
                     kwargs["_state"] = serializable_state
                     kwargs["tool_call_id"] = tool_call.get("id", "")
@@ -198,8 +207,8 @@ def create_agent_graph(db_pool):
 
         # Update state with extracted code and messages
         update = {"messages": msgs}
-        if tool_state.get("pending_code") is not None:
-            update["pending_code"] = tool_state["pending_code"]
+        if tool_state.get("pending_content") is not None:
+            update["pending_content"] = tool_state["pending_content"]
 
         return update
 
@@ -245,7 +254,7 @@ async def test_python_run_prepared_with_code_extraction(db_pool, clean_files):
                     "Use python_run_prepared to execute it.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-factorial"}},
     )
@@ -274,7 +283,7 @@ async def test_python_run_prepared_with_file_creation(db_pool, clean_files):
                     "'Test data from e2e'. Use python_run_prepared to execute it.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-file-creation"}},
     )
@@ -304,7 +313,7 @@ async def test_python_run_prepared_with_computation(db_pool, clean_files):
                     "Use python_run_prepared to execute it.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-primes"}},
     )
@@ -324,7 +333,7 @@ async def test_python_run_prepared_with_computation(db_pool, clean_files):
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
 async def test_python_run_prepared_state_clearing(db_pool, clean_files):
-    """Test that pending_code is cleared after execution."""
+    """Test that pending_content is cleared after execution."""
     app = create_agent_graph(db_pool)
 
     result = await app.ainvoke(
@@ -336,14 +345,14 @@ async def test_python_run_prepared_state_clearing(db_pool, clean_files):
                     "Use python_run_prepared.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-state-clear"}},
     )
 
-    # Check that pending_code was cleared (should be empty string after execution)
+    # Check that pending_content was cleared (should be empty string after execution)
     # Note: This verifies the Command pattern properly updates state
-    assert result.get("pending_code", "NOTSET") == "" or result.get("pending_code") == "NOTSET"
+    assert result.get("pending_content", "NOTSET") == "" or result.get("pending_content") == "NOTSET"
 
 
 # Tests for sandbox document helpers
@@ -371,7 +380,7 @@ async def test_python_run_prepared_with_excel_helpers(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-excel"}},
     )
@@ -408,7 +417,7 @@ async def test_python_run_prepared_with_pdf_creation(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-pdf"}},
     )
@@ -444,7 +453,7 @@ async def test_python_run_prepared_with_pptx_extraction(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-pptx"}},
     )
@@ -482,7 +491,7 @@ async def test_python_run_prepared_with_docx_manipulation(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_code": "",
+            "pending_content": "",
         },
         config={"configurable": {"thread_id": "test-docx"}},
     )
@@ -493,3 +502,111 @@ async def test_python_run_prepared_with_docx_manipulation(db_pool, clean_files):
 
     # Verify Word document was manipulated (check for file or success message)
     assert "/tmp/document.docx" in content or "success" in content.lower() or "comment" in content.lower()
+
+
+# Tests for file_write with state-based content extraction
+
+
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
+async def test_file_write_with_csv_data(db_pool, clean_files):
+    """Test file_write with state-based extraction for CSV data."""
+    app = create_agent_graph(db_pool, include_tools=["file_write"])
+
+    result = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Create a CSV file at /tmp/employees.csv with the following data:\n"
+                    "- Columns: name, department, salary\n"
+                    "- Row 1: Alice Johnson, Engineering, 95000\n"
+                    "- Row 2: Bob Smith, Marketing, 75000\n"
+                    "- Row 3: Carol White, Sales, 82000\n"
+                    "Generate the CSV content and use file_write to save it.",
+                )
+            ],
+            "pending_content": "",
+        },
+        config={"configurable": {"thread_id": "test-csv"}},
+    )
+
+    messages = result["messages"]
+    final_message = messages[-1]
+    content = str(final_message.content)
+
+    # Verify file was written
+    assert "/tmp/employees.csv" in content or "wrote" in content.lower()
+    assert "Success" in content or "wrote" in content.lower()
+
+
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
+async def test_file_write_with_json_config(db_pool, clean_files):
+    """Test file_write with state-based extraction for JSON configuration."""
+    app = create_agent_graph(db_pool, include_tools=["file_write"])
+
+    result = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Create a JSON configuration file at /tmp/config.json with:\n"
+                    '- "api_endpoint": "https://api.example.com/v1"\n'
+                    '- "timeout": 30\n'
+                    '- "retry_attempts": 3\n'
+                    '- "features": ["logging", "caching", "metrics"]\n'
+                    "Generate properly formatted JSON and use file_write to save it.",
+                )
+            ],
+            "pending_content": "",
+        },
+        config={"configurable": {"thread_id": "test-json"}},
+    )
+
+    messages = result["messages"]
+    final_message = messages[-1]
+    content = str(final_message.content)
+
+    # Verify file was written
+    assert "/tmp/config.json" in content or "wrote" in content.lower()
+
+
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
+async def test_file_write_with_large_markdown(db_pool, clean_files):
+    """Test file_write handles large content (>2000 chars) via state extraction."""
+    app = create_agent_graph(db_pool, include_tools=["file_write"])
+
+    result = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Create a markdown documentation file at /tmp/README.md with:\n"
+                    "1. Title: 'Python Data Analysis Project'\n"
+                    "2. Introduction section (200 words) about data analysis\n"
+                    "3. Installation section with 10 pip install commands\n"
+                    "4. Usage section with 5 code examples (each 10 lines)\n"
+                    "5. API Reference section with 8 function descriptions\n"
+                    "6. Contributing guidelines (150 words)\n"
+                    "7. License section\n"
+                    "Make it comprehensive and detailed. Use file_write to save it.",
+                )
+            ],
+            "pending_content": "",
+        },
+        config={"configurable": {"thread_id": "test-markdown"}},
+    )
+
+    messages = result["messages"]
+    final_message = messages[-1]
+    content = str(final_message.content)
+
+    # Verify large file was written
+    assert "/tmp/README.md" in content or "wrote" in content.lower()
+    # Check for substantial byte count indicating large content
+    assert ("bytes" in content.lower() and any(char.isdigit() for char in content))

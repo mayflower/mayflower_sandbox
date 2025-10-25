@@ -54,9 +54,9 @@ async def test_execute_code_from_state(db_pool, clean_files):
     """Test that python_run_prepared extracts and executes code from state."""
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
-    # Simulate graph state with pending_code
+    # Simulate graph state with pending_content
     state = {
-        "pending_code": """
+        "pending_content": """
 import math
 
 # Calculate some values
@@ -87,7 +87,7 @@ async def test_execute_code_with_file_creation(db_pool, clean_files):
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
     state = {
-        "pending_code": """
+        "pending_content": """
 # Create a simple data file
 data = "Hello from state-based execution!"
 
@@ -118,7 +118,7 @@ async def test_execute_code_with_computation(db_pool, clean_files):
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
     state = {
-        "pending_code": """
+        "pending_content": """
 # Fibonacci calculation
 def fib(n):
     if n <= 1:
@@ -150,7 +150,7 @@ async def test_execute_code_no_code_in_state(db_pool, clean_files):
     """Test error handling when no code is in state."""
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
-    # Empty state - no pending_code
+    # Empty state - no pending_content
     state = {}
 
     result = await tool._arun(
@@ -170,7 +170,7 @@ async def test_execute_code_with_imports(db_pool, clean_files):
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
     state = {
-        "pending_code": """
+        "pending_content": """
 import micropip
 await micropip.install('numpy')
 

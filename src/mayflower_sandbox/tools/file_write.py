@@ -3,7 +3,6 @@ FileWriteTool - Write files to sandbox VFS.
 """
 
 import logging
-import re
 from typing import Annotated
 
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
@@ -20,41 +19,40 @@ class FileWriteInput(BaseModel):
     """Input schema for FileWriteTool."""
 
     file_path: str = Field(description="Path where to write the file (e.g., /tmp/data.txt)")
-    content: str | None = Field(
-        default=None,
-        description="Content to write (omit for large content - use extract_from_response=True instead)"
-    )
-    extract_from_response: bool = Field(
-        default=False,
-        description="Extract content from previous AI response markdown block (for large files > 1000 chars)"
+    description: str = Field(
+        default="File content",
+        description="Brief description of what the file contains"
     )
     tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 class FileWriteTool(SandboxTool):
     """
-    Tool for writing files to the sandbox VFS.
+    Tool for writing files to the sandbox VFS from graph state.
+
+    This is a state-based tool similar to python_run_prepared. Content is extracted
+    from graph state to avoid tool parameter serialization issues with large files.
+
+    Workflow:
+    1. LLM generates file content in a message
+    2. Custom tool node extracts content and stores in state["pending_content"]
+    3. LLM calls file_write(file_path="/tmp/data.csv")
+    4. Tool reads content from state, writes to VFS, clears pending_content
 
     Files are stored in PostgreSQL with 20MB size limit.
-    Supports two modes:
-    1. Direct content: Pass content parameter (for small files < 1000 chars)
-    2. Extract from response: Set extract_from_response=True (for large files)
     """
 
     name: str = "file_write"
     description: str = """Write content to a file in the sandbox filesystem.
 
+Before calling this tool, generate the complete file content and it will be
+automatically stored in graph state. Then call this tool to write it.
+
 Files are stored in PostgreSQL with a 20MB size limit per file.
 Use this to create or overwrite files that Python code can read.
 
-Two modes:
-1. Small content (< 1000 chars): Pass content parameter directly
-2. Large content (> 1000 chars): Set extract_from_response=True and provide content in previous response
-
 Args:
     file_path: Path where to write (e.g., /tmp/input.csv, /data/config.json)
-    content: Content to write (for small files)
-    extract_from_response: Extract content from previous AI response markdown block (for large files)
 
 Returns:
     Confirmation message
@@ -64,73 +62,48 @@ Returns:
     async def _arun(  # type: ignore[override]
         self,
         file_path: str,
-        content: str | None = None,
-        extract_from_response: bool = False,
+        description: str,
+        _state: dict,
         tool_call_id: str = "",
+        _config: dict | None = None,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
-        """Write file to VFS."""
-        # Get thread_id from context
-        thread_id = self._get_thread_id(run_manager)
+        """Write file to VFS from graph state."""
+        # Extract thread_id from config (passed by custom_tool_node)
+        thread_id = None
+        if _config:
+            thread_id = _config.get("configurable", {}).get("thread_id")
+        if not thread_id:
+            thread_id = self._get_thread_id(run_manager)
 
-        # Handle extract_from_response mode
-        if extract_from_response:
-            logger.info("write_file: Extracting content from conversation history")
+        # Access content from graph state
+        content = _state.get("pending_content", "")
 
-            # Access conversation history via callback metadata
-            metadata = run_manager.metadata if run_manager else {}
-            messages = metadata.get("messages", [])
-
-            if not messages:
-                return (
-                    "Error: No conversation history found. "
-                    "Make sure to provide content or enable message passing."
-                )
-
-            # Find last AIMessage
-            last_ai_msg = None
-            for msg in reversed(messages):
-                if hasattr(msg, "type") and msg.type == "ai":
-                    last_ai_msg = msg
-                    break
-                elif msg.__class__.__name__ == "AIMessage":
-                    last_ai_msg = msg
-                    break
-
-            if not last_ai_msg:
-                return "Error: No AI message found in conversation history"
-
-            # Extract content from markdown block or use full content
-            ai_content = last_ai_msg.content
-            block_match = re.search(r'```(?:\w+)?\n(.*?)\n```', ai_content, re.DOTALL)
-
-            if block_match:
-                content = block_match.group(1)
-                logger.info(f"write_file: Extracted {len(content)} chars from markdown block")
-            else:
-                # No markdown block, use full content
-                content = ai_content
-                logger.info(f"write_file: Using full AI response ({len(content)} chars)")
-
-        # Validate content
         if not content:
-            return "Error: No content provided. Use content parameter or extract_from_response=True"
+            logger.error("file_write: No content found in state")
+            return (
+                "Error: No content found in graph state. "
+                "Generate file content first before calling this tool."
+            )
+
+        logger.info(f"file_write: Found {len(content)} chars of content in state")
 
         vfs = VirtualFilesystem(self.db_pool, thread_id)
 
         try:
             content_bytes = content.encode("utf-8")
             await vfs.write_file(file_path, content_bytes)
+            logger.info(f"file_write: Wrote {len(content_bytes)} bytes to {file_path}")
             message = f"Successfully wrote {len(content_bytes)} bytes to {file_path}"
 
-            # Update agent state with created file if using LangGraph and tool_call_id provided
+            # Clear pending_content from state after successful write
             if tool_call_id:
                 try:
                     from langchain_core.messages import ToolMessage
                     from langgraph.types import Command
 
-                    # Build state update with both custom field and ToolMessage
                     state_update = {
+                        "pending_content": "",  # Clear after write
                         "created_files": [file_path],
                         "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
                     }
@@ -143,4 +116,5 @@ Returns:
         except ValueError as e:
             return f"Error: {e}"
         except Exception as e:
+            logger.error(f"file_write: Failed to write file: {e}")
             return f"Error writing file: {e}"
