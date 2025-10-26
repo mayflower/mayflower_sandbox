@@ -48,10 +48,13 @@ async def executor(db_pool):
 
 @pytest.fixture
 async def clean_files(db_pool):
-    """Clean files before each test."""
+    """Clean files before and after each test to ensure isolation."""
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'test_sandbox'")
     yield
+    # Cleanup after test to ensure complete isolation
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'test_sandbox'")
 
 
 async def test_simple_execution(executor, clean_files):
@@ -550,3 +553,9 @@ print("Created first file in empty VFS")
         """, thread_id)
 
         assert file_exists, "File should be saved to VFS"
+
+    # Cleanup: Remove all files for this thread to ensure test isolation
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            DELETE FROM sandbox_filesystem WHERE thread_id = $1
+        """, thread_id)
