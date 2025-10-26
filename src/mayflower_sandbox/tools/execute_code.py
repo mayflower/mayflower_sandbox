@@ -20,9 +20,11 @@ class ExecuteCodeInput(BaseModel):
     """Input schema for ExecuteCodeTool."""
 
     file_path: str = Field(
+        default="/tmp/script.py",
         description="Path where code will be saved (e.g., /tmp/visualization.py)"
     )
     description: str = Field(
+        default="Python script",
         description="Brief description of what the code does"
     )
     tool_call_id: Annotated[str, InjectedToolCallId]
@@ -77,7 +79,16 @@ OTHER PACKAGES require micropip installation:
 ```python
 import micropip
 await micropip.install('pandas')  # Data analysis
-await micropip.install('matplotlib')  # Charts
+await micropip.install('matplotlib')  # ALL charts, plots, diagrams, visualizations
+await micropip.install('numpy')  # Numerical operations
+```
+
+IMPORTANT: For matplotlib visualizations, ALWAYS install first:
+```python
+import micropip
+await micropip.install('matplotlib')
+import matplotlib.pyplot as plt
+# ... your plotting code
 ```
 
 Args:
