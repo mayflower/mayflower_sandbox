@@ -88,17 +88,18 @@ Returns:
         if not thread_id:
             thread_id = self._get_thread_id(run_manager)
 
-        # Access code from graph state
-        code = _state.get("pending_content", "")
+        # Access code from graph state using tool_call_id
+        pending_content_map = _state.get("pending_content_map", {})
+        code = pending_content_map.get(tool_call_id, "")
 
         if not code:
-            logger.error("execute_code: No code found in state")
+            logger.error(f"execute_code: No code found in state for tool_call_id={tool_call_id}")
             return (
                 "Error: No code found in graph state. "
                 "Generate Python code first before calling this tool."
             )
 
-        logger.info(f"execute_code: Found {len(code)} chars of code in state")
+        logger.info(f"execute_code: Found {len(code)} chars of code in state for tool_call_id={tool_call_id[:8]}...")
 
         # Write code to VFS
         vfs = VirtualFilesystem(self.db_pool, thread_id)
@@ -122,14 +123,17 @@ Returns:
             if exec_result.created_files:
                 result += f"\n\nCreated files: {', '.join(exec_result.created_files)}"
 
-            # Clear pending_content from state after successful execution
+            # Clear this tool_call_id's content from state after successful execution
             if tool_call_id:
                 try:
                     from langchain_core.messages import ToolMessage
                     from langgraph.types import Command
 
+                    # Remove this tool_call_id from pending_content_map
+                    updated_map = {k: v for k, v in pending_content_map.items() if k != tool_call_id}
+
                     state_update = {
-                        "pending_content": "",  # Clear after execution
+                        "pending_content_map": updated_map,  # Clear this tool's content
                         "created_files": exec_result.created_files,
                         "messages": [ToolMessage(content=result, tool_call_id=tool_call_id)],
                     }

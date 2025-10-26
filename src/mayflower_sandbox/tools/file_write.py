@@ -76,17 +76,18 @@ Returns:
         if not thread_id:
             thread_id = self._get_thread_id(run_manager)
 
-        # Access content from graph state
-        content = _state.get("pending_content", "")
+        # Access content from graph state using tool_call_id
+        pending_content_map = _state.get("pending_content_map", {})
+        content = pending_content_map.get(tool_call_id, "")
 
         if not content:
-            logger.error("file_write: No content found in state")
+            logger.error(f"file_write: No content found in state for tool_call_id={tool_call_id}")
             return (
                 "Error: No content found in graph state. "
                 "Generate file content first before calling this tool."
             )
 
-        logger.info(f"file_write: Found {len(content)} chars of content in state")
+        logger.info(f"file_write: Found {len(content)} chars of content in state for tool_call_id={tool_call_id[:8]}...")
 
         vfs = VirtualFilesystem(self.db_pool, thread_id)
 
@@ -96,14 +97,17 @@ Returns:
             logger.info(f"file_write: Wrote {len(content_bytes)} bytes to {file_path}")
             message = f"Successfully wrote {len(content_bytes)} bytes to {file_path}"
 
-            # Clear pending_content from state after successful write
+            # Clear this tool_call_id's content from state after successful write
             if tool_call_id:
                 try:
                     from langchain_core.messages import ToolMessage
                     from langgraph.types import Command
 
+                    # Remove this tool_call_id from pending_content_map
+                    updated_map = {k: v for k, v in pending_content_map.items() if k != tool_call_id}
+
                     state_update = {
-                        "pending_content": "",  # Clear after write
+                        "pending_content_map": updated_map,  # Clear this tool's content
                         "created_files": [file_path],
                         "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
                     }
