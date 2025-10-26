@@ -135,8 +135,8 @@ Returns:
             logger.error(f"execute_code: Failed to write file: {e}")
             return f"Error writing code to file: {e}"
 
-        # Execute the code
-        executor = SandboxExecutor(self.db_pool, thread_id)
+        # Execute the code with network access enabled for micropip package installation
+        executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True)
         try:
             exec_result = await executor.execute(code)
             logger.info("execute_code: Execution completed")
