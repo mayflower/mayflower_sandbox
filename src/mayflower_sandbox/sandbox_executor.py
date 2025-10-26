@@ -52,6 +52,9 @@ class SandboxExecutor:
         allow_net: bool = False,
         stateful: bool = False,
         timeout_seconds: float = 60.0,
+        max_memory_mb: int = 512,
+        max_file_size_mb: int = 20,
+        max_files: int = 100,
     ):
         """
         Initialize sandbox executor.
@@ -62,6 +65,9 @@ class SandboxExecutor:
             allow_net: Allow network access
             stateful: Maintain state between executions
             timeout_seconds: Execution timeout
+            max_memory_mb: Maximum memory usage (not enforced yet, placeholder)
+            max_file_size_mb: Maximum total file size in VFS
+            max_files: Maximum number of files in VFS
         """
         self.db_pool = db_pool
         self.thread_id = thread_id
@@ -69,6 +75,9 @@ class SandboxExecutor:
         self.allow_net = allow_net
         self.stateful = stateful
         self.timeout_seconds = timeout_seconds
+        self.max_memory_mb = max_memory_mb
+        self.max_file_size_mb = max_file_size_mb
+        self.max_files = max_files
 
         # Get path to TypeScript executor
         self.executor_path = self._get_executor_path()
@@ -152,6 +161,32 @@ class SandboxExecutor:
 
         return bytes(result)
 
+    async def _check_resource_quotas(self) -> tuple[bool, str | None]:
+        """
+        Check if resource quotas are exceeded.
+
+        Returns:
+            (within_limits, error_message) - error_message is None if within limits
+        """
+        vfs_files = await self.vfs.list_files()
+        num_files = len(vfs_files)
+        total_size = sum(f["size"] for f in vfs_files)
+        total_size_mb = total_size / 1024 / 1024
+
+        if num_files >= self.max_files:
+            return False, (
+                f"Error: File limit exceeded ({num_files}/{self.max_files}).\n"
+                f"Delete some files first before creating new ones."
+            )
+
+        if total_size_mb >= self.max_file_size_mb:
+            return False, (
+                f"Error: Storage quota exceeded ({total_size_mb:.1f}MB/{self.max_file_size_mb}MB).\n"
+                f"Delete some files first to free up space."
+            )
+
+        return True, None
+
     async def _preload_helpers(self) -> None:
         """Load all helper modules into VFS at /home/pyodide/"""
         if self._helpers_loaded:
@@ -198,11 +233,43 @@ class SandboxExecutor:
         Returns:
             ExecutionResult with output and created files
         """
+        import hashlib
         import time
 
         start_time = time.time()
 
+        # Provenance logging: Hash content for audit trail
+        code_hash = hashlib.sha256(code.encode()).hexdigest()
+        logger.info(
+            "Code execution started",
+            extra={
+                "thread_id": self.thread_id,
+                "code_hash": code_hash,
+                "code_size": len(code),
+                "allow_net": self.allow_net,
+                "timeout": self.timeout_seconds,
+                "stateful": self.stateful,
+            }
+        )
+
         try:
+            # Check resource quotas before execution
+            within_limits, quota_error = await self._check_resource_quotas()
+            if not within_limits:
+                logger.warning(
+                    "Resource quota exceeded",
+                    extra={
+                        "thread_id": self.thread_id,
+                        "code_hash": code_hash,
+                        "error": quota_error,
+                    }
+                )
+                return ExecutionResult(
+                    success=False,
+                    stdout="",
+                    stderr=quota_error or "Resource quota exceeded",
+                    execution_time=time.time() - start_time,
+                )
             # Step 0: Pre-load helper modules into VFS (once per executor instance)
             await self._preload_helpers()
 
@@ -296,12 +363,28 @@ class SandboxExecutor:
                     else:
                         logger.info(f"VFS fallback: No new files detected")
 
+                # Provenance logging: Record execution completion
+                execution_time = time.time() - start_time
+                logger.info(
+                    "Code execution completed",
+                    extra={
+                        "thread_id": self.thread_id,
+                        "code_hash": code_hash,
+                        "success": result_data.get("success", False),
+                        "execution_time": execution_time,
+                        "created_files": created_files,
+                        "num_created_files": len(created_files) if created_files else 0,
+                        "stdout_size": len(result_data.get("stdout", "")),
+                        "stderr_size": len(result_data.get("stderr", "")),
+                    }
+                )
+
                 return ExecutionResult(
                     success=result_data.get("success", False),
                     stdout=result_data.get("stdout", ""),
                     stderr=result_data.get("stderr", ""),
                     result=result_data.get("result"),
-                    execution_time=time.time() - start_time,
+                    execution_time=execution_time,
                     created_files=created_files if created_files else None,
                     session_bytes=result_session_bytes,
                     session_metadata=result_data.get("sessionMetadata"),

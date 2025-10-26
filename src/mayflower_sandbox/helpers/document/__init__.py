@@ -1,6 +1,33 @@
 """Document processing helpers for Word, PDF, Excel, PowerPoint."""
 
 
+# Allowlist of packages that can be auto-installed via micropip
+# This prevents arbitrary package installation for security
+ALLOWED_PACKAGES = {
+    # Document processing
+    "openpyxl",
+    "python-pptx",
+    "python-docx",
+    "pypdf",
+    "fpdf2",
+    # Data analysis
+    "pandas",
+    "numpy",
+    "scipy",
+    # Visualization
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    # Utilities
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+    "pillow",
+    "xlrd",
+    "xlsxwriter",
+}
+
+
 def ensure_package(package_name: str, import_name: str | None = None) -> None:
     """
     Ensure a package is installed, auto-installing via micropip in Pyodide.
@@ -8,6 +35,9 @@ def ensure_package(package_name: str, import_name: str | None = None) -> None:
     Args:
         package_name: Package name for micropip (e.g., 'openpyxl')
         import_name: Import name if different from package name (e.g., 'pptx' for 'python-pptx')
+
+    Raises:
+        SecurityError: If package is not in the allowlist
     """
     if import_name is None:
         import_name = package_name
@@ -19,6 +49,12 @@ def ensure_package(package_name: str, import_name: str | None = None) -> None:
         import sys
 
         if "pyodide" in sys.modules or "micropip" in sys.modules:
+            # Security: Check package allowlist
+            if package_name not in ALLOWED_PACKAGES:
+                raise PermissionError(
+                    f"Package '{package_name}' is not in the allowlist. "
+                    f"Allowed packages: {', '.join(sorted(ALLOWED_PACKAGES))}"
+                )
             # Auto-install in Pyodide
             import asyncio
 
