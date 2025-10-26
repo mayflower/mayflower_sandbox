@@ -90,10 +90,17 @@ Returns:
 
         # Access code from graph state using tool_call_id
         pending_content_map = _state.get("pending_content_map", {})
+
+        # Debug logging
+        logger.info(f"execute_code: Looking for tool_call_id={tool_call_id}")
+        logger.info(f"execute_code: pending_content_map keys: {list(pending_content_map.keys())}")
+        logger.info(f"execute_code: pending_content_map sizes: {[(k[:12], len(v)) for k, v in pending_content_map.items()]}")
+
         code = pending_content_map.get(tool_call_id, "")
 
         if not code:
             logger.error(f"execute_code: No code found in state for tool_call_id={tool_call_id}")
+            logger.error(f"execute_code: Available keys in map: {list(pending_content_map.keys())}")
             return (
                 "Error: No code found in graph state. "
                 "Generate Python code first before calling this tool."
