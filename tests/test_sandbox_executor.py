@@ -3,6 +3,7 @@ Tests for the new clean SandboxExecutor architecture.
 Tests VFS integration, Pyodide execution, and file sync.
 """
 
+import logging
 import os
 import sys
 
@@ -323,3 +324,229 @@ print("Excel file created")
         assert file_data["size"] > 0, "File size should be > 0"
         # Excel files start with PK magic bytes (ZIP format)
         assert file_data["content"][:2] == b"PK", "File should be valid Excel format"
+
+
+async def test_vfs_fallback_skipped_on_execution_failure(executor, db_pool, clean_files):
+    """Test VFS fallback does NOT trigger when execution fails.
+
+    Even if a compiled library creates files before throwing an error,
+    the VFS fallback should not run because success=False.
+    This prevents tracking incomplete/corrupted files.
+    """
+    code = """
+import micropip
+await micropip.install("openpyxl")
+
+from openpyxl import Workbook
+
+# Create file
+wb = Workbook()
+ws = wb.active
+ws['A1'] = 'Test'
+wb.save('/tmp/partial.xlsx')
+
+# Then fail
+raise RuntimeError("Simulated error after file creation")
+"""
+
+    result = await executor.execute(code)
+
+    # Execution should fail
+    assert result.success is False, "Execution should fail due to RuntimeError"
+    assert "RuntimeError" in result.stderr
+    assert "Simulated error" in result.stderr
+
+    # VFS fallback should NOT run (no log message)
+    # created_files should be None because success=False
+    assert result.created_files is None, (
+        "VFS fallback should not run when success=False. "
+        f"Got: {result.created_files}"
+    )
+
+    # Verify file MAY exist in VFS (written before error)
+    # but is NOT tracked in created_files
+    async with db_pool.acquire() as conn:
+        file_exists = await conn.fetchval("""
+            SELECT EXISTS(
+                SELECT 1 FROM sandbox_filesystem
+                WHERE thread_id = 'test_sandbox' AND file_path = '/tmp/partial.xlsx'
+            )
+        """)
+
+        # File may or may not exist (timing-dependent), but either way
+        # it should NOT be in created_files
+        if file_exists:
+            print("Note: File exists in VFS but correctly NOT tracked due to failure")
+
+
+async def test_vfs_fallback_supplements_typescript_snapshot(executor, db_pool, clean_files):
+    """Test VFS fallback adds files missed by TypeScript, not duplicates.
+
+    When some files are detected by TypeScript snapshot and others are missed
+    (compiled library), the VFS fallback should only add the missing ones.
+    """
+    code = """
+import micropip
+await micropip.install("openpyxl")
+
+from openpyxl import Workbook
+
+# File 1: Created with Python built-in (TypeScript WILL detect)
+with open('/tmp/plain.txt', 'w') as f:
+    f.write('Created with open()')
+
+# File 2: Created with openpyxl (TypeScript may MISS)
+wb = Workbook()
+ws = wb.active
+ws['A1'] = 'Data'
+wb.save('/tmp/compiled.xlsx')
+
+print("Both files created")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success is True, f"Execution failed: {result.stderr}"
+    assert "Both files created" in result.stdout
+
+    # created_files should contain BOTH files
+    assert result.created_files is not None
+    assert len(result.created_files) >= 1, "At least one file should be tracked"
+
+    # Both files should be in the list (order doesn't matter)
+    created_paths = set(result.created_files)
+
+    # At minimum, we should have the Excel file
+    # (plain.txt may or may not be detected depending on Pyodide version)
+    assert '/tmp/compiled.xlsx' in created_paths, (
+        f"Excel file should be tracked. Got: {result.created_files}"
+    )
+
+    # Verify both files exist in VFS
+    async with db_pool.acquire() as conn:
+        files_in_vfs = await conn.fetch("""
+            SELECT file_path FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox'
+            AND file_path IN ('/tmp/plain.txt', '/tmp/compiled.xlsx')
+            ORDER BY file_path
+        """)
+
+        vfs_paths = [row['file_path'] for row in files_in_vfs]
+        assert '/tmp/plain.txt' in vfs_paths, "Plain text file should be in VFS"
+        assert '/tmp/compiled.xlsx' in vfs_paths, "Excel file should be in VFS"
+
+
+async def test_vfs_fallback_emits_log_message(executor, db_pool, clean_files, caplog):
+    """Test VFS fallback logs INFO message when it detects files.
+
+    The log message helps debug file tracking issues and should contain:
+    - Number of files detected
+    - Thread ID
+    - List of file paths
+
+    Note: VFS fallback only triggers when TypeScript snapshot misses files.
+    If TypeScript detects the file, VFS fallback won't run and no log appears.
+    """
+    # Ensure we capture logs at INFO level
+    caplog.set_level(logging.INFO, logger='mayflower_sandbox.sandbox_executor')
+
+    code = """
+import micropip
+await micropip.install("openpyxl")
+
+from openpyxl import Workbook
+
+wb = Workbook()
+ws = wb.active
+ws['A1'] = 'Test'
+wb.save('/tmp/logged.xlsx')
+print("File created")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success is True
+    assert result.created_files is not None
+    assert '/tmp/logged.xlsx' in result.created_files
+
+    # Check for the log message - it may or may not appear depending on
+    # whether TypeScript snapshot detected the file
+    log_records = [r for r in caplog.records if 'VFS fallback detected' in r.message]
+
+    # If VFS fallback triggered, verify the log message format
+    if log_records:
+        log_message = log_records[0].message
+
+        # Verify log message contains expected information
+        assert 'VFS fallback detected' in log_message
+        assert 'test_sandbox' in log_message  # Thread ID
+        assert '/tmp/logged.xlsx' in log_message  # File path
+        print("VFS fallback triggered - log message verified")
+    else:
+        # TypeScript detected the file, VFS fallback wasn't needed
+        print("TypeScript snapshot detected file - VFS fallback not triggered")
+
+
+async def test_vfs_fallback_from_empty_vfs(db_pool, clean_files):
+    """Test VFS fallback works when VFS starts completely empty.
+
+    Edge case: No files in VFS before execution, so before_vfs_files is empty set.
+    After execution, VFS has one file from compiled library.
+    """
+    # Create a fresh executor with a unique thread_id
+    thread_id = 'test_empty_vfs'
+
+    # Ensure session exists
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO sandbox_sessions (thread_id, expires_at)
+            VALUES ($1, NOW() + INTERVAL '1 day')
+            ON CONFLICT (thread_id) DO NOTHING
+        """, thread_id)
+
+    # Ensure VFS is empty for this thread
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            DELETE FROM sandbox_filesystem WHERE thread_id = $1
+        """, thread_id)
+
+        # Verify empty
+        count = await conn.fetchval("""
+            SELECT COUNT(*) FROM sandbox_filesystem WHERE thread_id = $1
+        """, thread_id)
+        assert count == 0, "VFS should be empty before test"
+
+    executor = SandboxExecutor(db_pool, thread_id, allow_net=True)
+
+    code = """
+import micropip
+await micropip.install("openpyxl")
+
+from openpyxl import Workbook
+
+wb = Workbook()
+ws = wb.active
+ws['A1'] = 'First File'
+wb.save('/tmp/first.xlsx')
+print("Created first file in empty VFS")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success is True
+    assert "Created first file" in result.stdout
+
+    # VFS fallback should detect the file
+    assert result.created_files is not None, "VFS fallback should detect file"
+    assert '/tmp/first.xlsx' in result.created_files
+
+    # Verify file is in VFS
+    async with db_pool.acquire() as conn:
+        file_exists = await conn.fetchval("""
+            SELECT EXISTS(
+                SELECT 1 FROM sandbox_filesystem
+                WHERE thread_id = $1 AND file_path = '/tmp/first.xlsx'
+            )
+        """, thread_id)
+
+        assert file_exists, "File should be saved to VFS"

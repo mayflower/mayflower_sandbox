@@ -260,8 +260,9 @@ class SandboxExecutor:
                     result_session_bytes = bytes(result_data["sessionBytes"])
 
                 # Step 5: Post-save created files to PostgreSQL VFS
+                # Only save files if execution succeeded to avoid tracking incomplete/corrupted files
                 created_files = []
-                if result_data.get("files"):
+                if result_data.get("files") and result_data.get("success", False):
                     for file_info in result_data["files"]:
                         file_path = file_info["path"]
                         file_content = bytes(file_info["content"])
