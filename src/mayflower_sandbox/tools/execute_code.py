@@ -104,12 +104,19 @@ Returns:
         self,
         file_path: str,
         description: str,
-        _state: dict,
+        _state: dict | None = None,
         tool_call_id: str = "",
         _config: dict | None = None,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Execute code from graph state."""
+        # If _state is None, tool is being called without custom state injection
+        if _state is None:
+            return (
+                "Error: This tool requires graph state. "
+                "Please use with a custom tool node that injects state, "
+                "or use the standard python_run tool."
+            )
         # Extract thread_id from config (passed by custom_tool_node)
         thread_id = None
         if _config:
@@ -153,11 +160,40 @@ Returns:
             logger.info("execute_code: Execution completed")
 
             # Format result similar to ExecutePythonTool
-            result = exec_result.stdout if exec_result.stdout else "Code executed successfully"
+            response_parts = []
 
-            # Add file creation info if files were created
+            # Add stdout if present
+            if exec_result.stdout:
+                response_parts.append(exec_result.stdout.strip())
+
+            # Add created files with inline images
             if exec_result.created_files:
-                result += f"\n\nCreated files: {', '.join(exec_result.created_files)}"
+                # Separate image files from other files
+                image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp"}
+                image_files = []
+                other_files = []
+
+                for path in exec_result.created_files:
+                    import os
+                    ext = os.path.splitext(path)[1].lower()
+                    if ext in image_extensions:
+                        image_files.append(path)
+                    else:
+                        other_files.append(path)
+
+                # Show image files inline as markdown
+                if image_files:
+                    images_md = "\n\n".join(f"![Generated image]({path})" for path in image_files)
+                    response_parts.append(images_md)
+
+                # Show other files as markdown links
+                if other_files:
+                    import os
+                    files_md = "\n".join(f"- [{os.path.basename(path)}]({path})" for path in other_files)
+                    response_parts.append(files_md)
+
+            result = "\n\n".join(response_parts) if response_parts else "Code executed successfully"
+            logger.info(f"execute_code: Generated result with {len(result)} chars: {result[:200]}...")
 
             # Clear this tool_call_id's content from state after successful execution
             if tool_call_id:
