@@ -559,3 +559,53 @@ print("Created first file in empty VFS")
         await conn.execute("""
             DELETE FROM sandbox_filesystem WHERE thread_id = $1
         """, thread_id)
+
+
+@pytest.mark.asyncio
+async def test_openpyxl_with_micropip_install(db_pool, clean_files):
+    """Test that openpyxl works when properly installed with micropip.
+
+    This demonstrates the correct pattern for using third-party packages
+    in Pyodide: install with micropip first, then import and use.
+
+    Verifies that VFS fallback correctly detects Excel files created by openpyxl.
+    """
+    executor = SandboxExecutor(db_pool, "test_sandbox")
+
+    code = """
+import micropip
+await micropip.install("openpyxl")
+
+from openpyxl import Workbook
+
+# Create a simple Excel file
+wb = Workbook()
+ws = wb.active
+ws['A1'] = 'Test Data'
+ws['A2'] = 42
+wb.save('/tmp/test.xlsx')
+
+print("Excel file created successfully with openpyxl")
+"""
+
+    result = await executor.execute(code)
+
+    # Execution should succeed
+    assert result.success is True, f"Execution failed: {result.stderr}"
+    assert "Excel file created successfully" in result.stdout
+
+    # VFS fallback should detect the created Excel file
+    assert result.created_files is not None, "VFS fallback should detect file"
+    assert '/tmp/test.xlsx' in result.created_files, (
+        f"Excel file should be tracked. Got: {result.created_files}"
+    )
+
+    # Verify file exists in VFS and has content
+    async with db_pool.acquire() as conn:
+        file_content = await conn.fetchval("""
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/tmp/test.xlsx'
+        """)
+
+        assert file_content is not None, "File should exist in VFS"
+        assert len(file_content) > 0, "File should have content"

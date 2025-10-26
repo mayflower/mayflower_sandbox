@@ -51,6 +51,17 @@ Use this for complex Python code (20+ lines, subplots, multi-step analysis).
 Before calling this tool, generate the complete Python code and it will be
 automatically stored in graph state. Then call this tool to execute it.
 
+IMPORTANT: This runs in Pyodide (Python in WebAssembly). Third-party packages
+must be installed with micropip first:
+
+```python
+import micropip
+await micropip.install('package-name')
+```
+
+Common packages requiring micropip: openpyxl, xlsxwriter, pandas, numpy, matplotlib.
+Only built-in Python standard library modules work without installation.
+
 Args:
     file_path: Where to save the code (e.g., /tmp/visualization.py)
     description: Brief description of what the code does
