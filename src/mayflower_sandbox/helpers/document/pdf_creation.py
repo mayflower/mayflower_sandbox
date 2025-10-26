@@ -2,12 +2,19 @@
 PDF creation helpers using fpdf2.
 
 Pure Python PDF generation with Unicode support via font loading.
+Automatically installs fpdf2 via micropip in Pyodide.
 
 Usage:
-    import micropip
-    await micropip.install('fpdf2')
     from document.pdf_creation import pdf_create_simple, pdf_create_with_unicode
+    # fpdf2 is automatically installed if not present
 """
+
+# Import from package __init__ (works when loaded into VFS at /home/pyodide/document/)
+try:
+    from . import ensure_package
+except ImportError:
+    # Fallback for when called from document.pdf_creation directly in Pyodide
+    from document import ensure_package
 
 
 async def load_dejavu_font() -> bytes:
@@ -65,10 +72,8 @@ async def pdf_create_with_unicode(
         >>> path = await pdf_create_with_unicode("Lab Report", paragraphs)
         >>> print(f"Created: {path}")
     """
-    try:
-        from fpdf import FPDF, XPos, YPos
-    except ImportError as e:
-        raise ImportError("fpdf2 is required. Install with: await micropip.install('fpdf2')") from e
+    ensure_package("fpdf2", "fpdf")
+    from fpdf import FPDF, XPos, YPos
 
     # Load Unicode font
     font_bytes = await load_dejavu_font()
@@ -129,10 +134,8 @@ def pdf_create_simple(
         >>> paragraphs = ["Temperature: 180°C", "π radians"]
         >>> path = pdf_create_simple("Report", paragraphs, ascii_replacements=replacements)
     """
-    try:
-        from fpdf import FPDF, XPos, YPos
-    except ImportError as e:
-        raise ImportError("fpdf2 is required. Install with: await micropip.install('fpdf2')") from e
+    ensure_package("fpdf2", "fpdf")
+    from fpdf import FPDF, XPos, YPos
 
     # Apply ASCII replacements if provided
     if ascii_replacements:

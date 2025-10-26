@@ -278,8 +278,13 @@ class SandboxExecutor:
                 # Step 5b: VFS Fallback - detect files missed by TypeScript snapshot
                 # This handles files created by compiled libraries (openpyxl, xlsxwriter)
                 # that may not be immediately visible to Pyodide's FS snapshot mechanism
+                logger.info(f"VFS fallback check: created_files={created_files}, success={result_data.get('success', False)}")
+                if not result_data.get('success', False):
+                    logger.error(f"Execution failed - stderr: {result_data.get('stderr', '')}")
+                    logger.info(f"Execution stdout: {result_data.get('stdout', '')}")
                 if not created_files and result_data.get("success", False):
                     after_vfs_files = set(f["file_path"] for f in await self.vfs.list_files())
+                    logger.info(f"VFS fallback: before={before_vfs_files}, after={after_vfs_files}")
                     vfs_created = list(after_vfs_files - before_vfs_files)
 
                     if vfs_created:
@@ -288,6 +293,8 @@ class SandboxExecutor:
                             f"VFS fallback detected {len(vfs_created)} files from compiled libraries "
                             f"for thread {self.thread_id}: {vfs_created}"
                         )
+                    else:
+                        logger.info(f"VFS fallback: No new files detected")
 
                 return ExecutionResult(
                     success=result_data.get("success", False),

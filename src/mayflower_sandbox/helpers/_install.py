@@ -1,4 +1,8 @@
-"""Document processing helpers for Word, PDF, Excel, PowerPoint."""
+"""
+Auto-install utility for Pyodide environment.
+
+Automatically installs packages via micropip when running in Pyodide.
+"""
 
 
 def ensure_package(package_name: str, import_name: str | None = None) -> None:

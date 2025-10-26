@@ -1,16 +1,22 @@
 """
 PDF manipulation helpers using pypdf.
 
-Pure Python PDF operations. Requires pypdf via micropip.
+Pure Python PDF operations. Automatically installs pypdf via micropip in Pyodide.
 
 Usage:
-    import micropip
-    await micropip.install('pypdf')
     from document.pdf_manipulation import pdf_merge, pdf_split, pdf_extract_text
+    # pypdf is automatically installed if not present
 """
 
 import io
 from typing import Any
+
+# Import from package __init__ (works when loaded into VFS at /home/pyodide/document/)
+try:
+    from . import ensure_package
+except ImportError:
+    # Fallback for when called from document.pdf_manipulation directly in Pyodide
+    from document import ensure_package
 
 
 def pdf_num_pages(pdf_bytes: bytes) -> int:
@@ -31,10 +37,8 @@ def pdf_num_pages(pdf_bytes: bytes) -> int:
         >>> num_pages = pdf_num_pages(pdf_bytes)
         >>> print(f"PDF has {num_pages} pages")
     """
-    try:
-        from pypdf import PdfReader
-    except ImportError as e:
-        raise ImportError("pypdf is required. Install with: await micropip.install('pypdf')") from e
+    ensure_package("pypdf")
+    from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(pdf_bytes))
     return len(reader.pages)
@@ -59,10 +63,8 @@ def pdf_merge(pdf_list: list[bytes]) -> bytes:
         >>> merged = pdf_merge([pdf1, pdf2])
         >>> open('/tmp/merged.pdf', 'wb').write(merged)
     """
-    try:
-        from pypdf import PdfReader, PdfWriter
-    except ImportError as e:
-        raise ImportError("pypdf is required. Install with: await micropip.install('pypdf')") from e
+    ensure_package("pypdf")
+    from pypdf import PdfReader, PdfWriter
 
     writer = PdfWriter()
 
@@ -182,10 +184,8 @@ def pdf_extract_text(pdf_bytes: bytes) -> str:
         >>> text = pdf_extract_text(pdf_bytes)
         >>> print(text)
     """
-    try:
-        from pypdf import PdfReader
-    except ImportError as e:
-        raise ImportError("pypdf is required. Install with: await micropip.install('pypdf')") from e
+    ensure_package("pypdf")
+    from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(pdf_bytes))
     texts = []
@@ -216,10 +216,8 @@ def pdf_extract_text_by_page(pdf_bytes: bytes) -> list[dict[str, Any]]:
         >>> for page_info in pages:
         ...     print(f"Page {page_info['page']}: {page_info['text'][:100]}...")
     """
-    try:
-        from pypdf import PdfReader
-    except ImportError as e:
-        raise ImportError("pypdf is required. Install with: await micropip.install('pypdf')") from e
+    ensure_package("pypdf")
+    from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(pdf_bytes))
     result = []
@@ -249,10 +247,8 @@ def pdf_get_metadata(pdf_bytes: bytes) -> dict[str, Any]:
         >>> print(f"Title: {metadata.get('title')}")
         >>> print(f"Author: {metadata.get('author')}")
     """
-    try:
-        from pypdf import PdfReader
-    except ImportError as e:
-        raise ImportError("pypdf is required. Install with: await micropip.install('pypdf')") from e
+    ensure_package("pypdf")
+    from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(pdf_bytes))
     metadata = reader.metadata

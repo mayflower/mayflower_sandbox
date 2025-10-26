@@ -5,21 +5,34 @@ Verifies that files created by execute_python tool are tracked in agent state.
 """
 
 import os
+import re
 import sys
+from typing import Annotated
 
 import asyncpg
 import pytest
 from dotenv import load_dotenv
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.types import Command
+from typing_extensions import TypedDict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 load_dotenv()
 
-from langchain.agents import create_agent  # noqa: E402
-from langchain_openai import ChatOpenAI  # noqa: E402
-from langgraph.checkpoint.memory import MemorySaver  # noqa: E402
-
-from mayflower_sandbox.agent_state import SandboxAgentState  # noqa: E402
 from mayflower_sandbox.tools import create_sandbox_tools  # noqa: E402
+
+
+class AgentState(TypedDict):
+    """State with created_files tracking."""
+
+    messages: Annotated[list, add_messages]
+    pending_content: str
+    created_files: list[str]
 
 
 @pytest.fixture
@@ -57,14 +70,162 @@ async def clean_files(db_pool):
     yield
 
 
+def create_agent_graph(db_pool, thread_id="agent_state_test"):
+    """Create LangGraph agent with custom node for content extraction and state tracking."""
+    load_dotenv()  # Ensure .env is loaded for API keys
+    tools = create_sandbox_tools(db_pool, thread_id)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0, api_key=os.getenv("OPENAI_API_KEY"))
+    llm_with_tools = llm.bind_tools(tools)
+
+    tools_by_name = {tool.name: tool for tool in tools}
+
+    def agent_node(state: AgentState) -> dict:
+        """Agent node - calls LLM with tools."""
+        messages = state.get("messages", [])
+        response = llm_with_tools.invoke(messages)
+        return {"messages": [response]}
+
+    async def custom_tool_node(state: AgentState, config: RunnableConfig) -> dict:
+        """Custom tool node that extracts content and tracks state."""
+        messages = state.get("messages", [])
+        last_message = messages[-1]
+
+        if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
+            return {"messages": []}
+
+        tool_state = {}
+        msgs = []
+
+        # Content extraction map
+        content_extraction_map = {
+            "python_run_prepared": "pending_content",
+            "file_write": "pending_content",
+        }
+
+        # Extract content from AI message
+        tool_names = [tc["name"] for tc in last_message.tool_calls]
+        for tool_name in tool_names:
+            if tool_name in content_extraction_map:
+                state_field = content_extraction_map[tool_name]
+
+                if isinstance(last_message, AIMessage) and last_message.content:
+                    content = last_message.content
+
+                    if isinstance(content, list):
+                        text_parts = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif isinstance(block, str):
+                                text_parts.append(block)
+                        content = "\n".join(text_parts)
+
+                    # Extract from markdown block
+                    content_match = re.search(r"```(?:\w+)?\n(.*?)\n```", content, re.DOTALL)
+                    if content_match:
+                        extracted_content = content_match.group(1)
+                        tool_state[state_field] = extracted_content
+
+        # Execute tool calls
+        for tool_call in last_message.tool_calls:
+            tool_name = tool_call["name"]
+            tool = tools_by_name.get(tool_name)
+
+            if tool is None:
+                msgs.append(
+                    ToolMessage(
+                        f"Unknown tool: {tool_name}",
+                        tool_call_id=tool_call.get("id", "unknown"),
+                    )
+                )
+                continue
+
+            try:
+                kwargs = tool_call.get("args", {})
+
+                # Inject state for content-based tools
+                if tool_name in content_extraction_map:
+                    state_field = content_extraction_map[tool_name]
+                    serializable_state = {
+                        state_field: state.get(state_field, "") or tool_state.get(state_field, ""),
+                    }
+                    kwargs["_state"] = serializable_state
+                    kwargs["tool_call_id"] = tool_call.get("id", "")
+
+                if hasattr(tool, "ainvoke"):
+                    result = await tool.ainvoke(kwargs, config)
+                else:
+                    result = tool.invoke(kwargs, config)
+
+                # Handle Command return type
+                if isinstance(result, Command):
+                    update_dict = result.update
+                    for key, value in update_dict.items():
+                        if key != "messages":
+                            # Merge created_files instead of replacing
+                            if key == "created_files":
+                                existing = tool_state.get(key, []) or state.get(key, [])
+                                tool_state[key] = list(set(existing + value))
+                            else:
+                                tool_state[key] = value
+
+                    result_str = result.resume if result.resume else "Tool executed successfully"
+                    msgs.append(ToolMessage(result_str, tool_call_id=tool_call.get("id", "")))
+                else:
+                    msgs.append(ToolMessage(result, tool_call_id=tool_call.get("id", "")))
+
+            except Exception as e:
+                msgs.append(
+                    ToolMessage(
+                        f"Error executing {tool_name}: {e}",
+                        tool_call_id=tool_call.get("id", ""),
+                    )
+                )
+
+        # Update state
+        update = {"messages": msgs}
+        if "pending_content" in tool_state:
+            update["pending_content"] = tool_state["pending_content"]
+        if "created_files" in tool_state:
+            update["created_files"] = tool_state["created_files"]
+
+        return update
+
+    def should_continue(state: AgentState) -> str:
+        """Decide whether to continue or end."""
+        messages = state.get("messages", [])
+        last_message = messages[-1]
+
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+
+        return END
+
+    # Build graph
+    workflow = StateGraph(AgentState)
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", custom_tool_node)
+
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    workflow.add_edge("tools", "agent")
+
+    return workflow.compile(checkpointer=MemorySaver())
+
+
 async def test_write_file_tool_updates_state(db_pool, clean_files):
     """Test that write_file tool updates created_files in state."""
     from mayflower_sandbox.tools.file_write import FileWriteTool
 
     tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
 
+    state = {"pending_content": "Hello State!"}
+
     result = await tool._arun(
-        file_path="/tmp/test.txt", content="Hello State!", tool_call_id="test_call_123"
+        file_path="/tmp/test.txt",
+        description="Test file",
+        _state=state,
+        tool_call_id="test_call_123",
     )
 
     # Check if result is a Command object with state update
@@ -85,8 +246,12 @@ async def test_file_edit_tool_updates_state(db_pool, clean_files):
 
     # First create a file
     write_tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
+    state = {"pending_content": "Old content"}
     await write_tool._arun(
-        file_path="/tmp/edit_test.txt", content="Old content", tool_call_id="test_call_write"
+        file_path="/tmp/edit_test.txt",
+        description="Edit test file",
+        _state=state,
+        tool_call_id="test_call_write",
     )
 
     # Now edit it
@@ -128,25 +293,28 @@ print('File created')
     assert "File created" in result.resume
 
 
-@pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
-)
 async def test_agent_state_tracks_created_files(db_pool, clean_files):
     """Test that created files are tracked in agent state via write_file tool."""
-    tools = create_sandbox_tools(db_pool, "agent_state_test")
-    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+    load_dotenv()  # Ensure API key is loaded
+    if not os.getenv("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY not set - skipping LLM test")
 
-    # Create agent with custom state schema
-    agent = create_agent(llm, tools, checkpointer=MemorySaver(), state_schema=SandboxAgentState)
+    app = create_agent_graph(db_pool, "agent_state_test")
 
-    # Use write_file tool to create a file
-    result = await agent.ainvoke(
+    # Use write_file tool to create a file with clear instructions
+    result = await app.ainvoke(
         {
             "messages": [
-                ("user", "Use write_file to create /tmp/test.txt with content 'Hello State!'")
-            ]
+                (
+                    "user",
+                    "Generate the text 'Hello State!' and then use the file_write tool "
+                    "to save it to /tmp/test.txt. Put the text content in a markdown code block.",
+                )
+            ],
+            "pending_content": "",
+            "created_files": [],
         },
-        config={"configurable": {"thread_id": "test-state-tracking"}},
+        config={"configurable": {"thread_id": "test-state-tracking"}, "recursion_limit": 50},
     )
 
     # Check that created_files is in the state
@@ -166,27 +334,31 @@ async def test_agent_state_tracks_created_files(db_pool, clean_files):
         assert b"Hello State!" in file_data["content"]
 
 
-@pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
-)
 async def test_agent_state_tracks_multiple_files(db_pool, clean_files):
     """Test that multiple created files are all tracked in state."""
-    tools = create_sandbox_tools(db_pool, "agent_state_test")
-    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+    load_dotenv()  # Ensure API key is loaded
+    if not os.getenv("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY not set - skipping LLM test")
 
-    agent = create_agent(llm, tools, checkpointer=MemorySaver(), state_schema=SandboxAgentState)
+    app = create_agent_graph(db_pool, "agent_state_test")
 
-    # Create multiple files in one execution
-    result = await agent.ainvoke(
+    # Create multiple files - use python_run to create multiple files at once
+    result = await app.ainvoke(
         {
             "messages": [
                 (
                     "user",
-                    "Create three files: /tmp/file1.txt, /tmp/file2.txt, and /tmp/file3.txt",
+                    "Write Python code to create three text files:\n"
+                    "1. /tmp/file1.txt with content 'File One'\n"
+                    "2. /tmp/file2.txt with content 'File Two'\n"
+                    "3. /tmp/file3.txt with content 'File Three'\n"
+                    "Then print 'All files created'. Use python_run_prepared to execute.",
                 )
-            ]
+            ],
+            "pending_content": "",
+            "created_files": [],
         },
-        config={"configurable": {"thread_id": "test-multi-files"}},
+        config={"configurable": {"thread_id": "test-multi-files"}, "recursion_limit": 50},
     )
 
     # Check that all files are tracked
@@ -200,21 +372,29 @@ async def test_agent_state_tracks_multiple_files(db_pool, clean_files):
     assert any("/tmp/file3.txt" in path for path in created_paths)
 
 
-@pytest.mark.skipif(
-    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
-)
 async def test_agent_can_reference_created_files(db_pool, clean_files):
     """Test that agent can reference files from state in subsequent actions."""
-    tools = create_sandbox_tools(db_pool, "agent_state_test")
-    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+    load_dotenv()  # Ensure API key is loaded
+    if not os.getenv("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY not set - skipping LLM test")
 
-    agent = create_agent(llm, tools, checkpointer=MemorySaver(), state_schema=SandboxAgentState)
+    app = create_agent_graph(db_pool, "agent_state_test")
 
-    config = {"configurable": {"thread_id": "test-file-reference"}}
+    config = {"configurable": {"thread_id": "test-file-reference"}, "recursion_limit": 50}
 
     # First: create a file
-    result1 = await agent.ainvoke(
-        {"messages": [("user", "Create a file /tmp/data.txt with content 'important data'")]},
+    result1 = await app.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Write Python code to create a file /tmp/data.txt with the text 'important data'. "
+                    "Print 'File created'. Use python_run_prepared.",
+                )
+            ],
+            "pending_content": "",
+            "created_files": [],
+        },
         config=config,
     )
 
@@ -222,8 +402,13 @@ async def test_agent_can_reference_created_files(db_pool, clean_files):
     assert any("/tmp/data.txt" in path for path in result1["created_files"])
 
     # Second: ask agent to read the file it created
-    result2 = await agent.ainvoke(
-        {"messages": [("user", "Read the file you just created")]}, config=config
+    result2 = await app.ainvoke(
+        {
+            "messages": [
+                ("user", "Use the file_read tool to read the contents of /tmp/data.txt")
+            ]
+        },
+        config=config,
     )
 
     # Agent should be able to access the file

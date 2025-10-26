@@ -51,16 +51,34 @@ Use this for complex Python code (20+ lines, subplots, multi-step analysis).
 Before calling this tool, generate the complete Python code and it will be
 automatically stored in graph state. Then call this tool to execute it.
 
-IMPORTANT: This runs in Pyodide (Python in WebAssembly). Third-party packages
-must be installed with micropip first:
+CRITICAL: This runs in Pyodide (Python in WebAssembly).
+
+DOCUMENT GENERATION (Excel, PDF, Word, PowerPoint):
+Use preloaded helper modules - they auto-install dependencies:
 
 ```python
-import micropip
-await micropip.install('package-name')
+# Excel files - No manual installation needed!
+from document.xlsx_helpers import xlsx_write_cells, xlsx_to_dict
+# OR use openpyxl directly after: await micropip.install('openpyxl')
+
+# PDF creation
+from document.pdf_creation import pdf_create_simple
+# OR use fpdf2 directly after: await micropip.install('fpdf2')
+
+# PDF manipulation
+from document.pdf_manipulation import pdf_merge, pdf_split
+
+# Word/PowerPoint (pure Python XML manipulation, no install needed)
+from document.docx_ooxml import docx_find_replace
+from document.pptx_ooxml import pptx_replace_text
 ```
 
-Common packages requiring micropip: openpyxl, xlsxwriter, pandas, numpy, matplotlib.
-Only built-in Python standard library modules work without installation.
+OTHER PACKAGES require micropip installation:
+```python
+import micropip
+await micropip.install('pandas')  # Data analysis
+await micropip.install('matplotlib')  # Charts
+```
 
 Args:
     file_path: Where to save the code (e.g., /tmp/visualization.py)

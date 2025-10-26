@@ -1,16 +1,22 @@
 """
 Excel helpers using openpyxl.
 
-Pure Python Excel manipulation without external dependencies beyond openpyxl.
+Pure Python Excel manipulation. Automatically installs openpyxl via micropip in Pyodide.
 
 Usage:
-    import micropip
-    await micropip.install('openpyxl')
     from document.xlsx_helpers import xlsx_read_cells, xlsx_write_cells
+    # openpyxl is automatically installed if not present
 """
 
 import io
 from typing import Any
+
+# Import from package __init__ (works when loaded into VFS at /home/pyodide/document/)
+try:
+    from . import ensure_package
+except ImportError:
+    # Fallback for when called from document.xlsx_helpers directly in Pyodide
+    from document import ensure_package
 
 
 def xlsx_get_sheet_names(xlsx_bytes: bytes) -> list[str]:
@@ -23,9 +29,6 @@ def xlsx_get_sheet_names(xlsx_bytes: bytes) -> list[str]:
     Returns:
         List of sheet names
 
-    Requirements:
-        - openpyxl must be installed: await micropip.install('openpyxl')
-
     Example:
         >>> from document.xlsx_helpers import xlsx_get_sheet_names
         >>> xlsx_bytes = open('/tmp/workbook.xlsx', 'rb').read()
@@ -33,12 +36,8 @@ def xlsx_get_sheet_names(xlsx_bytes: bytes) -> list[str]:
         >>> print(sheets)
         ['Sheet1', 'Sheet2', 'Data']
     """
-    try:
-        from openpyxl import load_workbook
-    except ImportError as e:
-        raise ImportError(
-            "openpyxl is required. Install with: await micropip.install('openpyxl')"
-        ) from e
+    ensure_package("openpyxl")
+    from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(xlsx_bytes), read_only=True)
     return wb.sheetnames
@@ -56,9 +55,6 @@ def xlsx_read_cells(xlsx_bytes: bytes, sheet_name: str, cells: list[str]) -> dic
     Returns:
         Dictionary mapping cell references to their values
 
-    Requirements:
-        - openpyxl must be installed: await micropip.install('openpyxl')
-
     Example:
         >>> from document.xlsx_helpers import xlsx_read_cells
         >>> xlsx_bytes = open('/tmp/workbook.xlsx', 'rb').read()
@@ -66,12 +62,8 @@ def xlsx_read_cells(xlsx_bytes: bytes, sheet_name: str, cells: list[str]) -> dic
         >>> print(values)
         {'A1': 'Name', 'B2': 42, 'C3': 3.14}
     """
-    try:
-        from openpyxl import load_workbook
-    except ImportError as e:
-        raise ImportError(
-            "openpyxl is required. Install with: await micropip.install('openpyxl')"
-        ) from e
+    ensure_package("openpyxl")
+    from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(xlsx_bytes), data_only=True, read_only=True)
     ws = wb[sheet_name]
@@ -95,21 +87,14 @@ def xlsx_write_cells(xlsx_bytes: bytes, sheet_name: str, cells: dict[str, Any]) 
     Returns:
         Modified Excel file as bytes
 
-    Requirements:
-        - openpyxl must be installed: await micropip.install('openpyxl')
-
     Example:
         >>> from document.xlsx_helpers import xlsx_write_cells
         >>> xlsx_bytes = open('/tmp/workbook.xlsx', 'rb').read()
         >>> modified = xlsx_write_cells(xlsx_bytes, 'Sheet1', {'A1': 'Updated', 'B2': 100})
         >>> open('/tmp/output.xlsx', 'wb').write(modified)
     """
-    try:
-        from openpyxl import load_workbook
-    except ImportError as e:
-        raise ImportError(
-            "openpyxl is required. Install with: await micropip.install('openpyxl')"
-        ) from e
+    ensure_package("openpyxl")
+    from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(xlsx_bytes))
     ws = wb[sheet_name]
@@ -136,9 +121,6 @@ def xlsx_to_dict(
     Returns:
         List of dictionaries representing rows
 
-    Requirements:
-        - openpyxl must be installed: await micropip.install('openpyxl')
-
     Example:
         >>> from document.xlsx_helpers import xlsx_to_dict
         >>> xlsx_bytes = open('/tmp/workbook.xlsx', 'rb').read()
@@ -146,12 +128,8 @@ def xlsx_to_dict(
         >>> print(data)
         [{'Name': 'Alice', 'Age': 30}, {'Name': 'Bob', 'Age': 25}]
     """
-    try:
-        from openpyxl import load_workbook
-    except ImportError as e:
-        raise ImportError(
-            "openpyxl is required. Install with: await micropip.install('openpyxl')"
-        ) from e
+    ensure_package("openpyxl")
+    from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(xlsx_bytes), data_only=True, read_only=True)
     ws = wb[sheet_name]
@@ -182,9 +160,6 @@ def xlsx_has_formulas(xlsx_bytes: bytes) -> dict[str, list[str]]:
     Returns:
         Dictionary mapping sheet names to lists of cells with formulas
 
-    Requirements:
-        - openpyxl must be installed: await micropip.install('openpyxl')
-
     Example:
         >>> from document.xlsx_formulas import xlsx_has_formulas
         >>> xlsx_bytes = open('/tmp/workbook.xlsx', 'rb').read()
@@ -192,12 +167,8 @@ def xlsx_has_formulas(xlsx_bytes: bytes) -> dict[str, list[str]]:
         >>> print(formulas)
         {'Sheet1': ['A3', 'B5', 'C10'], 'Sheet2': ['D2']}
     """
-    try:
-        from openpyxl import load_workbook
-    except ImportError as e:
-        raise ImportError(
-            "openpyxl is required. Install with: await micropip.install('openpyxl')"
-        ) from e
+    ensure_package("openpyxl")
+    from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(xlsx_bytes), data_only=False)
     formula_cells = {}
@@ -227,9 +198,6 @@ def xlsx_read_with_formulas(xlsx_bytes: bytes) -> dict[str, dict[str, Any]]:
 
     Returns:
         Dictionary with 'values' and 'formulas' keys containing cell data
-
-    Requirements:
-        - openpyxl must be installed: await micropip.install('openpyxl')
 
     Example:
         >>> from document.xlsx_formulas import xlsx_read_with_formulas
