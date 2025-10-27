@@ -273,7 +273,6 @@ async def test_agent_excel_data_analysis_workflow(agent, clean_files):
     assert "average" in response.lower() or "salary" in response.lower()
 
 
-@pytest.mark.skip(reason="PDF manipulation causes agent recursion issues")
 async def test_agent_pdf_with_multiple_pages(agent, clean_files):
     """Test agent can create a multi-page PDF."""
     result = await agent.ainvoke(

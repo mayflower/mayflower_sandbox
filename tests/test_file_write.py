@@ -55,26 +55,37 @@ async def test_file_write_from_state(db_pool, clean_files):
     """Test that file_write extracts and writes content from state."""
     tool = FileWriteTool(db_pool=db_pool, thread_id="test_file_write")
 
-    # Simulate graph state with pending_content
+    # Simulate graph state with pending_content_map
+    tool_call_id = "test_tool_call_123"
     state = {
-        "pending_content": """name,age,city
+        "pending_content_map": {
+            tool_call_id: """name,age,city
 Alice,30,New York
 Bob,25,San Francisco
 Charlie,35,Seattle"""
+        }
     }
 
-    # Execute the tool (no tool_call_id = returns string, not Command)
+    # Execute the tool (with tool_call_id = returns Command)
     result = await tool._arun(
         file_path="/tmp/data.csv",
         description="CSV data file",
         _state=state,
-        tool_call_id="",
+        tool_call_id=tool_call_id,
     )
 
+    # Handle Command return type
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
     # Verify write succeeded
-    assert "Successfully wrote" in result
-    assert "/tmp/data.csv" in result
-    assert "Error" not in result
+    assert "Successfully wrote" in result_str
+    assert "/tmp/data.csv" in result_str
+    assert "Error" not in result_str
 
     # Verify file was actually written to VFS
     vfs = VirtualFilesystem(db_pool, "test_file_write")
@@ -85,11 +96,14 @@ Charlie,35,Seattle"""
 
 
 async def test_file_write_clears_pending_content(db_pool, clean_files):
-    """Test that file_write returns Command to clear pending_content."""
+    """Test that file_write returns Command to clear pending_content_map entry."""
     tool = FileWriteTool(db_pool=db_pool, thread_id="test_file_write")
 
+    tool_call_id = "test_call_123"
     state = {
-        "pending_content": '{"key": "value", "number": 42}'
+        "pending_content_map": {
+            tool_call_id: '{"key": "value", "number": 42}'
+        }
     }
 
     # Execute with tool_call_id to get Command return
@@ -97,14 +111,14 @@ async def test_file_write_clears_pending_content(db_pool, clean_files):
         file_path="/tmp/config.json",
         description="JSON configuration",
         _state=state,
-        tool_call_id="test_call_123",
+        tool_call_id=tool_call_id,
     )
 
     # Verify Command was returned
     from langgraph.types import Command
 
     assert isinstance(result, Command)
-    assert result.update["pending_content"] == ""  # Should clear state
+    assert tool_call_id not in result.update["pending_content_map"]  # Should clear this tool's entry
     assert "/tmp/config.json" in result.update["created_files"]
     assert "Successfully wrote" in result.resume
 
@@ -135,18 +149,31 @@ async def test_file_write_with_large_content(db_pool, clean_files):
     # Generate large content (5000 lines)
     large_content = "\n".join([f"Line {i}: {'x' * 50}" for i in range(5000)])
 
-    state = {"pending_content": large_content}
+    tool_call_id = "test_large_123"
+    state = {
+        "pending_content_map": {
+            tool_call_id: large_content
+        }
+    }
 
     result = await tool._arun(
         file_path="/tmp/large_file.txt",
         description="Large test file",
         _state=state,
-        tool_call_id="",
+        tool_call_id=tool_call_id,
     )
 
+    # Handle Command return type
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
     # Verify write succeeded
-    assert "Successfully wrote" in result
-    assert "Error" not in result
+    assert "Successfully wrote" in result_str
+    assert "Error" not in result_str
 
     # Verify file size
     vfs = VirtualFilesystem(db_pool, "test_file_write")

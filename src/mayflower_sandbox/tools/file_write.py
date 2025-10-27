@@ -63,12 +63,19 @@ Returns:
         self,
         file_path: str,
         description: str,
-        _state: dict,
+        _state: dict | None = None,
         tool_call_id: str = "",
         _config: dict | None = None,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Write file to VFS from graph state."""
+        # If _state is None, tool is being called without custom state injection
+        if _state is None:
+            return (
+                "Error: This tool requires graph state. "
+                "Please use with a custom tool node that injects state, "
+                "or use standard file operations."
+            )
         # Extract thread_id from config (passed by custom_tool_node)
         thread_id = None
         if _config:

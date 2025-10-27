@@ -54,9 +54,11 @@ async def test_execute_code_from_state(db_pool, clean_files):
     """Test that python_run_prepared extracts and executes code from state."""
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
-    # Simulate graph state with pending_content
+    # Simulate graph state with pending_content_map
+    tool_call_id = "test_exec_123"
     state = {
-        "pending_content": """
+        "pending_content_map": {
+            tool_call_id: """
 import math
 
 # Calculate some values
@@ -66,28 +68,39 @@ y = math.sqrt(x)
 print(f"Square root of {x} is {y}")
 print("Code executed successfully!")
 """
+        }
     }
 
-    # Execute the tool (no tool_call_id = returns string, not Command)
+    # Execute the tool (with tool_call_id = returns Command)
     result = await tool._arun(
         file_path="/tmp/test_code.py",
         description="Test state-based code extraction",
         _state=state,
-        tool_call_id="",
+        tool_call_id=tool_call_id,
     )
 
+    # Handle Command return type
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
     # Verify execution succeeded
-    assert "Square root of 42 is" in result
-    assert "Code executed successfully!" in result
-    assert "Error" not in result
+    assert "Square root of 42 is" in result_str
+    assert "Code executed successfully!" in result_str
+    assert "Error" not in result_str
 
 
 async def test_execute_code_with_file_creation(db_pool, clean_files):
     """Test that python_run_prepared can create files and they persist."""
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
+    tool_call_id = "test_file_create_456"
     state = {
-        "pending_content": """
+        "pending_content_map": {
+            tool_call_id: """
 # Create a simple data file
 data = "Hello from state-based execution!"
 
@@ -96,29 +109,40 @@ with open('/tmp/output.txt', 'w') as f:
 
 print(f"Created file with {len(data)} characters")
 """
+        }
     }
 
     result = await tool._arun(
         file_path="/tmp/create_file.py",
         description="Create a file from state code",
         _state=state,
-        tool_call_id="",
+        tool_call_id=tool_call_id,
     )
 
+    # Handle Command return type
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
     # Verify execution succeeded
-    assert "Created file with" in result
-    assert "characters" in result
+    assert "Created file with" in result_str
+    assert "characters" in result_str
 
     # Verify file was created and persisted
-    assert "/tmp/output.txt" in result or "Created files:" in result
+    assert "/tmp/output.txt" in result_str or "Created files:" in result_str
 
 
 async def test_execute_code_with_computation(db_pool, clean_files):
     """Test python_run_prepared with computational code."""
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
+    tool_call_id = "test_fib_789"
     state = {
-        "pending_content": """
+        "pending_content_map": {
+            tool_call_id: """
 # Fibonacci calculation
 def fib(n):
     if n <= 1:
@@ -132,18 +156,27 @@ print(f"Fibonacci(10) = {result}")
 assert result == 55, "Fibonacci calculation failed"
 print("Computation verified!")
 """
+        }
     }
 
     result = await tool._arun(
         file_path="/tmp/fibonacci.py",
         description="Calculate Fibonacci numbers",
         _state=state,
-        tool_call_id="",
+        tool_call_id=tool_call_id,
     )
 
+    # Handle Command return type
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
     # Verify execution succeeded
-    assert "Fibonacci(10) = 55" in result
-    assert "Computation verified!" in result
+    assert "Fibonacci(10) = 55" in result_str
+    assert "Computation verified!" in result_str
 
 
 async def test_execute_code_no_code_in_state(db_pool, clean_files):
@@ -169,8 +202,10 @@ async def test_execute_code_with_imports(db_pool, clean_files):
     """Test python_run_prepared with package imports."""
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
+    tool_call_id = "test_numpy_111"
     state = {
-        "pending_content": """
+        "pending_content_map": {
+            tool_call_id: """
 import micropip
 await micropip.install('numpy')
 
@@ -184,15 +219,24 @@ std = np.std(arr)
 print(f"Array mean: {mean}")
 print(f"Array std: {std:.4f}")
 """
+        }
     }
 
     result = await tool._arun(
         file_path="/tmp/numpy_test.py",
         description="Test with numpy",
         _state=state,
-        tool_call_id="",
+        tool_call_id=tool_call_id,
     )
 
+    # Handle Command return type
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
     # Verify numpy code executed
-    assert "Array mean: 3.0" in result or "Array mean: 3" in result
-    assert "Array std:" in result
+    assert "Array mean: 3.0" in result_str or "Array mean: 3" in result_str
+    assert "Array std:" in result_str

@@ -37,7 +37,7 @@ class AgentState(TypedDict):
     """State matching maistack usage."""
 
     messages: Annotated[list, add_messages]
-    pending_content: str  # Content extracted from AI message (used by python_run_prepared and file_write)
+    pending_content_map: dict[str, str]  # Content extracted from AI message, keyed by tool_call_id
 
 
 @pytest.fixture
@@ -111,41 +111,39 @@ def create_agent_graph(db_pool, include_tools=None):
         if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
             return {"messages": []}
 
-        tool_state = {}
+        # Initialize pending_content_map from state
+        pending_content_map = state.get("pending_content_map", {}).copy()
         msgs = []
 
-        # Map tool names to their state field for content extraction
-        content_extraction_map = {
-            "python_run_prepared": "pending_content",
-            "file_write": "pending_content",
-        }
+        # Content-based tools that need extraction
+        content_extraction_tools = {"python_run_prepared", "file_write"}
 
-        # Extract content from AI message for any tool that needs it
-        tool_names = [tc["name"] for tc in last_message.tool_calls]
-        for tool_name in tool_names:
-            if tool_name in content_extraction_map:
-                state_field = content_extraction_map[tool_name]
+        # Extract content from AI message for tools that need it
+        if isinstance(last_message, AIMessage) and last_message.content:
+            content = last_message.content
 
-                if isinstance(last_message, AIMessage) and last_message.content:
-                    content = last_message.content
+            # Handle case where content is a list of blocks
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = "\n".join(text_parts)
 
-                    # Handle case where content is a list of blocks
-                    if isinstance(content, list):
-                        text_parts = []
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                            elif isinstance(block, str):
-                                text_parts.append(block)
-                        content = "\n".join(text_parts)
+            # Extract content from markdown block
+            # Try with language specifier first (python, csv, json, etc.)
+            content_match = re.search(r"```(?:\w+)?\n(.*?)\n```", content, re.DOTALL)
 
-                    # Extract content from markdown block
-                    # Try with language specifier first (python, csv, json, etc.)
-                    content_match = re.search(r"```(?:\w+)?\n(.*?)\n```", content, re.DOTALL)
-
-                    if content_match:
-                        extracted_content = content_match.group(1)
-                        tool_state[state_field] = extracted_content
+            if content_match:
+                extracted_content = content_match.group(1)
+                # Store content in map using tool_call_id as key
+                for tool_call in last_message.tool_calls:
+                    if tool_call["name"] in content_extraction_tools:
+                        tool_call_id = tool_call.get("id", "")
+                        if tool_call_id:
+                            pending_content_map[tool_call_id] = extracted_content
 
         # Execute tool calls
         for tool_call in last_message.tool_calls:
@@ -166,13 +164,9 @@ def create_agent_graph(db_pool, include_tools=None):
                 kwargs = tool_call.get("args", {})
 
                 # Inject state for content-based tools (generalized pattern)
-                if tool_name in content_extraction_map:
-                    state_field = content_extraction_map[tool_name]
-                    # Only pass the relevant state field (avoids serialization issues)
-                    serializable_state = {
-                        state_field: state.get(state_field, "") or tool_state.get(state_field, ""),
-                    }
-                    kwargs["_state"] = serializable_state
+                if tool_name in content_extraction_tools:
+                    # Pass pending_content_map to the tool
+                    kwargs["_state"] = {"pending_content_map": pending_content_map}
                     kwargs["tool_call_id"] = tool_call.get("id", "")
 
                 # Call tool (use ainvoke for async)
@@ -186,8 +180,11 @@ def create_agent_graph(db_pool, include_tools=None):
                     # Extract state updates (matching maistack pattern)
                     update_dict = result.update
                     for key, value in update_dict.items():
-                        if key != "messages":
-                            tool_state[key] = value
+                        if key == "pending_content_map":
+                            # Update our local map with changes from tool
+                            pending_content_map = value
+                        elif key != "messages":
+                            pass  # Other state updates can be handled here
 
                     # Extract the actual result string from Command.resume
                     result_str = result.resume if result.resume else "Tool executed successfully"
@@ -205,12 +202,11 @@ def create_agent_graph(db_pool, include_tools=None):
                     )
                 )
 
-        # Update state with extracted code and messages
-        update = {"messages": msgs}
-        if tool_state.get("pending_content") is not None:
-            update["pending_content"] = tool_state["pending_content"]
-
-        return update
+        # Update state with extracted content map and messages
+        return {
+            "messages": msgs,
+            "pending_content_map": pending_content_map,
+        }
 
     def should_continue(state: AgentState) -> str:
         """Decide whether to continue or end."""
@@ -254,7 +250,7 @@ async def test_python_run_prepared_with_code_extraction(db_pool, clean_files):
                     "Use python_run_prepared to execute it.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-factorial"}},
     )
@@ -283,7 +279,7 @@ async def test_python_run_prepared_with_file_creation(db_pool, clean_files):
                     "'Test data from e2e'. Use python_run_prepared to execute it.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-file-creation"}},
     )
@@ -313,7 +309,7 @@ async def test_python_run_prepared_with_computation(db_pool, clean_files):
                     "Use python_run_prepared to execute it.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-primes"}},
     )
@@ -345,14 +341,14 @@ async def test_python_run_prepared_state_clearing(db_pool, clean_files):
                     "Use python_run_prepared.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-state-clear"}},
     )
 
-    # Check that pending_content was cleared (should be empty string after execution)
+    # Check that pending_content_map was cleared (should be empty dict after execution)
     # Note: This verifies the Command pattern properly updates state
-    assert result.get("pending_content", "NOTSET") == "" or result.get("pending_content") == "NOTSET"
+    assert result.get("pending_content_map", "NOTSET") == {} or result.get("pending_content_map") == "NOTSET"
 
 
 # Tests for sandbox document helpers
@@ -380,7 +376,7 @@ async def test_python_run_prepared_with_excel_helpers(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-excel"}},
     )
@@ -417,7 +413,7 @@ async def test_python_run_prepared_with_pdf_creation(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-pdf"}},
     )
@@ -453,7 +449,7 @@ async def test_python_run_prepared_with_pptx_extraction(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-pptx"}},
     )
@@ -491,7 +487,7 @@ async def test_python_run_prepared_with_docx_manipulation(db_pool, clean_files):
                     "Use python_run_prepared to execute.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-docx"}},
     )
@@ -527,7 +523,7 @@ async def test_file_write_with_csv_data(db_pool, clean_files):
                     "Generate the CSV content and use file_write to save it.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-csv"}},
     )
@@ -561,7 +557,7 @@ async def test_file_write_with_json_config(db_pool, clean_files):
                     "Generate properly formatted JSON and use file_write to save it.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-json"}},
     )
@@ -597,7 +593,7 @@ async def test_file_write_with_large_markdown(db_pool, clean_files):
                     "Make it comprehensive and detailed. Use file_write to save it.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
         },
         config={"configurable": {"thread_id": "test-markdown"}},
     )

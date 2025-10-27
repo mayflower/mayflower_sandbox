@@ -31,7 +31,7 @@ class AgentState(TypedDict):
     """State with created_files tracking."""
 
     messages: Annotated[list, add_messages]
-    pending_content: str
+    pending_content_map: dict[str, str]
     created_files: list[str]
 
 
@@ -93,38 +93,37 @@ def create_agent_graph(db_pool, thread_id="agent_state_test"):
         if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
             return {"messages": []}
 
+        # Initialize pending_content_map from state
+        pending_content_map = state.get("pending_content_map", {}).copy()
         tool_state = {}
         msgs = []
 
-        # Content extraction map
-        content_extraction_map = {
-            "python_run_prepared": "pending_content",
-            "file_write": "pending_content",
-        }
+        # Content-based tools that need extraction
+        content_extraction_tools = {"python_run_prepared", "file_write"}
 
         # Extract content from AI message
-        tool_names = [tc["name"] for tc in last_message.tool_calls]
-        for tool_name in tool_names:
-            if tool_name in content_extraction_map:
-                state_field = content_extraction_map[tool_name]
+        if isinstance(last_message, AIMessage) and last_message.content:
+            content = last_message.content
 
-                if isinstance(last_message, AIMessage) and last_message.content:
-                    content = last_message.content
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = "\n".join(text_parts)
 
-                    if isinstance(content, list):
-                        text_parts = []
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                            elif isinstance(block, str):
-                                text_parts.append(block)
-                        content = "\n".join(text_parts)
-
-                    # Extract from markdown block
-                    content_match = re.search(r"```(?:\w+)?\n(.*?)\n```", content, re.DOTALL)
-                    if content_match:
-                        extracted_content = content_match.group(1)
-                        tool_state[state_field] = extracted_content
+            # Extract from markdown block
+            content_match = re.search(r"```(?:\w+)?\n(.*?)\n```", content, re.DOTALL)
+            if content_match:
+                extracted_content = content_match.group(1)
+                # Store content in map using tool_call_id as key
+                for tool_call in last_message.tool_calls:
+                    if tool_call["name"] in content_extraction_tools:
+                        tool_call_id = tool_call.get("id", "")
+                        if tool_call_id:
+                            pending_content_map[tool_call_id] = extracted_content
 
         # Execute tool calls
         for tool_call in last_message.tool_calls:
@@ -144,12 +143,8 @@ def create_agent_graph(db_pool, thread_id="agent_state_test"):
                 kwargs = tool_call.get("args", {})
 
                 # Inject state for content-based tools
-                if tool_name in content_extraction_map:
-                    state_field = content_extraction_map[tool_name]
-                    serializable_state = {
-                        state_field: state.get(state_field, "") or tool_state.get(state_field, ""),
-                    }
-                    kwargs["_state"] = serializable_state
+                if tool_name in content_extraction_tools:
+                    kwargs["_state"] = {"pending_content_map": pending_content_map}
                     kwargs["tool_call_id"] = tool_call.get("id", "")
 
                 if hasattr(tool, "ainvoke"):
@@ -161,7 +156,10 @@ def create_agent_graph(db_pool, thread_id="agent_state_test"):
                 if isinstance(result, Command):
                     update_dict = result.update
                     for key, value in update_dict.items():
-                        if key != "messages":
+                        if key == "pending_content_map":
+                            # Update our local map with changes from tool
+                            pending_content_map = value
+                        elif key != "messages":
                             # Merge created_files instead of replacing
                             if key == "created_files":
                                 existing = tool_state.get(key, []) or state.get(key, [])
@@ -183,9 +181,10 @@ def create_agent_graph(db_pool, thread_id="agent_state_test"):
                 )
 
         # Update state
-        update = {"messages": msgs}
-        if "pending_content" in tool_state:
-            update["pending_content"] = tool_state["pending_content"]
+        update = {
+            "messages": msgs,
+            "pending_content_map": pending_content_map,
+        }
         if "created_files" in tool_state:
             update["created_files"] = tool_state["created_files"]
 
@@ -219,13 +218,18 @@ async def test_write_file_tool_updates_state(db_pool, clean_files):
 
     tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
 
-    state = {"pending_content": "Hello State!"}
+    tool_call_id = "test_call_123"
+    state = {
+        "pending_content_map": {
+            tool_call_id: "Hello State!"
+        }
+    }
 
     result = await tool._arun(
         file_path="/tmp/test.txt",
         description="Test file",
         _state=state,
-        tool_call_id="test_call_123",
+        tool_call_id=tool_call_id,
     )
 
     # Check if result is a Command object with state update
@@ -246,12 +250,17 @@ async def test_file_edit_tool_updates_state(db_pool, clean_files):
 
     # First create a file
     write_tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
-    state = {"pending_content": "Old content"}
+    tool_call_id_write = "test_call_write"
+    state = {
+        "pending_content_map": {
+            tool_call_id_write: "Old content"
+        }
+    }
     await write_tool._arun(
         file_path="/tmp/edit_test.txt",
         description="Edit test file",
         _state=state,
-        tool_call_id="test_call_write",
+        tool_call_id=tool_call_id_write,
     )
 
     # Now edit it
@@ -311,7 +320,7 @@ async def test_agent_state_tracks_created_files(db_pool, clean_files):
                     "to save it to /tmp/test.txt. Put the text content in a markdown code block.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
             "created_files": [],
         },
         config={"configurable": {"thread_id": "test-state-tracking"}, "recursion_limit": 50},
@@ -355,7 +364,7 @@ async def test_agent_state_tracks_multiple_files(db_pool, clean_files):
                     "Then print 'All files created'. Use python_run_prepared to execute.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
             "created_files": [],
         },
         config={"configurable": {"thread_id": "test-multi-files"}, "recursion_limit": 50},
@@ -392,7 +401,7 @@ async def test_agent_can_reference_created_files(db_pool, clean_files):
                     "Print 'File created'. Use python_run_prepared.",
                 )
             ],
-            "pending_content": "",
+            "pending_content_map": {},
             "created_files": [],
         },
         config=config,
