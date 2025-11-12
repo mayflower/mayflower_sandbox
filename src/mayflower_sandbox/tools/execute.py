@@ -321,7 +321,9 @@ Examples:
         thread_id = self._get_thread_id(run_manager)
 
         # Create executor with network access for micropip
-        executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True, timeout_seconds=60.0)
+        executor = SandboxExecutor(
+            self.db_pool, thread_id, allow_net=True, timeout_seconds=60.0, stateful=True
+        )
 
         # Execute
         result = await executor.execute(code)

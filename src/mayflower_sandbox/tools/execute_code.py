@@ -21,11 +21,10 @@ class ExecuteCodeInput(BaseModel):
 
     file_path: str = Field(
         default="/tmp/script.py",
-        description="Path where code will be saved (e.g., /tmp/visualization.py)"
+        description="Path where code will be saved (e.g., /tmp/visualization.py)",
     )
     description: str = Field(
-        default="Python script",
-        description="Brief description of what the code does"
+        default="Python script", description="Brief description of what the code does"
     )
     tool_call_id: Annotated[str, InjectedToolCallId]
 
@@ -130,7 +129,9 @@ Returns:
         # Debug logging
         logger.info(f"execute_code: Looking for tool_call_id={tool_call_id}")
         logger.info(f"execute_code: pending_content_map keys: {list(pending_content_map.keys())}")
-        logger.info(f"execute_code: pending_content_map sizes: {[(k[:12], len(v)) for k, v in pending_content_map.items()]}")
+        logger.info(
+            f"execute_code: pending_content_map sizes: {[(k[:12], len(v)) for k, v in pending_content_map.items()]}"
+        )
 
         code = pending_content_map.get(tool_call_id, "")
 
@@ -142,7 +143,9 @@ Returns:
                 "Generate Python code first before calling this tool."
             )
 
-        logger.info(f"execute_code: Found {len(code)} chars of code in state for tool_call_id={tool_call_id[:8]}...")
+        logger.info(
+            f"execute_code: Found {len(code)} chars of code in state for tool_call_id={tool_call_id[:8]}..."
+        )
 
         # Write code to VFS
         vfs = VirtualFilesystem(self.db_pool, thread_id)
@@ -154,7 +157,7 @@ Returns:
             return f"Error writing code to file: {e}"
 
         # Execute the code with network access enabled for micropip package installation
-        executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True)
+        executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True, stateful=True)
         try:
             exec_result = await executor.execute(code)
             logger.info("execute_code: Execution completed")
@@ -175,6 +178,7 @@ Returns:
 
                 for path in exec_result.created_files:
                     import os
+
                     ext = os.path.splitext(path)[1].lower()
                     if ext in image_extensions:
                         image_files.append(path)
@@ -189,11 +193,16 @@ Returns:
                 # Show other files as markdown links
                 if other_files:
                     import os
-                    files_md = "\n".join(f"- [{os.path.basename(path)}]({path})" for path in other_files)
+
+                    files_md = "\n".join(
+                        f"- [{os.path.basename(path)}]({path})" for path in other_files
+                    )
                     response_parts.append(files_md)
 
             result = "\n\n".join(response_parts) if response_parts else "Code executed successfully"
-            logger.info(f"execute_code: Generated result with {len(result)} chars: {result[:200]}...")
+            logger.info(
+                f"execute_code: Generated result with {len(result)} chars: {result[:200]}..."
+            )
 
             # Clear this tool_call_id's content from state after successful execution
             if tool_call_id:
@@ -202,7 +211,9 @@ Returns:
                     from langgraph.types import Command
 
                     # Remove this tool_call_id from pending_content_map
-                    updated_map = {k: v for k, v in pending_content_map.items() if k != tool_call_id}
+                    updated_map = {
+                        k: v for k, v in pending_content_map.items() if k != tool_call_id
+                    }
 
                     state_update = {
                         "pending_content_map": updated_map,  # Clear this tool's content

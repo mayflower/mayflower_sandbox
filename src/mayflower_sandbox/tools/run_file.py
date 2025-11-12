@@ -82,7 +82,9 @@ This is useful for:
                 logger.warning(f"File {file_path} does not have .py extension")
 
             # Create executor with network access for micropip
-            executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True, timeout_seconds=60.0)
+            executor = SandboxExecutor(
+                self.db_pool, thread_id, allow_net=True, timeout_seconds=60.0, stateful=True
+            )
 
             # Execute the code
             result = await executor.execute(code)
