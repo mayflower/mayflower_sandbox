@@ -16,6 +16,7 @@ from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
 from mayflower_sandbox.tools.run_file import RunPythonFileTool
+from mayflower_sandbox.tools_skills_mcp import MCPBindHttpTool, SkillInstallTool
 
 __all__ = [
     "SandboxTool",
@@ -29,5 +30,7 @@ __all__ = [
     "FileEditTool",
     "FileGlobTool",
     "FileGrepTool",
+    "SkillInstallTool",
+    "MCPBindHttpTool",
     "create_sandbox_tools",
 ]
