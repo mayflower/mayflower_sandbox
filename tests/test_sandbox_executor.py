@@ -362,8 +362,7 @@ raise RuntimeError("Simulated error after file creation")
     # VFS fallback should NOT run (no log message)
     # created_files should be None because success=False
     assert result.created_files is None, (
-        "VFS fallback should not run when success=False. "
-        f"Got: {result.created_files}"
+        f"VFS fallback should not run when success=False. Got: {result.created_files}"
     )
 
     # Verify file MAY exist in VFS (written before error)
@@ -421,7 +420,7 @@ print("Both files created")
 
     # At minimum, we should have the Excel file
     # (plain.txt may or may not be detected depending on Pyodide version)
-    assert '/tmp/compiled.xlsx' in created_paths, (
+    assert "/tmp/compiled.xlsx" in created_paths, (
         f"Excel file should be tracked. Got: {result.created_files}"
     )
 
@@ -434,9 +433,9 @@ print("Both files created")
             ORDER BY file_path
         """)
 
-        vfs_paths = [row['file_path'] for row in files_in_vfs]
-        assert '/tmp/plain.txt' in vfs_paths, "Plain text file should be in VFS"
-        assert '/tmp/compiled.xlsx' in vfs_paths, "Excel file should be in VFS"
+        vfs_paths = [row["file_path"] for row in files_in_vfs]
+        assert "/tmp/plain.txt" in vfs_paths, "Plain text file should be in VFS"
+        assert "/tmp/compiled.xlsx" in vfs_paths, "Excel file should be in VFS"
 
 
 async def test_vfs_fallback_emits_log_message(executor, db_pool, clean_files, caplog):
@@ -451,7 +450,7 @@ async def test_vfs_fallback_emits_log_message(executor, db_pool, clean_files, ca
     If TypeScript detects the file, VFS fallback won't run and no log appears.
     """
     # Ensure we capture logs at INFO level
-    caplog.set_level(logging.INFO, logger='mayflower_sandbox.sandbox_executor')
+    caplog.set_level(logging.INFO, logger="mayflower_sandbox.sandbox_executor")
 
     code = """
 import micropip
@@ -470,20 +469,20 @@ print("File created")
 
     assert result.success is True
     assert result.created_files is not None
-    assert '/tmp/logged.xlsx' in result.created_files
+    assert "/tmp/logged.xlsx" in result.created_files
 
     # Check for the log message - it may or may not appear depending on
     # whether TypeScript snapshot detected the file
-    log_records = [r for r in caplog.records if 'VFS fallback detected' in r.message]
+    log_records = [r for r in caplog.records if "VFS fallback detected" in r.message]
 
     # If VFS fallback triggered, verify the log message format
     if log_records:
         log_message = log_records[0].message
 
         # Verify log message contains expected information
-        assert 'VFS fallback detected' in log_message
-        assert 'test_sandbox' in log_message  # Thread ID
-        assert '/tmp/logged.xlsx' in log_message  # File path
+        assert "VFS fallback detected" in log_message
+        assert "test_sandbox" in log_message  # Thread ID
+        assert "/tmp/logged.xlsx" in log_message  # File path
         print("VFS fallback triggered - log message verified")
     else:
         # TypeScript detected the file, VFS fallback wasn't needed
@@ -497,26 +496,35 @@ async def test_vfs_fallback_from_empty_vfs(db_pool, clean_files):
     After execution, VFS has one file from compiled library.
     """
     # Create a fresh executor with a unique thread_id
-    thread_id = 'test_empty_vfs'
+    thread_id = "test_empty_vfs"
 
     # Ensure session exists
     async with db_pool.acquire() as conn:
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO sandbox_sessions (thread_id, expires_at)
             VALUES ($1, NOW() + INTERVAL '1 day')
             ON CONFLICT (thread_id) DO NOTHING
-        """, thread_id)
+        """,
+            thread_id,
+        )
 
     # Ensure VFS is empty for this thread
     async with db_pool.acquire() as conn:
-        await conn.execute("""
+        await conn.execute(
+            """
             DELETE FROM sandbox_filesystem WHERE thread_id = $1
-        """, thread_id)
+        """,
+            thread_id,
+        )
 
         # Verify empty
-        count = await conn.fetchval("""
+        count = await conn.fetchval(
+            """
             SELECT COUNT(*) FROM sandbox_filesystem WHERE thread_id = $1
-        """, thread_id)
+        """,
+            thread_id,
+        )
         assert count == 0, "VFS should be empty before test"
 
     executor = SandboxExecutor(db_pool, thread_id, allow_net=True)
@@ -541,24 +549,30 @@ print("Created first file in empty VFS")
 
     # VFS fallback should detect the file
     assert result.created_files is not None, "VFS fallback should detect file"
-    assert '/tmp/first.xlsx' in result.created_files
+    assert "/tmp/first.xlsx" in result.created_files
 
     # Verify file is in VFS
     async with db_pool.acquire() as conn:
-        file_exists = await conn.fetchval("""
+        file_exists = await conn.fetchval(
+            """
             SELECT EXISTS(
                 SELECT 1 FROM sandbox_filesystem
                 WHERE thread_id = $1 AND file_path = '/tmp/first.xlsx'
             )
-        """, thread_id)
+        """,
+            thread_id,
+        )
 
         assert file_exists, "File should be saved to VFS"
 
     # Cleanup: Remove all files for this thread to ensure test isolation
     async with db_pool.acquire() as conn:
-        await conn.execute("""
+        await conn.execute(
+            """
             DELETE FROM sandbox_filesystem WHERE thread_id = $1
-        """, thread_id)
+        """,
+            thread_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -596,7 +610,7 @@ print("Excel file created successfully with openpyxl")
 
     # VFS fallback should detect the created Excel file
     assert result.created_files is not None, "VFS fallback should detect file"
-    assert '/tmp/test.xlsx' in result.created_files, (
+    assert "/tmp/test.xlsx" in result.created_files, (
         f"Excel file should be tracked. Got: {result.created_files}"
     )
 
@@ -608,4 +622,215 @@ print("Excel file created successfully with openpyxl")
         """)
 
         assert file_content is not None, "File should exist in VFS"
-        assert len(file_content) > 0, "File should have content"
+
+
+@pytest.mark.asyncio
+async def test_file_creation_in_nonstandard_paths(db_pool, clean_files):
+    """Test that files created in non-standard paths are detected.
+
+    This is a regression test for the bug where files created outside
+    /tmp and /data directories were not detected by the snapshot-based
+    file tracking system.
+
+    The new FS.trackingDelegate approach detects files in ANY location.
+    """
+    executor = SandboxExecutor(db_pool, "test_sandbox")
+
+    code = """
+import os
+
+# Create files in various non-standard locations
+os.makedirs('/home/pyodide', exist_ok=True)
+os.makedirs('/var/log', exist_ok=True)
+os.makedirs('/opt/myapp', exist_ok=True)
+
+# Write files to non-standard paths
+with open('/home/pyodide/cow.png', 'wb') as f:
+    f.write(b'fake PNG data')
+
+with open('/var/log/app.log', 'w') as f:
+    f.write('Application log entry')
+
+with open('/opt/myapp/config.json', 'w') as f:
+    f.write('{"setting": "value"}')
+
+print("Files created in non-standard paths")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success is True, f"Execution failed: {result.stderr}"
+    assert "Files created in non-standard paths" in result.stdout
+
+    # All files should be detected regardless of location
+    assert result.created_files is not None, "Should detect created files"
+    assert "/home/pyodide/cow.png" in result.created_files, (
+        f"Should detect file in /home/pyodide. Got: {result.created_files}"
+    )
+    assert "/var/log/app.log" in result.created_files, (
+        f"Should detect file in /var/log. Got: {result.created_files}"
+    )
+    assert "/opt/myapp/config.json" in result.created_files, (
+        f"Should detect file in /opt/myapp. Got: {result.created_files}"
+    )
+
+    # Verify files exist in VFS with correct content
+    async with db_pool.acquire() as conn:
+        cow_content = await conn.fetchval("""
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/home/pyodide/cow.png'
+        """)
+        assert cow_content == b"fake PNG data", "cow.png should have correct content"
+
+        log_content = await conn.fetchval("""
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/var/log/app.log'
+        """)
+        assert log_content == b"Application log entry", "app.log should have correct content"
+
+        config_content = await conn.fetchval("""
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/opt/myapp/config.json'
+        """)
+        assert config_content == b'{"setting": "value"}', "config.json should have correct content"
+
+
+@pytest.mark.asyncio
+async def test_matplotlib_savefig_custom_path(db_pool, clean_files):
+    """Test that matplotlib savefig works with custom paths outside /tmp.
+
+    This is a regression test for the bug where matplotlib plots saved
+    to non-standard locations were not detected.
+    """
+    executor = SandboxExecutor(db_pool, "test_sandbox")
+
+    code = """
+import micropip
+await micropip.install('matplotlib')
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import os
+
+# Create custom directory
+os.makedirs('/home/pyodide/plots', exist_ok=True)
+
+# Create a simple plot
+plt.figure()
+plt.plot([1, 2, 3], [1, 4, 9])
+plt.title('Test Plot')
+
+# Save to custom path
+plt.savefig('/home/pyodide/plots/chart.png')
+plt.close()
+
+print("Plot saved to custom path")
+"""
+
+    result = await executor.execute(code)
+
+    assert result.success is True, f"Execution failed: {result.stderr}"
+    assert "Plot saved to custom path" in result.stdout
+
+    # File should be detected even in custom location
+    assert result.created_files is not None, "Should detect matplotlib output"
+    assert "/home/pyodide/plots/chart.png" in result.created_files, (
+        f"Should detect plot in custom path. Got: {result.created_files}"
+    )
+
+    # Verify file exists in VFS and is a valid PNG
+    async with db_pool.acquire() as conn:
+        file_content = await conn.fetchval("""
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/home/pyodide/plots/chart.png'
+        """)
+
+        assert file_content is not None, "Plot file should exist in VFS"
+        assert len(file_content) > 1000, "PNG file should have substantial content"
+        assert file_content.startswith(b"\x89PNG"), "Should be valid PNG file"
+
+
+@pytest.mark.asyncio
+async def test_file_modification_detection(db_pool, clean_files):
+    """Test that file modifications are properly detected.
+
+    The FS.trackingDelegate approach tracks both file creation and modification.
+    """
+    executor = SandboxExecutor(db_pool, "test_sandbox")
+
+    # First execution: create file
+    code1 = """
+with open('/tmp/counter.txt', 'w') as f:
+    f.write('Count: 1')
+print("Initial file created")
+"""
+
+    result1 = await executor.execute(code1)
+    assert result1.success is True
+    assert "/tmp/counter.txt" in result1.created_files
+
+    # Second execution: modify the same file
+    code2 = """
+with open('/tmp/counter.txt', 'r') as f:
+    content = f.read()
+
+with open('/tmp/counter.txt', 'w') as f:
+    f.write('Count: 2')
+
+print("File modified")
+"""
+
+    result2 = await executor.execute(code2)
+    assert result2.success is True
+    assert "/tmp/counter.txt" in result2.created_files, "Modified files should be tracked"
+
+    # Verify final content
+    async with db_pool.acquire() as conn:
+        final_content = await conn.fetchval("""
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/tmp/counter.txt'
+        """)
+        assert final_content == b"Count: 2", "File should have updated content"
+
+
+@pytest.mark.asyncio
+async def test_file_append_detection(db_pool, clean_files):
+    """Test that appending to files is detected.
+
+    Files opened in append mode should trigger onWriteToFile callbacks.
+    """
+    executor = SandboxExecutor(db_pool, "test_sandbox")
+
+    # Create initial file
+    code1 = """
+with open('/tmp/log.txt', 'w') as f:
+    f.write('Line 1\\n')
+print("Log created")
+"""
+
+    result1 = await executor.execute(code1)
+    assert result1.success is True
+
+    # Append to file
+    code2 = """
+with open('/tmp/log.txt', 'a') as f:
+    f.write('Line 2\\n')
+    f.write('Line 3\\n')
+print("Log appended")
+"""
+
+    result2 = await executor.execute(code2)
+    assert result2.success is True
+    assert "/tmp/log.txt" in result2.created_files, "Appended files should be tracked"
+
+    # Verify appended content
+    async with db_pool.acquire() as conn:
+        final_content = await conn.fetchval("""
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'test_sandbox' AND file_path = '/tmp/log.txt'
+        """)
+        content_str = final_content.decode("utf-8")
+        assert "Line 1" in content_str
+        assert "Line 2" in content_str
+        assert "Line 3" in content_str
