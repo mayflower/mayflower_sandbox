@@ -163,7 +163,13 @@ class PyodideWorker {
     const start = Date.now();
 
     this.pyodide = await loadPyodide();
+
+    // Suppress stdout during micropip loading (it writes to stdout)
+    this.pyodide.setStdout({ batched: () => {} });
+
     await this.pyodide.loadPackage("micropip");
+
+    // Leave stdout suppressed (will be set per-request in execute())
 
     // Pre-configure environment
     await this.pyodide.runPythonAsync(`
@@ -240,11 +246,17 @@ globals().update(_session_obj)
           this.pyodide.FS.writeFile(path, new Uint8Array(content));
         }
 
+        // Suppress stdout during import cache invalidation
+        this.pyodide.setStdout({ batched: () => {} });
+
         // Invalidate Python import cache
         await this.pyodide.runPythonAsync(`
 import importlib
 importlib.invalidate_caches()
 `);
+
+        // Restore stdout capture
+        this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
       }
 
       // Snapshot files before execution
@@ -294,10 +306,10 @@ for k, v in _globals_snapshot.items():
 
 list(cloudpickle.dumps(_session_dict))
 `);
-          result.sessionBytes = sessionBytesResult.toJs();
-          result.sessionMetadata = {
+          result.session_bytes = sessionBytesResult.toJs();
+          result.session_metadata = {
             ...params.session_metadata,
-            lastModified: new Date().toISOString(),
+            last_modified: new Date().toISOString(),
           };
         } catch (e) {
           stderrBuffer += `Session save error: ${e}\n`;

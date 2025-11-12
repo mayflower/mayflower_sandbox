@@ -510,12 +510,8 @@ class SandboxExecutor:
             combined_prelude = "\n".join(prelude_parts)
             code_to_run = combined_prelude + ("\n" if not code.startswith("\n") else "") + code
 
-            # Get VFS files
-            vfs_files = await self.vfs.get_all_files_for_pyodide()
-            files_dict: dict[str, bytes] = {
-                f["file_path"]: f["content"]
-                for f in vfs_files  # type: ignore[index,misc]
-            }
+            # Get VFS files (already dict[str, bytes])
+            files_dict = await self.vfs.get_all_files_for_pyodide()
 
             # Execute via pool
             result = await self._pool.execute(
