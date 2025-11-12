@@ -26,7 +26,7 @@ interface ExecuteResult {
   result: unknown;
   session_bytes?: number[];
   session_metadata?: Record<string, unknown>;
-  created_files?: string[];
+  created_files?: Array<{ path: string; content: number[] }>;
   execution_time_ms: number;
 }
 
@@ -318,10 +318,10 @@ list(cloudpickle.dumps(_session_dict))
         }
       }
 
-      // Collect only changed files
+      // Collect only changed files (with contents for VFS persistence)
       const changedFiles = collectChangedFiles(this.pyodide, ["/tmp", "/data"], beforeSnapshot);
       if (changedFiles.length > 0) {
-        result.created_files = changedFiles.map(f => f.path);
+        result.created_files = changedFiles;
       }
 
       result.execution_time_ms = Date.now() - startTime;

@@ -155,7 +155,8 @@ class SandboxExecutor:
             "--allow-write",
         ]
 
-        allowed_hosts = {"cdn.jsdelivr.net"}
+        # Allow PyPI for micropip.install() to work
+        allowed_hosts = {"cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"}
         env_allow = os.environ.get("MAYFLOWER_SANDBOX_NET_ALLOW")
         if env_allow:
             for host in env_allow.split(","):
@@ -527,8 +528,12 @@ class SandboxExecutor:
             # Save created files to VFS
             created_files = []
             if result.get("created_files") and result.get("success"):
-                # Files are already tracked by the worker
-                created_files = result["created_files"]
+                # Save files to PostgreSQL VFS
+                for file_info in result["created_files"]:
+                    file_path = file_info["path"]
+                    file_content = bytes(file_info["content"])
+                    await self.vfs.write_file(file_path, file_content)
+                    created_files.append(file_path)
                 logger.debug(f"Created {len(created_files)} files via pool")
 
             execution_time = time.time() - start_time
