@@ -160,26 +160,30 @@ function collectFiles(pyodide: any, paths: string[]): Array<{ path: string; cont
 }
 
 /**
- * Collect only new or modified files by comparing snapshots
+ * Collect files from specific paths (used with FS.trackingDelegate)
  */
-function collectChangedFiles(
+function collectFilesFromPaths(
   pyodide: any,
   paths: string[],
-  beforeSnapshot: Map<string, number>
 ): Array<{ path: string; content: number[] }> {
-  const allFiles = collectFiles(pyodide, paths);
-  const changedFiles: Array<{ path: string; content: number[] }> = [];
+  const files: Array<{ path: string; content: number[] }> = [];
 
-  for (const file of allFiles) {
-    const previousSize = beforeSnapshot.get(file.path);
+  for (const path of paths) {
+    try {
+      const exists = pyodide.FS.analyzePath(path).exists;
+      if (!exists) continue;
 
-    // Include if file is new (didn't exist before) or modified (size changed)
-    if (previousSize === undefined || previousSize !== file.content.length) {
-      changedFiles.push(file);
+      const stat = pyodide.FS.stat(path);
+      if (pyodide.FS.isDir(stat.mode)) continue; // Skip directories
+
+      const content = pyodide.FS.readFile(path);
+      files.push({ path, content: Array.from(content) });
+    } catch (_e) {
+      // Skip files we can't read
     }
   }
 
-  return changedFiles;
+  return files;
 }
 
 /**
@@ -299,8 +303,24 @@ if 'matplotlib' not in sys.modules:
       // Setup failed, continue anyway (matplotlib might not be used)
     }
 
-    // Snapshot files before execution to track only new/modified files
-    const beforeSnapshot = snapshotFiles(pyodide, ["/tmp", "/data"]);
+    // Track file operations during execution using FS.trackingDelegate
+    const createdFiles = new Set<string>();
+    const modifiedFiles = new Set<string>();
+
+    // Install tracking delegate before execution
+    pyodide.FS.trackingDelegate = {
+      onOpenFile: (path: string, flags: number) => {
+        // flags & 0x200 (O_CREAT) means file is being created
+        if (flags & 0x200) {
+          createdFiles.add(path);
+        }
+      },
+      onWriteToFile: (path: string, bytesWritten: number) => {
+        if (bytesWritten > 0) {
+          modifiedFiles.add(path);
+        }
+      },
+    };
 
     // Execute code
     try {
@@ -311,6 +331,9 @@ if 'matplotlib' not in sys.modules:
       stderrBuffer += `${e}\n`;
       result.success = false;
     }
+
+    // Remove tracking delegate
+    pyodide.FS.trackingDelegate = {};
 
     // Filter out micropip loading messages to keep output clean
     result.stdout = filterMicropipMessages(stdoutBuffer);
@@ -378,8 +401,9 @@ list(cloudpickle.dumps(_session_dict))
       }
     }
 
-    // Collect only new or modified files (compare against pre-execution snapshot)
-    result.files = collectChangedFiles(pyodide, ["/tmp", "/data"], beforeSnapshot);
+    // Collect all tracked files (created OR modified) with contents for VFS persistence
+    const allChangedPaths = new Set([...createdFiles, ...modifiedFiles]);
+    result.files = collectFilesFromPaths(pyodide, Array.from(allChangedPaths));
 
     return result;
   } catch (e) {

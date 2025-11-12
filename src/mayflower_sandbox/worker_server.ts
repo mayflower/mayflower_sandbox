@@ -130,24 +130,30 @@ function collectFiles(pyodide: any, paths: string[]): Array<{ path: string; cont
 }
 
 /**
- * Collect only new or modified files by comparing snapshots
+ * Collect files from specific paths (used with FS.trackingDelegate)
  */
-function collectChangedFiles(
+function collectFilesFromPaths(
   pyodide: any,
   paths: string[],
-  beforeSnapshot: Map<string, number>,
 ): Array<{ path: string; content: number[] }> {
-  const allFiles = collectFiles(pyodide, paths);
-  const changedFiles: Array<{ path: string; content: number[] }> = [];
+  const files: Array<{ path: string; content: number[] }> = [];
 
-  for (const file of allFiles) {
-    const previousSize = beforeSnapshot.get(file.path);
-    if (previousSize === undefined || previousSize !== file.content.length) {
-      changedFiles.push(file);
+  for (const path of paths) {
+    try {
+      const exists = pyodide.FS.analyzePath(path).exists;
+      if (!exists) continue;
+
+      const stat = pyodide.FS.stat(path);
+      if (pyodide.FS.isDir(stat.mode)) continue; // Skip directories
+
+      const content = pyodide.FS.readFile(path);
+      files.push({ path, content: Array.from(content) });
+    } catch (_e) {
+      // Skip files we can't read
     }
   }
 
-  return changedFiles;
+  return files;
 }
 
 /**
@@ -275,8 +281,24 @@ importlib.invalidate_caches()
         this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
       }
 
-      // Snapshot files before execution
-      const beforeSnapshot = snapshotFiles(this.pyodide, ["/tmp", "/data"]);
+      // Track file operations during execution using FS.trackingDelegate
+      const createdFiles = new Set<string>();
+      const modifiedFiles = new Set<string>();
+
+      // Install tracking delegate before execution
+      this.pyodide.FS.trackingDelegate = {
+        onOpenFile: (path: string, flags: number) => {
+          // flags & 0x200 (O_CREAT) means file is being created
+          if (flags & 0x200) {
+            createdFiles.add(path);
+          }
+        },
+        onWriteToFile: (path: string, bytesWritten: number) => {
+          if (bytesWritten > 0) {
+            modifiedFiles.add(path);
+          }
+        },
+      };
 
       // Execute code
       try {
@@ -287,6 +309,9 @@ importlib.invalidate_caches()
         stderrBuffer += `${e}\n`;
         result.success = false;
       }
+
+      // Remove tracking delegate
+      this.pyodide.FS.trackingDelegate = {};
 
       result.stdout = filterMicropipMessages(stdoutBuffer);
       result.stderr = stderrBuffer;
@@ -334,10 +359,13 @@ list(cloudpickle.dumps(_session_dict))
         }
       }
 
-      // Collect only changed files (with contents for VFS persistence)
-      const changedFiles = collectChangedFiles(this.pyodide, ["/tmp", "/data"], beforeSnapshot);
-      if (changedFiles.length > 0) {
-        result.created_files = changedFiles;
+      // Collect all tracked files (created OR modified) with contents for VFS persistence
+      const allChangedPaths = new Set([...createdFiles, ...modifiedFiles]);
+      if (allChangedPaths.size > 0) {
+        const changedFiles = collectFilesFromPaths(this.pyodide, Array.from(allChangedPaths));
+        if (changedFiles.length > 0) {
+          result.created_files = changedFiles;
+        }
       }
 
       result.execution_time_ms = Date.now() - startTime;
