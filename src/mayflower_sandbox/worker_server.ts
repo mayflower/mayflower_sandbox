@@ -49,10 +49,12 @@ interface JsonRpcResponse {
 
 /**
  * Filter out micropip package loading messages from stdout
+ * Same logic as legacy executor.ts
  */
 function filterMicropipMessages(stdout: string): string {
   const lines = stdout.split("\n");
   const filtered = lines.filter((line) => {
+    // Filter out micropip loading messages
     if (line.startsWith("Loading ")) return false;
     if (line.startsWith("Didn't find package ")) return false;
     if (line.startsWith("Package ") && line.includes(" loaded from ")) return false;
@@ -165,7 +167,7 @@ class PyodideWorker {
     this.pyodide = await loadPyodide();
 
     // Suppress stdout during micropip loading (it writes to stdout)
-    this.pyodide.setStdout({ batched: () => {} });
+    this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
 
     await this.pyodide.loadPackage("micropip");
 
@@ -200,17 +202,31 @@ if 'matplotlib' not in sys.modules:
 
     try {
       // Capture stdout/stderr
+      // Use 'write' handler like legacy executor for consistent newline handling
       let stdoutBuffer = "";
       let stderrBuffer = "";
 
-      this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
-      this.pyodide.setStderr({ batched: (text: string) => { stderrBuffer += text; } });
+      const stdoutDecoder = new TextDecoder();
+      const stderrDecoder = new TextDecoder();
+
+      this.pyodide.setStdout({
+        write: (buf: Uint8Array) => {
+          stdoutBuffer += stdoutDecoder.decode(buf, { stream: true });
+          return buf.length;
+        },
+      });
+      this.pyodide.setStderr({
+        write: (buf: Uint8Array) => {
+          stderrBuffer += stderrDecoder.decode(buf, { stream: true });
+          return buf.length;
+        },
+      });
 
       // Load session state if provided
       if (params.stateful && params.session_bytes) {
         try {
           // Suppress stdout during cloudpickle installation
-          this.pyodide.setStdout({ batched: () => {} });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
 
           await this.pyodide.runPythonAsync(`
 try:
@@ -222,7 +238,7 @@ except ImportError:
 `);
 
           // Restore stdout capture
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
 
           // Restore session
           await this.pyodide.runPythonAsync(`
@@ -232,7 +248,7 @@ globals().update(_session_obj)
 `);
         } catch (e) {
           stderrBuffer += `Session restore error: ${e}\n`;
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
         }
       }
 
@@ -247,7 +263,7 @@ globals().update(_session_obj)
         }
 
         // Suppress stdout during import cache invalidation
-        this.pyodide.setStdout({ batched: () => {} });
+        this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
 
         // Invalidate Python import cache
         await this.pyodide.runPythonAsync(`
@@ -256,7 +272,7 @@ importlib.invalidate_caches()
 `);
 
         // Restore stdout capture
-        this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+        this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
       }
 
       // Snapshot files before execution
@@ -278,7 +294,7 @@ importlib.invalidate_caches()
       // Save session state if stateful
       if (params.stateful && result.success) {
         try {
-          this.pyodide.setStdout({ batched: () => {} });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
 
           await this.pyodide.runPythonAsync(`
 try:
@@ -289,7 +305,7 @@ except ImportError:
     import cloudpickle
 `);
 
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
 
           const sessionBytesResult = await this.pyodide.runPythonAsync(`
 import types
@@ -314,7 +330,7 @@ list(cloudpickle.dumps(_session_dict))
         } catch (e) {
           stderrBuffer += `Session save error: ${e}\n`;
           result.stderr = stderrBuffer;
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
         }
       }
 
