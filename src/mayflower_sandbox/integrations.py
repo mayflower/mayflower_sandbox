@@ -56,7 +56,9 @@ async def _fetch_skill_skillmd(source: str) -> str:
                 tail_path, branch = tail.split("@", 1)
                 remainder[-1] = tail_path
         path = "/".join(remainder)
-        url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path.rstrip('/')}/SKILL.md"
+        url = (
+            f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path.rstrip('/')}/SKILL.md"
+        )
     else:
         url = source
 

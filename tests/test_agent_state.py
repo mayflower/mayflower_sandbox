@@ -219,11 +219,7 @@ async def test_write_file_tool_updates_state(db_pool, clean_files):
     tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
 
     tool_call_id = "test_call_123"
-    state = {
-        "pending_content_map": {
-            tool_call_id: "Hello State!"
-        }
-    }
+    state = {"pending_content_map": {tool_call_id: "Hello State!"}}
 
     result = await tool._arun(
         file_path="/tmp/test.txt",
@@ -251,11 +247,7 @@ async def test_file_edit_tool_updates_state(db_pool, clean_files):
     # First create a file
     write_tool = FileWriteTool(db_pool=db_pool, thread_id="agent_state_test")
     tool_call_id_write = "test_call_write"
-    state = {
-        "pending_content_map": {
-            tool_call_id_write: "Old content"
-        }
-    }
+    state = {"pending_content_map": {tool_call_id_write: "Old content"}}
     await write_tool._arun(
         file_path="/tmp/edit_test.txt",
         description="Edit test file",
@@ -412,11 +404,7 @@ async def test_agent_can_reference_created_files(db_pool, clean_files):
 
     # Second: ask agent to read the file it created
     result2 = await app.ainvoke(
-        {
-            "messages": [
-                ("user", "Use the file_read tool to read the contents of /tmp/data.txt")
-            ]
-        },
+        {"messages": [("user", "Use the file_read tool to read the contents of /tmp/data.txt")]},
         config=config,
     )
 

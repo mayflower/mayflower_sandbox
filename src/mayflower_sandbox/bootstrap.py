@@ -28,6 +28,7 @@ if _site_str not in sys.path:
     sys.path.append(_site_str)
 """
 
+
 async def write_bootstrap_files(vfs, *, thread_id: str) -> None:
     """
     Write /site-packages/mayflower_mcp.py into the thread's VFS and ensure /site-packages exists.

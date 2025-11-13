@@ -20,8 +20,7 @@ class FileWriteInput(BaseModel):
 
     file_path: str = Field(description="Path where to write the file (e.g., /tmp/data.txt)")
     description: str = Field(
-        default="File content",
-        description="Brief description of what the file contains"
+        default="File content", description="Brief description of what the file contains"
     )
     tool_call_id: Annotated[str, InjectedToolCallId]
 
@@ -94,7 +93,9 @@ Returns:
                 "Generate file content first before calling this tool."
             )
 
-        logger.info(f"file_write: Found {len(content)} chars of content in state for tool_call_id={tool_call_id[:8]}...")
+        logger.info(
+            f"file_write: Found {len(content)} chars of content in state for tool_call_id={tool_call_id[:8]}..."
+        )
 
         vfs = VirtualFilesystem(self.db_pool, thread_id)
 
@@ -111,7 +112,9 @@ Returns:
                     from langgraph.types import Command
 
                     # Remove this tool_call_id from pending_content_map
-                    updated_map = {k: v for k, v in pending_content_map.items() if k != tool_call_id}
+                    updated_map = {
+                        k: v for k, v in pending_content_map.items() if k != tool_call_id
+                    }
 
                     state_update = {
                         "pending_content_map": updated_map,  # Clear this tool's content

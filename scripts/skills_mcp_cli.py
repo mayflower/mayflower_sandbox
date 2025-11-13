@@ -64,14 +64,18 @@ async def _add_mcp(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mayflower", description="Manage Mayflower skills and MCP servers.")
+    parser = argparse.ArgumentParser(
+        prog="mayflower", description="Manage Mayflower skills and MCP servers."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     skills_parser = subparsers.add_parser("skills", help="Manage Claude skills.")
     skills_sub = skills_parser.add_subparsers(dest="skills_command", required=True)
 
     install_parser = skills_sub.add_parser("install", help="Install a skill into the sandbox VFS.")
-    install_parser.add_argument("--source", required=True, help="Skill source (e.g., github:owner/repo/path)")
+    install_parser.add_argument(
+        "--source", required=True, help="Skill source (e.g., github:owner/repo/path)"
+    )
     install_parser.add_argument("--thread", required=True, help="Sandbox thread id")
     install_parser.set_defaults(func=_install_skill)
 
@@ -80,7 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_parser = mcp_sub.add_parser("add", help="Bind an HTTP MCP server.")
     add_parser.add_argument("--name", required=True, help="Server name (exposed as servers.<name>)")
-    add_parser.add_argument("--url", required=True, help="Streamable HTTP MCP endpoint (usually ends with /mcp)")
+    add_parser.add_argument(
+        "--url", required=True, help="Streamable HTTP MCP endpoint (usually ends with /mcp)"
+    )
     add_parser.add_argument("--thread", required=True, help="Sandbox thread id")
     add_parser.add_argument(
         "--header",
