@@ -100,11 +100,7 @@ async def test_file_write_clears_pending_content(db_pool, clean_files):
     tool = FileWriteTool(db_pool=db_pool, thread_id="test_file_write")
 
     tool_call_id = "test_call_123"
-    state = {
-        "pending_content_map": {
-            tool_call_id: '{"key": "value", "number": 42}'
-        }
-    }
+    state = {"pending_content_map": {tool_call_id: '{"key": "value", "number": 42}'}}
 
     # Execute with tool_call_id to get Command return
     result = await tool._arun(
@@ -118,7 +114,9 @@ async def test_file_write_clears_pending_content(db_pool, clean_files):
     from langgraph.types import Command
 
     assert isinstance(result, Command)
-    assert tool_call_id not in result.update["pending_content_map"]  # Should clear this tool's entry
+    assert (
+        tool_call_id not in result.update["pending_content_map"]
+    )  # Should clear this tool's entry
     assert "/tmp/config.json" in result.update["created_files"]
     assert "Successfully wrote" in result.resume
 
@@ -150,11 +148,7 @@ async def test_file_write_with_large_content(db_pool, clean_files):
     large_content = "\n".join([f"Line {i}: {'x' * 50}" for i in range(5000)])
 
     tool_call_id = "test_large_123"
-    state = {
-        "pending_content_map": {
-            tool_call_id: large_content
-        }
-    }
+    state = {"pending_content_map": {tool_call_id: large_content}}
 
     result = await tool._arun(
         file_path="/tmp/large_file.txt",

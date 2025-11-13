@@ -26,7 +26,7 @@ interface ExecuteResult {
   result: unknown;
   session_bytes?: number[];
   session_metadata?: Record<string, unknown>;
-  created_files?: string[];
+  created_files?: Array<{ path: string; content: number[] }>;
   execution_time_ms: number;
 }
 
@@ -49,10 +49,12 @@ interface JsonRpcResponse {
 
 /**
  * Filter out micropip package loading messages from stdout
+ * Same logic as legacy executor.ts
  */
 function filterMicropipMessages(stdout: string): string {
   const lines = stdout.split("\n");
   const filtered = lines.filter((line) => {
+    // Filter out micropip loading messages
     if (line.startsWith("Loading ")) return false;
     if (line.startsWith("Didn't find package ")) return false;
     if (line.startsWith("Package ") && line.includes(" loaded from ")) return false;
@@ -128,24 +130,33 @@ function collectFiles(pyodide: any, paths: string[]): Array<{ path: string; cont
 }
 
 /**
- * Collect only new or modified files by comparing snapshots
+ * Collect files from specific paths (used with FS.trackingDelegate)
  */
-function collectChangedFiles(
+function collectFilesFromPaths(
   pyodide: any,
   paths: string[],
-  beforeSnapshot: Map<string, number>,
 ): Array<{ path: string; content: number[] }> {
-  const allFiles = collectFiles(pyodide, paths);
-  const changedFiles: Array<{ path: string; content: number[] }> = [];
+  const files: Array<{ path: string; content: number[] }> = [];
 
-  for (const file of allFiles) {
-    const previousSize = beforeSnapshot.get(file.path);
-    if (previousSize === undefined || previousSize !== file.content.length) {
-      changedFiles.push(file);
+  for (const path of paths) {
+    // Filter out system paths - agent should not know these exist
+    if (path.startsWith('/lib') || path.startsWith('/share')) continue;
+
+    try {
+      const exists = pyodide.FS.analyzePath(path).exists;
+      if (!exists) continue;
+
+      const stat = pyodide.FS.stat(path);
+      if (pyodide.FS.isDir(stat.mode)) continue; // Skip directories
+
+      const content = pyodide.FS.readFile(path);
+      files.push({ path, content: Array.from(content) });
+    } catch (_e) {
+      // Skip files we can't read
     }
   }
 
-  return changedFiles;
+  return files;
 }
 
 /**
@@ -163,7 +174,13 @@ class PyodideWorker {
     const start = Date.now();
 
     this.pyodide = await loadPyodide();
+
+    // Suppress stdout during micropip loading (it writes to stdout)
+    this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
+
     await this.pyodide.loadPackage("micropip");
+
+    // Leave stdout suppressed (will be set per-request in execute())
 
     // Pre-configure environment
     await this.pyodide.runPythonAsync(`
@@ -194,17 +211,31 @@ if 'matplotlib' not in sys.modules:
 
     try {
       // Capture stdout/stderr
+      // Use 'write' handler like legacy executor for consistent newline handling
       let stdoutBuffer = "";
       let stderrBuffer = "";
 
-      this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
-      this.pyodide.setStderr({ batched: (text: string) => { stderrBuffer += text; } });
+      const stdoutDecoder = new TextDecoder();
+      const stderrDecoder = new TextDecoder();
+
+      this.pyodide.setStdout({
+        write: (buf: Uint8Array) => {
+          stdoutBuffer += stdoutDecoder.decode(buf, { stream: true });
+          return buf.length;
+        },
+      });
+      this.pyodide.setStderr({
+        write: (buf: Uint8Array) => {
+          stderrBuffer += stderrDecoder.decode(buf, { stream: true });
+          return buf.length;
+        },
+      });
 
       // Load session state if provided
       if (params.stateful && params.session_bytes) {
         try {
           // Suppress stdout during cloudpickle installation
-          this.pyodide.setStdout({ batched: () => {} });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
 
           await this.pyodide.runPythonAsync(`
 try:
@@ -216,7 +247,7 @@ except ImportError:
 `);
 
           // Restore stdout capture
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
 
           // Restore session
           await this.pyodide.runPythonAsync(`
@@ -226,7 +257,7 @@ globals().update(_session_obj)
 `);
         } catch (e) {
           stderrBuffer += `Session restore error: ${e}\n`;
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
         }
       }
 
@@ -240,15 +271,37 @@ globals().update(_session_obj)
           this.pyodide.FS.writeFile(path, new Uint8Array(content));
         }
 
+        // Suppress stdout during import cache invalidation
+        this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
+
         // Invalidate Python import cache
         await this.pyodide.runPythonAsync(`
 import importlib
 importlib.invalidate_caches()
 `);
+
+        // Restore stdout capture
+        this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
       }
 
-      // Snapshot files before execution
-      const beforeSnapshot = snapshotFiles(this.pyodide, ["/tmp", "/data"]);
+      // Track file operations during execution using FS.trackingDelegate
+      const createdFiles = new Set<string>();
+      const modifiedFiles = new Set<string>();
+
+      // Install tracking delegate before execution
+      this.pyodide.FS.trackingDelegate = {
+        onOpenFile: (path: string, flags: number) => {
+          // flags & 0x200 (O_CREAT) means file is being created
+          if (flags & 0x200) {
+            createdFiles.add(path);
+          }
+        },
+        onWriteToFile: (path: string, bytesWritten: number) => {
+          if (bytesWritten > 0) {
+            modifiedFiles.add(path);
+          }
+        },
+      };
 
       // Execute code
       try {
@@ -260,13 +313,16 @@ importlib.invalidate_caches()
         result.success = false;
       }
 
+      // Remove tracking delegate
+      this.pyodide.FS.trackingDelegate = {};
+
       result.stdout = filterMicropipMessages(stdoutBuffer);
       result.stderr = stderrBuffer;
 
       // Save session state if stateful
       if (params.stateful && result.success) {
         try {
-          this.pyodide.setStdout({ batched: () => {} });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => buf.length });
 
           await this.pyodide.runPythonAsync(`
 try:
@@ -277,7 +333,7 @@ except ImportError:
     import cloudpickle
 `);
 
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
 
           const sessionBytesResult = await this.pyodide.runPythonAsync(`
 import types
@@ -294,22 +350,25 @@ for k, v in _globals_snapshot.items():
 
 list(cloudpickle.dumps(_session_dict))
 `);
-          result.sessionBytes = sessionBytesResult.toJs();
-          result.sessionMetadata = {
+          result.session_bytes = sessionBytesResult.toJs();
+          result.session_metadata = {
             ...params.session_metadata,
-            lastModified: new Date().toISOString(),
+            last_modified: new Date().toISOString(),
           };
         } catch (e) {
           stderrBuffer += `Session save error: ${e}\n`;
           result.stderr = stderrBuffer;
-          this.pyodide.setStdout({ batched: (text: string) => { stdoutBuffer += text; } });
+          this.pyodide.setStdout({ write: (buf: Uint8Array) => { stdoutBuffer += stdoutDecoder.decode(buf, { stream: true }); return buf.length; } });
         }
       }
 
-      // Collect only changed files
-      const changedFiles = collectChangedFiles(this.pyodide, ["/tmp", "/data"], beforeSnapshot);
-      if (changedFiles.length > 0) {
-        result.created_files = changedFiles.map(f => f.path);
+      // Collect all tracked files (created OR modified) with contents for VFS persistence
+      const allChangedPaths = new Set([...createdFiles, ...modifiedFiles]);
+      if (allChangedPaths.size > 0) {
+        const changedFiles = collectFilesFromPaths(this.pyodide, Array.from(allChangedPaths));
+        if (changedFiles.length > 0) {
+          result.created_files = changedFiles;
+        }
       }
 
       result.execution_time_ms = Date.now() - startTime;

@@ -30,14 +30,47 @@ class PyodideWorker:
         self.lock = asyncio.Lock()
         self._request_id = 0
 
+    async def _read_large_line(self, reader: asyncio.StreamReader) -> bytes:
+        """Read a line with support for large responses (up to 10MB)."""
+        chunks = []
+        total_size = 0
+        max_size = 10 * 1024 * 1024  # 10MB
+
+        while True:
+            chunk = await reader.read(8192)
+            if not chunk:
+                break
+
+            chunks.append(chunk)
+            total_size += len(chunk)
+
+            if total_size > max_size:
+                raise RuntimeError("Response exceeded 10MB limit")
+
+            # Check if we've read a complete line
+            if b"\n" in chunk:
+                # Find the newline and keep only up to it
+                full_data = b"".join(chunks)
+                newline_pos = full_data.find(b"\n")
+                # Put back the extra data
+                if newline_pos < len(full_data) - 1:
+                    extra = full_data[newline_pos + 1 :]
+                    reader._buffer = extra + reader._buffer  # type: ignore[attr-defined]
+                return full_data[: newline_pos + 1]
+
+        return b"".join(chunks)
+
     async def start(self) -> None:
         """Start the Deno worker process."""
         logger.info(f"[Worker {self.worker_id}] Starting...")
 
+        # Allow PyPI for micropip.install() to work
+        allowed_hosts = "cdn.jsdelivr.net,pypi.org,files.pythonhosted.org"
+
         self.process = await asyncio.create_subprocess_exec(
             "deno",
             "run",
-            "--allow-net=cdn.jsdelivr.net",
+            f"--allow-net={allowed_hosts}",
             "--allow-read",
             "--allow-write",
             str(self.executor_path / "worker_server.ts"),
@@ -123,9 +156,16 @@ class PyodideWorker:
                 if not self.process.stdout:
                     raise RuntimeError("Worker stdout not available")
 
-                response_line = await asyncio.wait_for(
-                    self.process.stdout.readline(), timeout=timeout_ms / 1000.0 + 5.0
-                )
+                # Use large limit for responses with file contents (e.g., images)
+                # Note: asyncio StreamReader has an internal limit that we need to work around
+                # by reading in chunks if the response is very large
+                try:
+                    response_line = await asyncio.wait_for(
+                        self._read_large_line(self.process.stdout),
+                        timeout=timeout_ms / 1000.0 + 5.0,
+                    )
+                except asyncio.LimitOverrunError:
+                    raise RuntimeError("Response too large (>10MB)")
 
                 if not response_line:
                     raise RuntimeError("Worker closed stdout")

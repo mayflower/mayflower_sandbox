@@ -155,7 +155,8 @@ class SandboxExecutor:
             "--allow-write",
         ]
 
-        allowed_hosts = {"cdn.jsdelivr.net"}
+        # Allow PyPI for micropip.install() to work
+        allowed_hosts = {"cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"}
         env_allow = os.environ.get("MAYFLOWER_SANDBOX_NET_ALLOW")
         if env_allow:
             for host in env_allow.split(","):
@@ -301,9 +302,9 @@ class SandboxExecutor:
 
     @staticmethod
     def _json_default(value: Any) -> Any:
-        if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str | int | float | bool) or value is None:
             return value
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, list | tuple | set):
             return list(value)
         if isinstance(value, dict):
             return value
@@ -510,12 +511,8 @@ class SandboxExecutor:
             combined_prelude = "\n".join(prelude_parts)
             code_to_run = combined_prelude + ("\n" if not code.startswith("\n") else "") + code
 
-            # Get VFS files
-            vfs_files = await self.vfs.get_all_files_for_pyodide()
-            files_dict: dict[str, bytes] = {
-                f["file_path"]: f["content"]
-                for f in vfs_files  # type: ignore[index,misc]
-            }
+            # Get VFS files (already dict[str, bytes])
+            files_dict = await self.vfs.get_all_files_for_pyodide()
 
             # Execute via pool
             result = await self._pool.execute(
@@ -531,8 +528,12 @@ class SandboxExecutor:
             # Save created files to VFS
             created_files = []
             if result.get("created_files") and result.get("success"):
-                # Files are already tracked by the worker
-                created_files = result["created_files"]
+                # Save files to PostgreSQL VFS
+                for file_info in result["created_files"]:
+                    file_path = file_info["path"]
+                    file_content = bytes(file_info["content"])
+                    await self.vfs.write_file(file_path, file_content)
+                    created_files.append(file_path)
                 logger.debug(f"Created {len(created_files)} files via pool")
 
             execution_time = time.time() - start_time

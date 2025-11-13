@@ -15,6 +15,7 @@ from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
 from mayflower_sandbox.tools.run_file import RunPythonFileTool
+from mayflower_sandbox.tools_skills_mcp import MCPBindHttpTool, SkillInstallTool
 
 
 def create_sandbox_tools(
@@ -75,6 +76,8 @@ def create_sandbox_tools(
         "file_edit": FileEditTool,
         "file_glob": FileGlobTool,
         "file_grep": FileGrepTool,
+        "skill_install": SkillInstallTool,
+        "mcp_bind_http": MCPBindHttpTool,
     }
 
     if include_tools is None:

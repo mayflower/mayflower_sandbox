@@ -23,7 +23,6 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
@@ -73,9 +72,7 @@ async def db_pool():
 async def clean_files(db_pool):
     """Clean files before each test."""
     async with db_pool.acquire() as conn:
-        await conn.execute(
-            "DELETE FROM sandbox_filesystem WHERE thread_id = 'e2e_prepared_test'"
-        )
+        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'e2e_prepared_test'")
     yield
 
 
@@ -188,9 +185,7 @@ def create_agent_graph(db_pool, include_tools=None):
 
                     # Extract the actual result string from Command.resume
                     result_str = result.resume if result.resume else "Tool executed successfully"
-                    msgs.append(
-                        ToolMessage(result_str, tool_call_id=tool_call.get("id", ""))
-                    )
+                    msgs.append(ToolMessage(result_str, tool_call_id=tool_call.get("id", "")))
                 else:
                     msgs.append(ToolMessage(result, tool_call_id=tool_call.get("id", "")))
 
@@ -337,8 +332,7 @@ async def test_python_run_prepared_state_clearing(db_pool, clean_files):
             "messages": [
                 (
                     "user",
-                    "Write Python code to print 'Hello from state test'. "
-                    "Use python_run_prepared.",
+                    "Write Python code to print 'Hello from state test'. Use python_run_prepared.",
                 )
             ],
             "pending_content_map": {},
@@ -348,7 +342,10 @@ async def test_python_run_prepared_state_clearing(db_pool, clean_files):
 
     # Check that pending_content_map was cleared (should be empty dict after execution)
     # Note: This verifies the Command pattern properly updates state
-    assert result.get("pending_content_map", "NOTSET") == {} or result.get("pending_content_map") == "NOTSET"
+    assert (
+        result.get("pending_content_map", "NOTSET") == {}
+        or result.get("pending_content_map") == "NOTSET"
+    )
 
 
 # Tests for sandbox document helpers
@@ -497,7 +494,11 @@ async def test_python_run_prepared_with_docx_manipulation(db_pool, clean_files):
     content = str(final_message.content)
 
     # Verify Word document was manipulated (check for file or success message)
-    assert "/tmp/document.docx" in content or "success" in content.lower() or "comment" in content.lower()
+    assert (
+        "/tmp/document.docx" in content
+        or "success" in content.lower()
+        or "comment" in content.lower()
+    )
 
 
 # Tests for file_write with state-based content extraction
@@ -605,4 +606,4 @@ async def test_file_write_with_large_markdown(db_pool, clean_files):
     # Verify large file was written
     assert "/tmp/README.md" in content or "wrote" in content.lower()
     # Check for substantial byte count indicating large content
-    assert ("bytes" in content.lower() and any(char.isdigit() for char in content))
+    assert "bytes" in content.lower() and any(char.isdigit() for char in content)

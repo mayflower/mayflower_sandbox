@@ -1,6 +1,5 @@
 """Document processing helpers for Word, PDF, Excel, PowerPoint."""
 
-
 # Allowlist of packages that can be auto-installed via micropip
 # This prevents arbitrary package installation for security
 ALLOWED_PACKAGES = {
