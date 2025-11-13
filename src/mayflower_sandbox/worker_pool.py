@@ -29,6 +29,7 @@ class PyodideWorker:
         self.request_count = 0
         self.lock = asyncio.Lock()
         self._request_id = 0
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def _read_large_line(self, reader: asyncio.StreamReader) -> bytes:
         """Read a line with support for large responses (up to 10MB)."""
@@ -63,6 +64,9 @@ class PyodideWorker:
     async def start(self) -> None:
         """Start the Deno worker process."""
         logger.info(f"[Worker {self.worker_id}] Starting...")
+
+        # Store the event loop this worker is bound to
+        self._loop = asyncio.get_running_loop()
 
         # Allow PyPI for micropip.install() to work
         allowed_hosts = "cdn.jsdelivr.net,pypi.org,files.pythonhosted.org"
@@ -116,6 +120,14 @@ class PyodideWorker:
         async with self.lock:
             if not self.process or self.process.returncode is not None:
                 raise RuntimeError(f"Worker {self.worker_id} not running")
+
+            # Detect event loop change (e.g., pytest created new loop between tests)
+            current_loop = asyncio.get_running_loop()
+            if self._loop is not None and self._loop != current_loop:
+                raise RuntimeError(
+                    f"Worker {self.worker_id} bound to different event loop "
+                    "(worker pool must be restarted for new event loop)"
+                )
 
             self.busy = True
             self.request_count += 1
@@ -328,6 +340,17 @@ class WorkerPool:
 
     async def _restart_worker(self, worker: PyodideWorker) -> None:
         """Restart a failed worker."""
+        # Check if event loop is still running (pytest may have closed it)
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                logger.warning(f"[Worker {worker.worker_id}] Skip restart - event loop closed")
+                return
+        except RuntimeError:
+            # No running loop
+            logger.warning(f"[Worker {worker.worker_id}] Skip restart - no running event loop")
+            return
+
         logger.warning(f"[Worker {worker.worker_id}] Restarting...")
         try:
             await worker.kill()
