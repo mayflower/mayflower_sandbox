@@ -4,9 +4,9 @@ from pathlib import PurePosixPath
 import asyncpg
 import pytest
 
+from mayflower_sandbox.filesystem import VirtualFilesystem
 from mayflower_sandbox.integrations import install_skill
 from mayflower_sandbox.sandbox_executor import SandboxExecutor
-from mayflower_sandbox.filesystem import VirtualFilesystem
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ import os
 import re
 import textwrap
 from pathlib import PurePosixPath
-from typing import Any, Dict, Iterable, Tuple
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
@@ -14,6 +14,8 @@ import yaml
 from .filesystem import FileNotFoundError, VirtualFilesystem
 from .mcp_bindings import MCPBindingManager
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.S)
 _CODEBLOCK_RE = re.compile(r"```python\s*(.*?)```", re.S)
@@ -21,7 +23,7 @@ _CODEBLOCK_RE = re.compile(r"```python\s*(.*?)```", re.S)
 _mcp_manager = MCPBindingManager()
 
 
-def _parse_skill_md(md: str) -> Tuple[str, str]:
+def _parse_skill_md(md: str) -> tuple[str, str]:
     name = "unnamed-skill"
     description = ""
     match = _FRONTMATTER_RE.match(md)
@@ -118,7 +120,7 @@ async def install_skill(
     *,
     compile_python: bool = True,
     into: str = "/site-packages/skills",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     vfs = VirtualFilesystem(db_pool, thread_id)
     base = PurePosixPath(into)
 
@@ -255,7 +257,7 @@ async def add_http_mcp_server(
     *,
     discover: bool = True,
     into: str = "/site-packages/servers",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     _enforce_mcp_allowlist(name, url)
 
     vfs = VirtualFilesystem(db_pool, thread_id)

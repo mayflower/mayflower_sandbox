@@ -78,6 +78,7 @@ ignore = [
 "tests/*" = [
     "N802",   # function name should be lowercase
     "N803",   # argument name should be lowercase
+    "E402",   # module level import not at top of file (needed for load_dotenv)
 ]
 
 [tool.mypy]

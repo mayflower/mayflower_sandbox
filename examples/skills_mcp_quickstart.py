@@ -16,7 +16,6 @@ import asyncpg
 from mayflower_sandbox.integrations import add_http_mcp_server, install_skill
 from mayflower_sandbox.sandbox_executor import SandboxExecutor
 
-
 SKILL_SOURCE = os.environ.get(
     "MAYFLOWER_SKILL",
     "github:anthropics/skills/algorithmic-art",

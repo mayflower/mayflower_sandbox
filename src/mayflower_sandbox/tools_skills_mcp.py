@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Type
+from typing import TYPE_CHECKING, Any
 
-from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.tools.base import SandboxTool
 
 from .integrations import add_http_mcp_server, install_skill
+
+if TYPE_CHECKING:
+    from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 
 
 class SkillInstallArgs(BaseModel):
@@ -22,7 +24,7 @@ class SkillInstallTool(SandboxTool):
     description: str = (
         "Install a Claude Skill into the sandbox VFS and make it importable (skills.<name>)."
     )
-    args_schema: Type[BaseModel] = SkillInstallArgs
+    args_schema: type[BaseModel] = SkillInstallArgs
 
     async def _arun(  # type: ignore[override]
         self,
@@ -36,7 +38,7 @@ class SkillInstallTool(SandboxTool):
 class MCPBindArgs(BaseModel):
     name: str = Field(..., description="Short server name, becomes 'servers.<name>'")
     url: str = Field(..., description="Streamable HTTP MCP base URL (often ends with /mcp)")
-    headers: Optional[Dict[str, str]] = Field(
+    headers: dict[str, str] | None = Field(
         default=None,
         description="Optional auth headers",
     )
@@ -47,13 +49,13 @@ class MCPBindHttpTool(SandboxTool):
     description: str = (
         "Bind an HTTP MCP server and generate importable Python wrappers (servers.<name>.*)."
     )
-    args_schema: Type[BaseModel] = MCPBindArgs
+    args_schema: type[BaseModel] = MCPBindArgs
 
     async def _arun(  # type: ignore[override]
         self,
         name: str,
         url: str,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> dict[str, Any]:
         thread_id = self._get_thread_id(run_manager)

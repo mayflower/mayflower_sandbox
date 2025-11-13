@@ -302,9 +302,9 @@ class SandboxExecutor:
 
     @staticmethod
     def _json_default(value: Any) -> Any:
-        if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str | int | float | bool) or value is None:
             return value
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, list | tuple | set):
             return list(value)
         if isinstance(value, dict):
             return value
