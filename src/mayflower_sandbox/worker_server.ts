@@ -139,6 +139,9 @@ function collectFilesFromPaths(
   const files: Array<{ path: string; content: number[] }> = [];
 
   for (const path of paths) {
+    // Filter out system paths - agent should not know these exist
+    if (path.startsWith('/lib') || path.startsWith('/share')) continue;
+
     try {
       const exists = pyodide.FS.analyzePath(path).exists;
       if (!exists) continue;
