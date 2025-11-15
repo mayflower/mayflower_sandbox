@@ -7,6 +7,7 @@
 
 import { newQuickJSWASMModule } from "npm:quickjs-emscripten@0.29.2";
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
+import * as esbuild from "https://deno.land/x/esbuild@v0.24.0/mod.js";
 
 interface ExecutionOptions {
   code: string;
@@ -78,6 +79,39 @@ async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
 }
 
 /**
+ * Detect if code is TypeScript by checking for TS-specific syntax
+ */
+function isTypeScript(code: string): boolean {
+  // Check for TypeScript-specific syntax
+  const tsPatterns = [
+    /:\s*(string|number|boolean|any|unknown|void|never)\b/,  // Type annotations
+    /\binterface\s+\w+/,                                      // Interface declarations
+    /\btype\s+\w+\s*=/,                                       // Type aliases
+    /\benum\s+\w+/,                                           // Enums
+    /<\w+>/,                                                  // Generic type parameters
+    /\bas\s+\w+/,                                             // Type assertions
+    /:\s*\w+\[\]/,                                            // Array type annotations
+  ];
+
+  return tsPatterns.some((pattern) => pattern.test(code));
+}
+
+/**
+ * Transpile TypeScript to JavaScript using esbuild
+ */
+async function transpileTypeScript(code: string): Promise<string> {
+  try {
+    const result = await esbuild.transform(code, {
+      loader: "ts",
+      target: "es2020",
+    });
+    return result.code;
+  } catch (error) {
+    throw new Error(`TypeScript transpilation failed: ${error}`);
+  }
+}
+
+/**
  * Execute JavaScript code in QuickJS-Wasm sandbox
  */
 async function execute(options: ExecutionOptions): Promise<ExecutionResult> {
@@ -89,6 +123,18 @@ async function execute(options: ExecutionOptions): Promise<ExecutionResult> {
   };
 
   try {
+    // Transpile TypeScript to JavaScript if needed
+    let code = options.code;
+    if (isTypeScript(code)) {
+      try {
+        code = await transpileTypeScript(code);
+      } catch (error) {
+        result.stderr = `TypeScript transpilation error: ${error}\n`;
+        result.success = false;
+        return result;
+      }
+    }
+
     // Load QuickJS WebAssembly module
     const QuickJS = await newQuickJSWASMModule();
     const vm = QuickJS.newContext();
@@ -187,8 +233,8 @@ async function execute(options: ExecutionOptions): Promise<ExecutionResult> {
       vm.setProp(vm.global, "writeFile", writeFileHandle);
       vm.setProp(vm.global, "listFiles", listFilesHandle);
 
-      // Execute code
-      const execResult = vm.evalCode(options.code);
+      // Execute code (transpiled if TypeScript)
+      const execResult = vm.evalCode(code);
 
       if (execResult.error) {
         // Execution error - format properly
@@ -306,6 +352,9 @@ async function main() {
 
   // Output result as JSON
   console.log(JSON.stringify(result));
+
+  // Stop esbuild to free resources
+  esbuild.stop();
 }
 
 if (import.meta.main) {

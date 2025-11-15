@@ -124,7 +124,7 @@ console.log('Processing complete:', files.length, 'files');
 - No Node.js built-ins (use VFS functions instead of `fs`, `http`, `path`)
 - No npm packages (use pure JavaScript only)
 - No async/await for external operations (no `fetch`, no network)
-- Basic TypeScript support (runtime transpilation only)
+- TypeScript fully supported via esbuild (type-stripping only, no type checking)
 
 See [JavaScript Sandbox Guide](docs/javascript.md) for detailed documentation.
 

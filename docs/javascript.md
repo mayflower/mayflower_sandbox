@@ -232,11 +232,13 @@ print(f"Python sees: sum={result['sum']}, average={result['average']}")
 - Regular expressions
 - Arrays and Sets
 
-✅ **TypeScript (Basic)**
-- Type annotations (stripped at runtime)
-- Interfaces (stripped at runtime)
-- Simple generics
-- Const assertions
+✅ **TypeScript**
+- Full ES2020+ TypeScript support via esbuild transpilation
+- Type annotations (stripped at transpile time)
+- Interfaces, type aliases, enums
+- Generics (all types, including conditional and mapped types)
+- Const assertions, type guards
+- **Note**: Type-stripping only (no type checking)
 
 ### Not Supported
 
@@ -259,11 +261,11 @@ print(f"Python sees: sum={result['sum']}, average={result['average']}")
 - No browser storage (`localStorage`, `sessionStorage`)
 - No browser-specific APIs
 
-❌ **Advanced TypeScript**
-- No decorators
-- No advanced generics (conditional types, mapped types)
-- No module resolution (imports/exports)
-- Basic runtime transpilation only
+❌ **TypeScript Limitations**
+- No type checking (types are stripped, not validated)
+- No decorators (experimental feature)
+- No module resolution (ES6 imports/exports across files)
+- Transpilation adds ~10-50ms overhead per execution
 
 ## Performance Characteristics
 
