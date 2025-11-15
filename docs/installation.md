@@ -4,9 +4,13 @@
 
 - Python 3.12+
 - PostgreSQL 14+
-- Deno (for Pyodide execution)
+- Deno (for Python and JavaScript/TypeScript execution)
 
 ## Install Deno
+
+Deno is required for both Python (Pyodide) and JavaScript/TypeScript (QuickJS) sandbox execution.
+
+### macOS / Linux
 
 ```bash
 curl -fsSL https://deno.land/x/install/install.sh | sh
@@ -15,6 +19,21 @@ curl -fsSL https://deno.land/x/install/install.sh | sh
 export DENO_INSTALL="$HOME/.deno"
 export PATH="$DENO_INSTALL/bin:$PATH"
 ```
+
+### Windows
+
+```powershell
+irm https://deno.land/install.ps1 | iex
+```
+
+### Verify Installation
+
+```bash
+deno --version
+# Should show: deno 2.x.x (stable, release, ...)
+```
+
+**Note**: JavaScript/TypeScript support is optional and can be enabled with `enable_javascript=True` when creating tools. If you only need Python execution, Deno is still required but JavaScript tools will not be available.
 
 ## Install Package
 

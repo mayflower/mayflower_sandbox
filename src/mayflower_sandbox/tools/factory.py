@@ -14,6 +14,9 @@ from mayflower_sandbox.tools.file_grep import FileGrepTool
 from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
+from mayflower_sandbox.tools.javascript_execute import ExecuteJavascriptTool
+from mayflower_sandbox.tools.javascript_execute_prepared import ExecuteJavascriptCodeTool
+from mayflower_sandbox.tools.javascript_run_file import RunJavascriptFileTool
 from mayflower_sandbox.tools.run_file import RunPythonFileTool
 from mayflower_sandbox.tools_skills_mcp import MCPBindHttpTool, SkillInstallTool
 
@@ -22,6 +25,7 @@ def create_sandbox_tools(
     db_pool: asyncpg.Pool,
     thread_id: str | None = None,
     include_tools: list[str] | None = None,
+    enable_javascript: bool = False,
 ) -> list[SandboxTool]:
     """
     Create a set of sandbox tools for LangGraph.
@@ -34,7 +38,11 @@ def create_sandbox_tools(
         include_tools: List of tool names to include (default: all tools)
                       Options: "python_run", "python_run_file", "python_run_prepared",
                               "file_read", "file_write", "file_list", "file_delete",
-                              "file_edit", "file_glob", "file_grep"
+                              "file_edit", "file_glob", "file_grep", "skill_install", "mcp_bind_http"
+                      If enable_javascript=True, also includes:
+                              "javascript_run", "javascript_run_file", "javascript_run_prepared"
+        enable_javascript: Enable JavaScript/TypeScript sandbox tools (default: False)
+                          Requires Deno to be installed: https://deno.land/
 
     Returns:
         List of configured SandboxTool instances
@@ -51,6 +59,9 @@ def create_sandbox_tools(
 
         # Create tools with fixed thread_id
         tools = create_sandbox_tools(db_pool, thread_id="user_123")
+
+        # Enable JavaScript/TypeScript sandbox (requires Deno)
+        tools = create_sandbox_tools(db_pool, enable_javascript=True)
 
         # Create only specific tools
         tools = create_sandbox_tools(
@@ -79,6 +90,16 @@ def create_sandbox_tools(
         "skill_install": SkillInstallTool,
         "mcp_bind_http": MCPBindHttpTool,
     }
+
+    # Add JavaScript/TypeScript tools if enabled
+    if enable_javascript:
+        all_tools.update(
+            {
+                "javascript_run": ExecuteJavascriptTool,
+                "javascript_run_file": RunJavascriptFileTool,
+                "javascript_run_prepared": ExecuteJavascriptCodeTool,
+            }
+        )
 
     if include_tools is None:
         include_tools = list(all_tools.keys())
