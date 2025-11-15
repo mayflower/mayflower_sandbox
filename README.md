@@ -1,18 +1,20 @@
 # Mayflower Sandbox
 
-Production-ready Python sandbox with PostgreSQL-backed virtual filesystem and document processing helpers for LangGraph agents.
+Production-ready Python and JavaScript/TypeScript sandbox with PostgreSQL-backed virtual filesystem and document processing helpers for LangGraph agents.
 
 ## Overview
 
-Mayflower Sandbox provides secure, isolated Python code execution with persistent file storage, designed for LangChain and LangGraph applications. Execute untrusted Python code, process documents (Word, Excel, PowerPoint, PDF), and maintain persistent state across sessions—all with complete thread isolation.
+Mayflower Sandbox provides secure, isolated code execution with persistent file storage, designed for LangChain and LangGraph applications. Execute untrusted Python and JavaScript/TypeScript code, process documents (Word, Excel, PowerPoint, PDF), and maintain persistent state across sessions—all with complete thread isolation.
 
 ## Key Features
 
 - ✅ **Secure Python Execution** - Pyodide WebAssembly sandbox with configurable network access
+- ⚡ **JavaScript/TypeScript Execution** - QuickJS WebAssembly sandbox (experimental, opt-in)
 - ✅ **Persistent Virtual Filesystem** - PostgreSQL-backed storage (20MB file limit per file)
 - ✅ **Document Processing Helpers** - Built-in helpers for Word, Excel, PowerPoint, and PDF
 - ✅ **Stateful Execution** - Variables and state persist across executions and restarts
 - ✅ **Thread Isolation** - Complete isolation between users/sessions via `thread_id`
+- ✅ **Cross-Language File Sharing** - Python and JavaScript can access the same VFS files
 - ✅ **LangChain Integration** - All tools extend `BaseTool` for seamless LangGraph integration
 - ✅ **HTTP File Server** - Download files via REST API
 - ✅ **Automatic Cleanup** - Configurable session expiration (180 days default)
@@ -66,6 +68,65 @@ result = await agent.ainvoke({
 
 See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 
+### JavaScript/TypeScript Support (Experimental)
+
+Enable JavaScript/TypeScript execution alongside Python:
+
+```python
+import asyncpg
+from mayflower_sandbox.tools import create_sandbox_tools
+from langgraph.prebuilt import create_react_agent
+from langchain_anthropic import ChatAnthropic
+
+# Setup database
+db_pool = await asyncpg.create_pool(...)
+
+# Enable JavaScript/TypeScript tools (requires Deno)
+tools = create_sandbox_tools(
+    db_pool,
+    thread_id="user_123",
+    enable_javascript=True  # Adds 3 new tools: javascript_run, javascript_run_file, javascript_run_prepared
+)
+
+# Create LangGraph agent with both Python and JavaScript
+llm = ChatAnthropic(model="claude-sonnet-4.5")
+agent = create_react_agent(llm, tools)
+
+# The agent can now use both Python and JavaScript
+result = await agent.ainvoke({
+    "messages": [("user", "Process data.json using JavaScript and create a summary with Python")]
+})
+```
+
+**Key Features:**
+- ⚡ **Fast initialization** - QuickJS VM starts in ~1-5ms (vs ~500-1000ms for Pyodide)
+- 🔒 **Same security model** - No host filesystem or network access, same resource quotas
+- 📁 **Shared VFS** - Python and JavaScript can read/write the same files
+- 🚀 **Pure JavaScript/ES6+** - No Node.js, no npm packages, just standard JavaScript
+
+**JavaScript VFS API:**
+```javascript
+// Read file from VFS
+const data = readFile('/data/input.txt');
+
+// Write file to VFS
+writeFile('/data/output.json', JSON.stringify({ result: 42 }));
+
+// List all files
+const files = listFiles();
+
+// Always use console.log() for output!
+console.log('Processing complete:', files.length, 'files');
+```
+
+**Limitations:**
+- No Node.js built-ins (use VFS functions instead of `fs`, `http`, `path`)
+- No npm packages (use pure JavaScript only)
+- No async/await for external operations (no `fetch`, no network)
+- Basic TypeScript support (runtime transpilation only)
+
+See [JavaScript Sandbox Guide](docs/javascript.md) for detailed documentation.
+
 ## Documentation
 
 ### Getting Started
@@ -87,6 +148,9 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 │ ├─ ExecutePythonTool (direct code execution)       │
 │ ├─ RunPythonFileTool (run existing .py files)      │
 │ ├─ ExecuteCodeTool (state-based for large code)    │
+│ ├─ ExecuteJavascriptTool (JS/TS execution) ⚡       │
+│ ├─ RunJavascriptFileTool (run .js/.ts files) ⚡     │
+│ ├─ ExecuteJavascriptCodeTool (state-based) ⚡       │
 │ ├─ FileReadTool                                     │
 │ ├─ FileWriteTool                                    │
 │ ├─ FileEditTool (str_replace)                       │
@@ -99,6 +163,7 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 ┌──────────────────▼──────────────────────────────────┐
 │ Mayflower Sandbox                                   │
 │ ├─ SandboxExecutor (VFS + Pyodide integration)     │
+│ ├─ JavascriptSandboxExecutor (VFS + QuickJS) ⚡     │
 │ ├─ VirtualFilesystem (PostgreSQL storage)          │
 │ ├─ Helper Modules (auto-loaded into VFS)           │
 │ ├─ SandboxManager (Session lifecycle)              │
@@ -108,15 +173,16 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 ┌──────────────────▼──────────────────────────────────┐
 │ Infrastructure                                      │
 │ ├─ PostgreSQL (Persistent storage)                 │
-│ └─ Deno + Pyodide (Python execution)               │
+│ ├─ Deno + Pyodide (Python execution)               │
+│ └─ Deno + QuickJS-Wasm (JavaScript execution) ⚡    │
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 10 Tools
+## The Tools
 
-Mayflower Sandbox provides 10 LangChain tools:
+Mayflower Sandbox provides 10 core LangChain tools, plus 3 optional JavaScript/TypeScript tools:
 
-### Code Execution Tools
+### Python Code Execution Tools
 
 1. **ExecutePythonTool** (`python_run`) - Execute Python code directly via tool parameter
    - Best for: Small code snippets, simple calculations, quick operations
@@ -132,18 +198,34 @@ Mayflower Sandbox provides 10 LangChain tools:
    - LLM generates code, stores in graph state, tool extracts and executes
    - **Use this for complex visualizations and large code blocks**
 
+### JavaScript/TypeScript Code Execution Tools (Optional, requires `enable_javascript=True`)
+
+4. **ExecuteJavascriptTool** (`javascript_run`) ⚡ - Execute JavaScript/TypeScript code directly
+   - Best for: JSON manipulation, text processing, quick calculations
+   - Fast initialization (~1-5ms vs ~500-1000ms for Python)
+   - No Node.js or npm packages - pure JavaScript/ES6+ only
+
+5. **RunJavascriptFileTool** (`javascript_run_file`) ⚡ - Execute existing .js/.ts files from VFS
+   - Best for: Re-running JavaScript scripts, organized projects
+   - Reads and executes .js or .ts files already stored in VFS
+
+6. **ExecuteJavascriptCodeTool** (`javascript_run_prepared`) ⚡ - Execute JavaScript from graph state
+   - Best for: Large JavaScript code blocks
+   - Same state-based extraction pattern as `python_run_prepared`
+   - Solves tool parameter serialization issues for JavaScript code
+
 ### File Management Tools
 
-4. **FileReadTool** (`file_read`) - Read files from PostgreSQL VFS
-5. **FileWriteTool** (`file_write`) - Write files to PostgreSQL VFS (20MB limit)
-6. **FileEditTool** (`file_edit`) - Edit files by replacing unique strings
-7. **FileListTool** (`file_list`) - List files with optional prefix filtering
-8. **FileDeleteTool** (`file_delete`) - Delete files from VFS
+7. **FileReadTool** (`file_read`) - Read files from PostgreSQL VFS
+8. **FileWriteTool** (`file_write`) - Write files to PostgreSQL VFS (20MB limit)
+9. **FileEditTool** (`file_edit`) - Edit files by replacing unique strings
+10. **FileListTool** (`file_list`) - List files with optional prefix filtering
+11. **FileDeleteTool** (`file_delete`) - Delete files from VFS
 
 ### File Search Tools
 
-9. **FileGlobTool** (`file_glob`) - Find files matching glob patterns
-10. **FileGrepTool** (`file_grep`) - Search file contents with regex
+12. **FileGlobTool** (`file_glob`) - Find files matching glob patterns
+13. **FileGrepTool** (`file_grep`) - Search file contents with regex
 
 See [Tools Reference](docs/tools.md) for detailed documentation.
 
@@ -165,6 +247,23 @@ See [Tools Reference](docs/tools.md) for detailed documentation.
 - Multi-step data analysis pipelines
 - When you encounter "missing required parameter" errors with `python_run`
 - Any code too large for tool parameter serialization
+
+**Use `javascript_run`** ⚡ for:
+- JSON manipulation and transformation
+- Text processing and string operations
+- Quick calculations without library dependencies
+- Fast initialization (when Python startup time is too slow)
+- Data filtering and aggregation using Array methods
+
+**Use `javascript_run_file`** ⚡ for:
+- Re-running previously created JavaScript scripts
+- Organized JavaScript projects
+- .js or .ts files stored permanently in VFS
+
+**Use `javascript_run_prepared`** ⚡ for:
+- Large JavaScript code blocks
+- When you encounter parameter serialization issues with `javascript_run`
+- Complex data processing workflows
 
 **State-Based Code Execution Pattern (`python_run_prepared`):**
 

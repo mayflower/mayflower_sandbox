@@ -15,6 +15,9 @@ from mayflower_sandbox.tools.file_grep import FileGrepTool
 from mayflower_sandbox.tools.file_list import FileListTool
 from mayflower_sandbox.tools.file_read import FileReadTool
 from mayflower_sandbox.tools.file_write import FileWriteTool
+from mayflower_sandbox.tools.javascript_execute import ExecuteJavascriptTool
+from mayflower_sandbox.tools.javascript_execute_prepared import ExecuteJavascriptCodeTool
+from mayflower_sandbox.tools.javascript_run_file import RunJavascriptFileTool
 from mayflower_sandbox.tools.run_file import RunPythonFileTool
 from mayflower_sandbox.tools_skills_mcp import MCPBindHttpTool, SkillInstallTool
 
@@ -23,6 +26,9 @@ __all__ = [
     "ExecutePythonTool",
     "ExecuteCodeTool",
     "RunPythonFileTool",
+    "ExecuteJavascriptTool",
+    "ExecuteJavascriptCodeTool",
+    "RunJavascriptFileTool",
     "FileReadTool",
     "FileWriteTool",
     "FileListTool",
