@@ -247,6 +247,9 @@ class JavascriptSandboxExecutor:
             "run",
             "--allow-read",  # Minimal - only for QuickJS Wasm module loading
             "--allow-write",  # Minimal - only for QuickJS Wasm module loading
+            "--allow-env",  # Required for esbuild TypeScript transpilation
+            "--allow-net",  # Required for esbuild binary download
+            "--allow-run",  # Required for esbuild binary execution
         ]
 
         # Network is disabled by default for JavaScript/TypeScript sandbox
