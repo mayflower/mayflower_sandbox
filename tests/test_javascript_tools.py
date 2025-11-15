@@ -85,8 +85,8 @@ async def test_tool_factory_with_javascript(db_pool, clean_files):
     """Test creating tools with enable_javascript=True."""
     tools = create_sandbox_tools(db_pool, "test_js_tools", enable_javascript=True)
 
-    # Should have 10 core tools + 3 JavaScript tools = 13 total
-    assert len(tools) == 13
+    # Should have 12 core tools + 3 JavaScript tools = 15 total
+    assert len(tools) == 15
 
     tool_names = {tool.name for tool in tools}
     assert "javascript_run" in tool_names
@@ -98,8 +98,8 @@ async def test_tool_factory_without_javascript(db_pool, clean_files):
     """Test creating tools with enable_javascript=False (default)."""
     tools = create_sandbox_tools(db_pool, "test_js_tools")
 
-    # Should have only 10 core tools (no JavaScript tools)
-    assert len(tools) == 10
+    # Should have only 12 core tools (no JavaScript tools)
+    assert len(tools) == 12
 
     tool_names = {tool.name for tool in tools}
     assert "javascript_run" not in tool_names
