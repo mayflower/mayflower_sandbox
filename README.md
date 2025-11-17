@@ -14,6 +14,7 @@ Mayflower Sandbox provides secure, isolated Python code execution with persisten
 - ✅ **Stateful Execution** - Variables and state persist across executions and restarts
 - ✅ **Thread Isolation** - Complete isolation between users/sessions via `thread_id`
 - ✅ **LangChain Integration** - All tools extend `BaseTool` for seamless LangGraph integration
+- ✅ **HITL Support** - Human-in-the-Loop approval for destructive operations (CopilotKit integration)
 - ✅ **HTTP File Server** - Download files via REST API
 - ✅ **Automatic Cleanup** - Configurable session expiration (180 days default)
 
@@ -76,6 +77,7 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 ### Reference
 - **[Tools Reference](docs/tools.md)** - Documentation for the 10 LangChain tools
 - **[Helpers Reference](docs/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
+- **[HITL Guide](#human-in-the-loop-hitl-approval)** - Human-in-the-Loop approval for destructive operations
 - **[Advanced Features](docs/advanced.md)** - Stateful execution, file server, cleanup
 - **[API Reference](docs/api.md)** - Low-level API documentation
 
@@ -135,10 +137,10 @@ Mayflower Sandbox provides 10 LangChain tools:
 ### File Management Tools
 
 4. **FileReadTool** (`file_read`) - Read files from PostgreSQL VFS
-5. **FileWriteTool** (`file_write`) - Write files to PostgreSQL VFS (20MB limit)
+5. **FileWriteTool** (`file_write`) - Write files to PostgreSQL VFS (20MB limit, HITL approval)
 6. **FileEditTool** (`file_edit`) - Edit files by replacing unique strings
 7. **FileListTool** (`file_list`) - List files with optional prefix filtering
-8. **FileDeleteTool** (`file_delete`) - Delete files from VFS
+8. **FileDeleteTool** (`file_delete`) - Delete files from VFS (HITL approval required)
 
 ### File Search Tools
 
@@ -188,6 +190,128 @@ Built-in helpers for document processing (automatically available in sandbox):
 - **PDF** - Merge, split, extract text, rotate pages, get metadata
 
 See [Helpers Reference](docs/helpers.md) for complete documentation.
+
+## Human-in-the-Loop (HITL) Approval
+
+Mayflower Sandbox supports Human-in-the-Loop approval for destructive operations, allowing users to confirm actions before they execute. This is particularly important for file deletions and modifications.
+
+### How HITL Works
+
+The HITL mechanism uses CopilotKit's `renderAndWaitForResponse` pattern to create a seamless approval workflow:
+
+```
+┌─────────┐      ┌─────────┐      ┌──────────┐      ┌──────┐
+│   LLM   │─────▶│ Backend │─────▶│ Frontend │─────▶│ User │
+└─────────┘      └─────────┘      └──────────┘      └──────┘
+     │                │                  │               │
+     │ 1. Call tool   │                  │               │
+     │ (no approval)  │                  │               │
+     ├───────────────▶│                  │               │
+     │                │ 2. Return        │               │
+     │                │ "WAIT_FOR_USER_  │               │
+     │                │ APPROVAL"        │               │
+     │◀───────────────┤                  │               │
+     │                │ 3. Trigger       │               │
+     │                │ approval dialog  │               │
+     │                ├─────────────────▶│               │
+     │                │                  │ 4. Show UI    │
+     │                │                  ├──────────────▶│
+     │                │                  │ 5. User       │
+     │                │                  │ approves      │
+     │                │                  │◀──────────────┤
+     │                │ 6. Re-call with │               │
+     │                │ approved=true   │               │
+     │                │◀─────────────────┤               │
+     │ 7. Execute     │                  │               │
+     │ & return       │                  │               │
+     │◀───────────────┤─────────────────▶│──────────────▶│
+```
+
+### Implementation Example
+
+**Backend (file_delete.py):**
+
+```python
+class FileDeleteInput(BaseModel):
+    file_path: str = Field(description="Path to the file to delete")
+    approved: bool = Field(
+        default=False,
+        description="User approval status for deletion"
+    )
+
+class FileDeleteTool(SandboxTool):
+    async def _arun(
+        self,
+        file_path: str,
+        approved: bool = False,
+        run_manager: AsyncCallbackManagerForToolRun | None = None,
+    ) -> str:
+        # HITL: If not approved, return special message
+        if not approved:
+            return "WAIT_FOR_USER_APPROVAL"
+
+        # User approved - proceed with deletion
+        vfs = VirtualFilesystem(self.db_pool, thread_id)
+        deleted = await vfs.delete_file(file_path)
+        return f"Successfully deleted: {file_path}"
+```
+
+**Frontend (CopilotKit integration):**
+
+```typescript
+useCopilotAction({
+    name: 'file_delete',
+    description: 'Delete a file. Requires user approval.',
+    parameters: [
+        {
+            name: 'file_path',
+            type: 'string',
+            required: true,
+        },
+        // NOTE: 'approved' parameter intentionally NOT defined here
+        // CopilotKit detects it's missing and triggers approval flow
+    ],
+    renderAndWaitForResponse: ({ args, respond }) => {
+        // Show confirmation dialog
+        // When user approves: respond({ approved: true })
+        // When user cancels: respond({ approved: false })
+    },
+});
+```
+
+### Key Design Patterns
+
+1. **Parameter Omission Detection**
+   - Frontend omits `approved` parameter from tool definition
+   - Backend requires `approved` parameter with `default=False`
+   - CopilotKit detects the mismatch and triggers approval flow
+
+2. **Special Return Value**
+   - `"WAIT_FOR_USER_APPROVAL"` signals approval needed
+   - Not an error—it's a control flow signal
+
+3. **Stateless Re-invocation**
+   - Frontend re-calls tool with `approved` parameter
+   - No server-side state needed
+
+4. **Security by Default**
+   - Default is always `approved=False` (safe)
+   - Destructive operations require explicit user consent
+
+### Tools with HITL Support
+
+- **FileDeleteTool** - Requires approval before deleting files
+- **FileWriteTool** - Requires approval for overwriting existing files
+
+### Adding HITL to Your Tools
+
+To add HITL approval to any tool:
+
+1. Add `approved: bool = Field(default=False)` to input schema
+2. Check approval status at the start of `_arun()`
+3. Return `"WAIT_FOR_USER_APPROVAL"` if not approved
+4. Omit `approved` from frontend parameter definition
+5. Implement `renderAndWaitForResponse` in frontend
 
 ## Testing
 
@@ -305,6 +429,7 @@ When worker pool is disabled (`PYODIDE_USE_POOL=false`):
 - ✅ Thread isolation (complete separation)
 - ✅ Configurable network access
 - ✅ Automatic session expiration
+- ✅ HITL approval for destructive operations (file deletion, overwrites)
 
 ## Development
 

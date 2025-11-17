@@ -173,7 +173,7 @@ async def test_file_list_tool(db_pool, clean_files):
 
 
 async def test_file_delete_tool(db_pool, clean_files):
-    """Test FileDeleteTool."""
+    """Test FileDeleteTool with HITL approval."""
     write_tool = FileWriteTool(db_pool=db_pool, thread_id="test_tools")
     delete_tool = FileDeleteTool(db_pool=db_pool, thread_id="test_tools")
     list_tool = FileListTool(db_pool=db_pool, thread_id="test_tools")
@@ -189,16 +189,24 @@ async def test_file_delete_tool(db_pool, clean_files):
     result = await list_tool._arun()
     assert "/tmp/to_delete.txt" in result
 
-    # Delete file
-    delete_result = await delete_tool._arun(file_path="/tmp/to_delete.txt")
+    # Test HITL: Delete without approval (should return WAIT_FOR_USER_APPROVAL)
+    delete_result = await delete_tool._arun(file_path="/tmp/to_delete.txt", approved=False)
+    assert delete_result == "WAIT_FOR_USER_APPROVAL"
+
+    # Verify file still exists (not deleted)
+    result = await list_tool._arun()
+    assert "/tmp/to_delete.txt" in result
+
+    # Delete file with approval
+    delete_result = await delete_tool._arun(file_path="/tmp/to_delete.txt", approved=True)
     assert "Successfully deleted" in delete_result
 
     # Verify deleted
     result = await list_tool._arun()
     assert "No files found" in result
 
-    # Delete non-existent file
-    delete_result = await delete_tool._arun(file_path="/tmp/nonexistent.txt")
+    # Delete non-existent file with approval
+    delete_result = await delete_tool._arun(file_path="/tmp/nonexistent.txt", approved=True)
     assert "File not found" in delete_result
 
 
@@ -241,8 +249,8 @@ print(f"Processing complete: {len(lines)} lines")
     assert "Processed 3 lines" in read_result
 
     # 5. Clean up
-    await tool_map["file_delete"]._arun(file_path="/data/input.csv")
-    await tool_map["file_delete"]._arun(file_path="/tmp/output.txt")
+    await tool_map["file_delete"]._arun(file_path="/data/input.csv", approved=True)
+    await tool_map["file_delete"]._arun(file_path="/tmp/output.txt", approved=True)
 
     # 6. Verify clean (check user directories, helper modules persist)
     list_result = await tool_map["file_list"]._arun(prefix="/data/")
