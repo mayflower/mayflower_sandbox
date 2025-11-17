@@ -156,6 +156,48 @@ Returns:
             logger.error(f"execute_code: Failed to write file: {e}")
             return f"Error writing code to file: {e}"
 
+        # Emit ToolCall events for progress streaming
+        try:
+            from langgraph.config import get_stream_writer
+            from uuid import uuid4
+            import json
+
+            writer = get_stream_writer()
+            exec_tool_call_id = f"python_exec:{uuid4()}"
+
+            # Emit ToolCallStart
+            writer({"aguiTool": {
+                "type": "ToolCallStart",
+                "toolCallId": exec_tool_call_id,
+                "toolCallName": "python_execution"
+            }})
+            logger.debug(f"Emitted ToolCallStart for Python execution")
+
+            # Emit file path and description
+            writer({"aguiTool": {
+                "type": "ToolCallArgs",
+                "toolCallId": exec_tool_call_id,
+                "delta": json.dumps({
+                    "file_path": file_path,
+                    "description": description,
+                    "code_size": len(code),
+                    "status": "preparing"
+                })
+            }})
+
+            # Emit execution start
+            writer({"aguiTool": {
+                "type": "ToolCallArgs",
+                "toolCallId": exec_tool_call_id,
+                "delta": json.dumps({
+                    "status": "executing",
+                    "message": f"Executing {description}..."
+                })
+            }})
+
+        except Exception as e:
+            logger.error(f"execute_code: Failed to emit start events: {e}", exc_info=True)
+
         # Execute the code with network access enabled for micropip package installation
         executor = SandboxExecutor(self.db_pool, thread_id, allow_net=True, stateful=True)
         try:
@@ -204,6 +246,56 @@ Returns:
                 f"execute_code: Generated result with {len(result)} chars: {result[:200]}..."
             )
 
+            # Emit execution completion events
+            try:
+                from langgraph.config import get_stream_writer
+                import json
+
+                writer = get_stream_writer()
+
+                # Emit success status
+                writer({"aguiTool": {
+                    "type": "ToolCallArgs",
+                    "toolCallId": exec_tool_call_id,
+                    "delta": json.dumps({
+                        "status": "completed",
+                        "message": "Execution completed successfully",
+                        "files_created": len(exec_result.created_files) if exec_result.created_files else 0
+                    })
+                }})
+
+                # Emit stdout if present as ToolCallResult
+                result_content = {
+                    "description": description,
+                    "file_path": file_path,
+                    "success": True
+                }
+
+                if exec_result.stdout:
+                    result_content["stdout"] = exec_result.stdout[:1000]  # Truncate for streaming
+
+                if exec_result.created_files:
+                    result_content["files"] = exec_result.created_files
+
+                writer({"aguiTool": {
+                    "type": "ToolCallResult",
+                    "toolCallId": exec_tool_call_id,
+                    "messageId": str(uuid4()),
+                    "role": "tool",
+                    "content": result_content
+                }})
+
+                # Emit ToolCallEnd
+                writer({"aguiTool": {
+                    "type": "ToolCallEnd",
+                    "toolCallId": exec_tool_call_id
+                }})
+
+                logger.debug(f"Emitted Python execution completion events")
+
+            except Exception as e:
+                logger.error(f"execute_code: Failed to emit completion events: {e}", exc_info=True)
+
             # Clear this tool_call_id's content from state after successful execution
             if tool_call_id:
                 try:
@@ -228,4 +320,45 @@ Returns:
             return result
         except Exception as e:
             logger.error(f"execute_code: Execution failed: {e}")
+
+            # Emit error events
+            try:
+                from langgraph.config import get_stream_writer
+                import json
+
+                writer = get_stream_writer()
+
+                # Emit error status
+                writer({"aguiTool": {
+                    "type": "ToolCallArgs",
+                    "toolCallId": exec_tool_call_id,
+                    "delta": json.dumps({
+                        "status": "error",
+                        "message": f"Execution failed: {str(e)}"
+                    })
+                }})
+
+                # Emit error result
+                writer({"aguiTool": {
+                    "type": "ToolCallResult",
+                    "toolCallId": exec_tool_call_id,
+                    "messageId": str(uuid4()),
+                    "role": "tool",
+                    "content": {
+                        "description": description,
+                        "file_path": file_path,
+                        "success": False,
+                        "error": str(e)
+                    }
+                }})
+
+                # Emit ToolCallEnd
+                writer({"aguiTool": {
+                    "type": "ToolCallEnd",
+                    "toolCallId": exec_tool_call_id
+                }})
+
+            except:
+                pass  # Don't fail if streaming fails
+
             return f"Error executing code: {e}"

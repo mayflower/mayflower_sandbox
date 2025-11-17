@@ -103,7 +103,22 @@ Returns:
             content_bytes = content.encode("utf-8")
             await vfs.write_file(file_path, content_bytes)
             logger.info(f"file_write: Wrote {len(content_bytes)} bytes to {file_path}")
-            message = f"Successfully wrote {len(content_bytes)} bytes to {file_path}"
+
+            # Format message with markdown link (similar to python_run_prepared)
+            # This makes the file appear as a download link in the chat
+            import os
+            filename = os.path.basename(file_path)
+
+            # Check if it's an image file
+            image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp"}
+            ext = os.path.splitext(file_path)[1].lower()
+
+            if ext in image_extensions:
+                # Use markdown image syntax for images
+                message = f"Successfully wrote {len(content_bytes)} bytes to {file_path}\n\n![{filename}]({file_path})"
+            else:
+                # Use markdown link syntax for other files
+                message = f"Successfully wrote {len(content_bytes)} bytes to {file_path}\n\n[{filename}]({file_path})"
 
             # Clear this tool_call_id's content from state after successful write
             if tool_call_id:
@@ -122,6 +137,11 @@ Returns:
                         "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
                     }
 
+                    logger.info(f"file_write: Returning Command with state_update keys: {list(state_update.keys())}")
+                    logger.info(f"file_write: created_files = {state_update['created_files']}")
+                    logger.info(f"file_write: resume message length = {len(message)}")
+                    logger.info(f"file_write: resume message = {message}")
+                    logger.info(f"file_write: resume message repr = {repr(message)}")
                     return Command(update=state_update, resume=message)  # type: ignore[return-value]
                 except ImportError:
                     pass
