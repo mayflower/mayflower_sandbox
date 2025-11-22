@@ -25,6 +25,45 @@ class SandboxManager:
     - Expiration tracking (default 6 months)
     - Last accessed timestamp updates
     - Cleanup of expired sessions
+
+    Usage with Executors:
+    ---------------------
+    The SandboxManager provides session management for both Python and JavaScript executors:
+
+    ```python
+    from mayflower_sandbox import SandboxManager, SandboxExecutor, JavascriptSandboxExecutor
+
+    # Create manager
+    manager = SandboxManager(db_pool)
+
+    # Get or create session
+    session = await manager.get_or_create_session("user_123")
+
+    # Create Python executor for this thread
+    py_executor = SandboxExecutor(
+        db_pool=db_pool,
+        thread_id=session["thread_id"],
+        stateful=True,
+    )
+
+    # Create JavaScript executor for the same thread
+    # (shares the same VFS and session as Python executor)
+    js_executor = JavascriptSandboxExecutor(
+        db_pool=db_pool,
+        thread_id=session["thread_id"],
+        stateful=False,  # JS execution is stateless by default
+    )
+
+    # Both executors can access the same files in VFS
+    # Python code can write files that JavaScript code reads, and vice versa
+    ```
+
+    Thread Isolation:
+    -----------------
+    - Each thread_id has its own isolated VFS (file storage)
+    - Python and JavaScript executors for the same thread_id share files
+    - Different thread_ids have completely separate file spaces
+    - Sessions track last access time and expiration
     """
 
     def __init__(
