@@ -13,11 +13,15 @@ os.environ.setdefault("POSTGRES_PORT", "5433")
 
 @pytest.fixture(scope="function", autouse=True)
 async def cleanup_worker_pool():
-    """Clean up worker pool after each test to prevent event loop issues."""
+    """Clean up worker pool and MCP bridge after each test to prevent event loop issues."""
     yield
-    # Clean up pool after test
+    # Clean up pool and bridge after test
     from mayflower_sandbox.sandbox_executor import SandboxExecutor
 
     if SandboxExecutor._pool is not None:
         await SandboxExecutor._pool.shutdown()
         SandboxExecutor._pool = None
+
+    if SandboxExecutor._mcp_bridge is not None:
+        await SandboxExecutor._mcp_bridge.shutdown()
+        SandboxExecutor._mcp_bridge = None
