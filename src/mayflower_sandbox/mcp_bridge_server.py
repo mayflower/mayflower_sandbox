@@ -36,9 +36,12 @@ class MCPBridgeServer:
             db_pool: PostgreSQL connection pool for loading MCP server configs
             thread_id: Thread ID for MCP session isolation
         """
+        from .schema_validator import MCPSchemaValidator
+
         self.db_pool = db_pool
         self.thread_id = thread_id
         self._mcp_manager = MCPBindingManager()
+        self._validator = MCPSchemaValidator()
         self._server: asyncio.AbstractServer | None = None
         self._port: int | None = None
         self._servers_cache: dict[str, dict[str, Any]] = {}
@@ -111,12 +114,12 @@ class MCPBridgeServer:
             logger.info(f"MCP bridge stopped for thread {self.thread_id}")
 
     async def _get_mcp_server_configs(self) -> dict[str, dict[str, Any]]:
-        """Load MCP server configurations from database."""
+        """Load MCP server configurations and schemas from database."""
         async with self.db_pool.acquire() as conn:
             try:
                 rows = await conn.fetch(
                     """
-                    SELECT name, url, headers, auth
+                    SELECT name, url, headers, auth, schemas
                     FROM sandbox_mcp_servers
                     WHERE thread_id = $1
                     """,
@@ -124,6 +127,16 @@ class MCPBridgeServer:
                 )
             except asyncpg.UndefinedTableError:
                 rows = []
+            except asyncpg.UndefinedColumnError:
+                # Fall back if schemas column doesn't exist yet
+                rows = await conn.fetch(
+                    """
+                    SELECT name, url, headers, auth, NULL as schemas
+                    FROM sandbox_mcp_servers
+                    WHERE thread_id = $1
+                    """,
+                    self.thread_id,
+                )
 
         servers: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -133,6 +146,14 @@ class MCPBridgeServer:
             raw_auth = row["auth"] or {}
             if isinstance(raw_auth, str):
                 raw_auth = json.loads(raw_auth)
+
+            # Load schemas into validator
+            raw_schemas = row["schemas"] or {}
+            if isinstance(raw_schemas, str):
+                raw_schemas = json.loads(raw_schemas)
+            if raw_schemas:
+                self._validator.load_schemas(row["name"], raw_schemas)
+
             servers[row["name"]] = {
                 "url": row["url"],
                 "headers": dict(raw_headers),
@@ -199,17 +220,28 @@ class MCPBridgeServer:
                         f"MCP server '{server_name}' is not registered for this thread."
                     )
 
-                # Execute MCP call
-                config = self._servers_cache[server_name]
-                result = await self._mcp_manager.call(
-                    self.thread_id,
-                    server_name,
-                    tool_name,
-                    args,
-                    url=config["url"],
-                    headers=config.get("headers"),
-                )
-                body = json.dumps({"result": result}, default=self._json_default).encode("utf-8")
+                # Validate args against schema (security enforcement)
+                validation_errors = self._validator.validate(server_name, tool_name, args)
+                if validation_errors:
+                    status = "400 Bad Request"
+                    error_list = "; ".join(validation_errors)
+                    body = json.dumps(
+                        {"error": f"Validation failed for {server_name}.{tool_name}: {error_list}"}
+                    ).encode("utf-8")
+                else:
+                    # Execute MCP call
+                    config = self._servers_cache[server_name]
+                    result = await self._mcp_manager.call(
+                        self.thread_id,
+                        server_name,
+                        tool_name,
+                        args,
+                        url=config["url"],
+                        headers=config.get("headers"),
+                    )
+                    body = json.dumps({"result": result}, default=self._json_default).encode(
+                        "utf-8"
+                    )
 
         except Exception as exc:  # noqa: BLE001 - return error payload to sandbox
             status = "500 Internal Server Error"

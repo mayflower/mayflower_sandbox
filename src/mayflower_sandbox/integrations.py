@@ -258,8 +258,28 @@ async def add_http_mcp_server(
     auth: dict | None = None,
     *,
     discover: bool = True,
+    typed: bool = True,
     into: str = "/site-packages/servers",
 ) -> dict[str, Any]:
+    """
+    Bind an HTTP MCP server and generate typed Python wrappers.
+
+    Args:
+        db_pool: Database connection pool
+        thread_id: Session thread ID
+        name: Server name (e.g., "github")
+        url: MCP server URL
+        headers: Optional HTTP headers
+        auth: Optional auth config
+        discover: Whether to discover tools from server
+        typed: Whether to generate typed Pydantic stubs (default True)
+        into: Base path for generated package
+
+    Returns:
+        Dict with server info including package path
+    """
+    from .schema_codegen import generate_server_package
+
     _enforce_mcp_allowlist(name, url)
 
     vfs = VirtualFilesystem(db_pool, thread_id)
@@ -270,33 +290,57 @@ async def add_http_mcp_server(
     headers_json = json.dumps(headers or {})
     auth_json = json.dumps(auth or {})
 
+    tool_specs: list[dict[str, Any]] = []
+    if discover:
+        tool_specs = await _mcp_manager.list_tools(thread_id, name, url=url, headers=headers)
+
+    # Build schemas dict for database storage and bridge validation
+    schemas = {tool["name"]: tool.get("inputSchema", {}) for tool in tool_specs if tool.get("name")}
+    schemas_json = json.dumps(schemas)
+
+    # Store server config with schemas in database
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO sandbox_mcp_servers(thread_id, name, url, headers, auth)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO sandbox_mcp_servers(thread_id, name, url, headers, auth, schemas)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (thread_id, name) DO UPDATE
-            SET url = EXCLUDED.url, headers = EXCLUDED.headers, auth = EXCLUDED.auth
+            SET url = EXCLUDED.url,
+                headers = EXCLUDED.headers,
+                auth = EXCLUDED.auth,
+                schemas = EXCLUDED.schemas
             """,
             thread_id,
             name,
             url,
             headers_json,
             auth_json,
+            schemas_json,
         )
 
-    tool_specs: list[dict[str, Any]] = []
-    if discover:
-        tool_specs = await _mcp_manager.list_tools(thread_id, name, url=url, headers=headers)
+    # Generate typed stubs if requested and tools have schemas
+    use_typed = typed and any(tool.get("inputSchema") for tool in tool_specs)
 
-    init_py, tools_py = _render_wrapper_module(name, tool_specs)
-    await _write_text(vfs, pkg_root / "__init__.py", init_py)
-    await _write_text(vfs, pkg_root / "tools.py", tools_py)
-    await _write_text(
-        vfs,
-        pkg_root / "schemas.json",
-        json.dumps({"tools": tool_specs}, indent=2),
-    )
+    if use_typed:
+        try:
+            # Generate typed Pydantic models and wrappers
+            package_files = generate_server_package(name, tool_specs)
+            for filename, content in package_files.items():
+                await _write_text(vfs, pkg_root / filename, content)
+        except Exception:
+            # Fall back to kwargs-based wrappers on any generation error
+            use_typed = False
+
+    if not use_typed:
+        # Use legacy kwargs-based wrappers
+        init_py, tools_py = _render_wrapper_module(name, tool_specs)
+        await _write_text(vfs, pkg_root / "__init__.py", init_py)
+        await _write_text(vfs, pkg_root / "tools.py", tools_py)
+        await _write_text(
+            vfs,
+            pkg_root / "schemas.json",
+            json.dumps({"tools": tool_specs}, indent=2),
+        )
 
     return {
         "name": name,
@@ -304,4 +348,5 @@ async def add_http_mcp_server(
         "path": str(pkg_root),
         "url": url,
         "discover": discover,
+        "typed": use_typed,
     }
