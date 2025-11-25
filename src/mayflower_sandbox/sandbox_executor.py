@@ -21,6 +21,7 @@ from .filesystem import VirtualFilesystem
 from .mcp_bindings import MCPBindingManager
 
 if TYPE_CHECKING:
+    from .mcp_bridge_server import MCPBridgeServer
     from .worker_pool import WorkerPool
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,10 @@ class SandboxExecutor:
     _pool: "WorkerPool | None" = None
     _pool_lock = asyncio.Lock()
     _use_pool = os.getenv("PYODIDE_USE_POOL", "false").lower() == "true"
+
+    # Class-level MCP bridge (shared across all pool instances)
+    _mcp_bridge: "MCPBridgeServer | None" = None
+    _mcp_bridge_lock = asyncio.Lock()
 
     def __init__(
         self,
@@ -101,7 +106,38 @@ class SandboxExecutor:
         self._helpers_loaded = False
 
     @classmethod
-    async def _ensure_pool(cls) -> None:
+    async def _ensure_mcp_bridge(cls, db_pool: asyncpg.Pool, thread_id: str) -> int | None:
+        """
+        Ensure MCP bridge is started (lazy initialization).
+
+        Returns the bridge port if started, or None if no MCP servers configured.
+        """
+        if cls._mcp_bridge is None:
+            async with cls._mcp_bridge_lock:
+                if cls._mcp_bridge is None:
+                    from .mcp_bridge_server import MCPBridgeServer
+
+                    bridge = MCPBridgeServer(db_pool, thread_id)
+                    port = await bridge.start()
+
+                    # Only keep it if there are MCP servers configured
+                    if bridge._servers_cache:
+                        cls._mcp_bridge = bridge
+                        logger.info(
+                            f"MCP bridge started on port {port} "
+                            f"with servers: {list(bridge._servers_cache.keys())}"
+                        )
+                        return port
+                    else:
+                        # No servers configured, shut it down
+                        await bridge.shutdown()
+                        logger.debug("No MCP servers configured, bridge not started")
+                        return None
+
+        return cls._mcp_bridge.port if cls._mcp_bridge else None
+
+    @classmethod
+    async def _ensure_pool(cls, mcp_bridge_port: int | None = None) -> None:
         """Ensure worker pool is started (lazy initialization)."""
         if not cls._use_pool:
             return
@@ -114,7 +150,11 @@ class SandboxExecutor:
                     pool_size = int(os.getenv("PYODIDE_POOL_SIZE", "3"))
                     logger.info(f"Initializing Pyodide worker pool (size={pool_size})...")
 
-                    cls._pool = WorkerPool(size=pool_size, executor_path=Path(__file__).parent)
+                    cls._pool = WorkerPool(
+                        size=pool_size,
+                        executor_path=Path(__file__).parent,
+                        mcp_bridge_port=mcp_bridge_port,
+                    )
                     await cls._pool.start()
 
                     logger.info("Pyodide worker pool ready!")
@@ -495,8 +535,11 @@ class SandboxExecutor:
                     execution_time=time.time() - start_time,
                 )
 
-            # Ensure pool is started
-            await self._ensure_pool()
+            # Start MCP bridge if needed (before pool, so port is available)
+            bridge_port = await self._ensure_mcp_bridge(self.db_pool, self.thread_id)
+
+            # Ensure pool is started with MCP bridge port
+            await self._ensure_pool(mcp_bridge_port=bridge_port)
 
             if self._pool is None:
                 raise RuntimeError("Worker pool not available")
@@ -507,7 +550,13 @@ class SandboxExecutor:
 
             # Build code with preludes
             prelude_parts = [self._build_site_prelude()]
-            # TODO: Add MCP bridge support for pool execution
+
+            # Add MCP bridge prelude if bridge is running
+            if bridge_port:
+                servers = await self._get_mcp_server_configs()
+                if servers:
+                    prelude_parts.append(self._build_mcp_prelude(servers, bridge_port))
+
             combined_prelude = "\n".join(prelude_parts)
             code_to_run = combined_prelude + ("\n" if not code.startswith("\n") else "") + code
 

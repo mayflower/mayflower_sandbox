@@ -21,9 +21,18 @@ logger = logging.getLogger(__name__)
 class PyodideWorker:
     """Single long-running Deno worker process with JSON-RPC communication."""
 
-    def __init__(self, worker_id: int, executor_path: Path):
+    # Default hosts allowed for network access (PyPI for micropip)
+    DEFAULT_ALLOWED_HOSTS: set[str] = {"cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"}
+
+    def __init__(
+        self,
+        worker_id: int,
+        executor_path: Path,
+        allowed_hosts: set[str] | None = None,
+    ):
         self.worker_id = worker_id
         self.executor_path = executor_path
+        self.allowed_hosts = allowed_hosts or self.DEFAULT_ALLOWED_HOSTS.copy()
         self.process: Process | None = None
         self.busy = False
         self.request_count = 0
@@ -68,13 +77,13 @@ class PyodideWorker:
         # Store the event loop this worker is bound to
         self._loop = asyncio.get_running_loop()
 
-        # Allow PyPI for micropip.install() to work
-        allowed_hosts = "cdn.jsdelivr.net,pypi.org,files.pythonhosted.org"
+        # Build network permission string from allowed hosts
+        allowed_hosts_str = ",".join(sorted(self.allowed_hosts))
 
         self.process = await asyncio.create_subprocess_exec(
             "deno",
             "run",
-            f"--allow-net={allowed_hosts}",
+            f"--allow-net={allowed_hosts_str}",
             "--allow-read",
             "--allow-write",
             str(self.executor_path / "worker_server.ts"),
@@ -253,13 +262,20 @@ class PyodideWorker:
 class WorkerPool:
     """Pool of Pyodide workers with load balancing and auto-recovery."""
 
-    def __init__(self, size: int = 3, executor_path: Path | None = None):
+    def __init__(
+        self,
+        size: int = 3,
+        executor_path: Path | None = None,
+        mcp_bridge_port: int | None = None,
+    ):
         self.size = size
         self.executor_path = executor_path or Path(__file__).parent
+        self.mcp_bridge_port = mcp_bridge_port
         self.workers: list[PyodideWorker] = []
         self.next_worker_idx = 0
         self.started = False
-        self._health_task: asyncio.Task | None = None
+        self._health_task: asyncio.Task[None] | None = None
+        self._allowed_hosts: set[str] | None = None
 
     async def start(self) -> None:
         """Start all workers in the pool."""
@@ -268,8 +284,16 @@ class WorkerPool:
 
         logger.info(f"Starting worker pool (size={self.size})...")
 
-        # Create workers
-        self.workers = [PyodideWorker(i, self.executor_path) for i in range(self.size)]
+        # Build allowed hosts including MCP bridge if configured
+        self._allowed_hosts = PyodideWorker.DEFAULT_ALLOWED_HOSTS.copy()
+        if self.mcp_bridge_port:
+            self._allowed_hosts.add(f"127.0.0.1:{self.mcp_bridge_port}")
+            logger.info(f"MCP bridge configured on port {self.mcp_bridge_port}")
+
+        # Create workers with allowed hosts
+        self.workers = [
+            PyodideWorker(i, self.executor_path, self._allowed_hosts) for i in range(self.size)
+        ]
 
         # Start workers in parallel
         start_tasks = [w.start() for w in self.workers]
