@@ -274,27 +274,26 @@ print('File created')
 
 
 async def test_agent_state_tracks_created_files(db_pool, clean_files):
-    """Test that created files are tracked in agent state via write_file tool."""
-    load_dotenv()  # Ensure API key is loaded
-    if not os.getenv("OPENAI_API_KEY"):
-        pytest.skip("OPENAI_API_KEY not set - skipping LLM test")
+    """Test that created files are tracked in agent state via direct tool invocation.
 
-    app = create_agent_graph(db_pool, "agent_state_test")
+    Uses direct tool calls instead of LLM to ensure deterministic behavior.
+    Verifies state changes and database persistence.
+    """
+    from langgraph.types import Command
 
-    # Use write_file tool to create a file with clear instructions
-    result = await app.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    "Use the python_run tool to execute this code: "
-                    "with open('/tmp/test.txt', 'w') as f: f.write('Hello State!')",
-                )
-            ],
-            "created_files": [],
-        },
-        config={"configurable": {"thread_id": "test-state-tracking"}, "recursion_limit": 25},
-    )
+    from mayflower_sandbox.tools.execute import ExecutePythonTool
+
+    tool = ExecutePythonTool(db_pool=db_pool, thread_id="agent_state_test")
+
+    # Execute Python code that creates a file
+    code = "with open('/tmp/test.txt', 'w') as f: f.write('Hello State!')"
+    result = await tool._arun(code=code, tool_call_id="test_state_tracking")
+
+    # Verify tool returns Command with state update
+    assert isinstance(result, Command), f"Expected Command, got {type(result)}"
+    assert result.update is not None, "Command update is None"
+    assert "created_files" in result.update, "created_files not in Command update"
+    assert "/tmp/test.txt" in result.update["created_files"]
 
     # Verify file was actually created in database (end state validation)
     async with db_pool.acquire() as conn:
@@ -307,42 +306,45 @@ async def test_agent_state_tracks_created_files(db_pool, clean_files):
         assert file_data is not None, "File not found in database"
         assert b"Hello State!" in file_data["content"]
 
-    # Check that created_files is tracked in state
-    assert "created_files" in result, "created_files not found in agent state"
-    assert isinstance(result["created_files"], list), "created_files should be a list"
-
 
 async def test_agent_state_tracks_multiple_files(db_pool, clean_files):
-    """Test that multiple created files are all tracked in state."""
-    load_dotenv()  # Ensure API key is loaded
-    if not os.getenv("OPENAI_API_KEY"):
-        pytest.skip("OPENAI_API_KEY not set - skipping LLM test")
+    """Test that multiple created files are all tracked in state.
 
-    app = create_agent_graph(db_pool, "agent_state_test")
+    Uses direct tool invocation to create multiple files in one execution.
+    Verifies all files appear in created_files state update.
+    """
+    from langgraph.types import Command
 
-    # Create multiple files using python_run with code directly in arguments
+    from mayflower_sandbox.tools.execute import ExecutePythonTool
+
+    tool = ExecutePythonTool(db_pool=db_pool, thread_id="agent_state_test")
+
+    # Create multiple files in one Python execution
     code = """
 for name, content in [('file1', 'File One'), ('file2', 'File Two'), ('file3', 'File Three')]:
     with open(f'/tmp/{name}.txt', 'w') as f:
         f.write(content)
 print('All files created')
 """
-    await app.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    f"Use the python_run tool to execute this code:\n{code}",
-                )
-            ],
-            "created_files": [],
-        },
-        config={"configurable": {"thread_id": "test-multi-files"}, "recursion_limit": 25},
-    )
+    result = await tool._arun(code=code, tool_call_id="test_multi_files")
 
-    # Verify files were actually created in database (end state validation)
+    # Verify tool returns Command with state update containing all files
+    assert isinstance(result, Command), f"Expected Command, got {type(result)}"
+    assert result.update is not None, "Command update is None"
+    assert "created_files" in result.update, "created_files not in Command update"
+
+    created = result.update["created_files"]
+    assert "/tmp/file1.txt" in created, "file1.txt not tracked"
+    assert "/tmp/file2.txt" in created, "file2.txt not tracked"
+    assert "/tmp/file3.txt" in created, "file3.txt not tracked"
+
+    # Verify files were actually created in database
     async with db_pool.acquire() as conn:
-        for filename in ["file1.txt", "file2.txt", "file3.txt"]:
+        for filename, expected_content in [
+            ("file1.txt", b"File One"),
+            ("file2.txt", b"File Two"),
+            ("file3.txt", b"File Three"),
+        ]:
             file_data = await conn.fetchrow(
                 """
                 SELECT content FROM sandbox_filesystem
@@ -351,50 +353,32 @@ print('All files created')
                 f"/tmp/{filename}",
             )
             assert file_data is not None, f"File /tmp/{filename} not found in database"
+            assert file_data["content"] == expected_content
 
 
 async def test_agent_can_reference_created_files(db_pool, clean_files):
-    """Test that agent can reference files from state in subsequent actions."""
-    load_dotenv()  # Ensure API key is loaded
-    if not os.getenv("OPENAI_API_KEY"):
-        pytest.skip("OPENAI_API_KEY not set - skipping LLM test")
+    """Test that files created by one tool can be read by another.
 
-    app = create_agent_graph(db_pool, "agent_state_test")
+    Uses direct tool invocations to verify file persistence across tool calls.
+    Verifies state update from creation and database persistence.
+    """
+    from langgraph.types import Command
 
-    config = {"configurable": {"thread_id": "test-file-reference"}, "recursion_limit": 50}
+    from mayflower_sandbox.filesystem import VirtualFilesystem
+    from mayflower_sandbox.tools.execute import ExecutePythonTool
 
-    # First: create a file using python_run with code directly
-    await app.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    "Use the python_run tool to execute this code: "
-                    "with open('/tmp/data.txt', 'w') as f: f.write('important data')",
-                )
-            ],
-            "created_files": [],
-        },
-        config=config,
-    )
+    # Create a file using python execution
+    exec_tool = ExecutePythonTool(db_pool=db_pool, thread_id="agent_state_test")
+    code = "with open('/tmp/data.txt', 'w') as f: f.write('important data')"
+    result = await exec_tool._arun(code=code, tool_call_id="test_create_file")
 
-    # Verify file was created in database (end state validation)
-    async with db_pool.acquire() as conn:
-        file_data = await conn.fetchrow(
-            """
-            SELECT content FROM sandbox_filesystem
-            WHERE thread_id = 'agent_state_test' AND file_path = '/tmp/data.txt'
-        """
-        )
-        assert file_data is not None, "File /tmp/data.txt not found in database"
-        assert b"important data" in file_data["content"]
+    # Verify creation tracked in state update
+    assert isinstance(result, Command), f"Expected Command, got {type(result)}"
+    assert result.update is not None
+    assert "/tmp/data.txt" in result.update.get("created_files", [])
 
-    # Second: ask agent to read the file it created
-    result2 = await app.ainvoke(
-        {"messages": [("user", "Use the file_read tool to read the contents of /tmp/data.txt")]},
-        config=config,
-    )
-
-    # Agent should be able to access the file
-    last_message = result2["messages"][-1]
-    assert "important data" in last_message.content.lower()
+    # Verify file is readable via VFS (what file_read tool would use)
+    vfs = VirtualFilesystem(db_pool, "agent_state_test")
+    file_info = await vfs.read_file("/tmp/data.txt")
+    assert file_info is not None, "File not found in VFS"
+    assert file_info["content"] == b"important data"
