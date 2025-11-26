@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """
 Tests for MCPBridgeServer - persistent HTTP bridge for MCP calls from workers.
 """
@@ -171,5 +172,235 @@ async def test_bridge_idempotent_start(db_pool, clean_mcp_servers):
 
         assert port1 == port2
         assert bridge.is_running is True
+    finally:
+        await bridge.shutdown()
+
+
+async def test_bridge_schema_validation_rejects_invalid_args(db_pool, clean_mcp_servers):
+    """Test that bridge returns 400 when args fail schema validation."""
+    bridge = MCPBridgeServer(db_pool, "test_mcp_bridge")
+
+    try:
+        # Add a server with schema to the database
+        async with db_pool.acquire() as conn:
+            try:
+                # Schema requires 'title' as string
+                schemas = {
+                    "create_issue": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                        },
+                        "required": ["title"],
+                    }
+                }
+                await conn.execute(
+                    """
+                    INSERT INTO sandbox_mcp_servers (thread_id, name, url, headers, auth, schemas)
+                    VALUES ('test_mcp_bridge', 'github', 'http://localhost:9999/mcp', '{}', '{}', $1)
+                    """,
+                    json.dumps(schemas),
+                )
+            except asyncpg.UndefinedTableError:
+                pytest.skip("sandbox_mcp_servers table does not exist")
+
+        port = await bridge.start()
+
+        # Make HTTP POST with invalid args (missing required 'title')
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        body = json.dumps(
+            {"server": "github", "tool": "create_issue", "args": {"body": "no title"}}
+        )
+        request = (
+            f"POST /call HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"\r\n"
+            f"{body}"
+        )
+        writer.write(request.encode())
+        await writer.drain()
+
+        response = await reader.read(4096)
+        response_text = response.decode()
+
+        assert "400 Bad Request" in response_text
+        assert "Validation failed" in response_text
+        assert "github.create_issue" in response_text
+
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await bridge.shutdown()
+
+
+async def test_bridge_schema_validation_rejects_wrong_type(db_pool, clean_mcp_servers):
+    """Test that bridge returns 400 when arg has wrong type."""
+    bridge = MCPBridgeServer(db_pool, "test_mcp_bridge")
+
+    try:
+        async with db_pool.acquire() as conn:
+            try:
+                schemas = {
+                    "list_issues": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        },
+                    }
+                }
+                await conn.execute(
+                    """
+                    INSERT INTO sandbox_mcp_servers (thread_id, name, url, headers, auth, schemas)
+                    VALUES ('test_mcp_bridge', 'github', 'http://localhost:9999/mcp', '{}', '{}', $1)
+                    """,
+                    json.dumps(schemas),
+                )
+            except asyncpg.UndefinedTableError:
+                pytest.skip("sandbox_mcp_servers table does not exist")
+
+        port = await bridge.start()
+
+        # Make HTTP POST with wrong type (string instead of integer)
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        body = json.dumps(
+            {"server": "github", "tool": "list_issues", "args": {"limit": "not_an_int"}}
+        )
+        request = (
+            f"POST /call HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"\r\n"
+            f"{body}"
+        )
+        writer.write(request.encode())
+        await writer.drain()
+
+        response = await reader.read(4096)
+        response_text = response.decode()
+
+        assert "400 Bad Request" in response_text
+        assert "Validation failed" in response_text
+
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await bridge.shutdown()
+
+
+async def test_bridge_schema_validation_passes_valid_args(db_pool, clean_mcp_servers):
+    """Test that valid args pass schema validation (will fail at MCP call since no real server)."""
+    bridge = MCPBridgeServer(db_pool, "test_mcp_bridge")
+
+    try:
+        async with db_pool.acquire() as conn:
+            try:
+                schemas = {
+                    "create_issue": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                        },
+                        "required": ["title"],
+                    }
+                }
+                await conn.execute(
+                    """
+                    INSERT INTO sandbox_mcp_servers (thread_id, name, url, headers, auth, schemas)
+                    VALUES ('test_mcp_bridge', 'github', 'http://localhost:9999/mcp', '{}', '{}', $1)
+                    """,
+                    json.dumps(schemas),
+                )
+            except asyncpg.UndefinedTableError:
+                pytest.skip("sandbox_mcp_servers table does not exist")
+
+        port = await bridge.start()
+
+        # Make HTTP POST with valid args
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        body = json.dumps(
+            {"server": "github", "tool": "create_issue", "args": {"title": "Valid title"}}
+        )
+        request = (
+            f"POST /call HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"\r\n"
+            f"{body}"
+        )
+        writer.write(request.encode())
+        await writer.drain()
+
+        response = await reader.read(4096)
+        response_text = response.decode()
+
+        # Key assertion: Should NOT be 400 (validation passed)
+        # May be 200 (MCP call succeeded or returned empty) or 500 (MCP server unreachable)
+        assert "400 Bad Request" not in response_text
+        assert "Validation failed" not in response_text
+
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await bridge.shutdown()
+
+
+async def test_bridge_unknown_tool_passes_validation(db_pool, clean_mcp_servers):
+    """Test that unknown tools pass validation (fail-open semantics)."""
+    bridge = MCPBridgeServer(db_pool, "test_mcp_bridge")
+
+    try:
+        async with db_pool.acquire() as conn:
+            try:
+                # Only define schema for create_issue, not for unknown_tool
+                schemas = {
+                    "create_issue": {
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}},
+                        "required": ["title"],
+                    }
+                }
+                await conn.execute(
+                    """
+                    INSERT INTO sandbox_mcp_servers (thread_id, name, url, headers, auth, schemas)
+                    VALUES ('test_mcp_bridge', 'github', 'http://localhost:9999/mcp', '{}', '{}', $1)
+                    """,
+                    json.dumps(schemas),
+                )
+            except asyncpg.UndefinedTableError:
+                pytest.skip("sandbox_mcp_servers table does not exist")
+
+        port = await bridge.start()
+
+        # Call unknown tool - should pass validation (fail-open)
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        body = json.dumps({"server": "github", "tool": "unknown_tool", "args": {"any": "args"}})
+        request = (
+            f"POST /call HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"\r\n"
+            f"{body}"
+        )
+        writer.write(request.encode())
+        await writer.drain()
+
+        response = await reader.read(4096)
+        response_text = response.decode()
+
+        # Should NOT be 400 (validation passed with fail-open)
+        assert "400 Bad Request" not in response_text
+
+        writer.close()
+        await writer.wait_closed()
     finally:
         await bridge.shutdown()
