@@ -54,7 +54,6 @@ class SandboxExecutor:
     # Class-level worker pool (shared across all instances)
     _pool: "WorkerPool | None" = None
     _pool_lock = asyncio.Lock()
-    _use_pool = os.getenv("PYODIDE_USE_POOL", "false").lower() == "true"
 
     # Class-level MCP bridge (shared across all pool instances)
     _mcp_bridge: "MCPBridgeServer | None" = None
@@ -139,9 +138,6 @@ class SandboxExecutor:
     @classmethod
     async def _ensure_pool(cls, mcp_bridge_port: int | None = None) -> None:
         """Ensure worker pool is started (lazy initialization)."""
-        if not cls._use_pool:
-            return
-
         if cls._pool is None:
             async with cls._pool_lock:
                 if cls._pool is None:  # Double-check locking
@@ -548,6 +544,9 @@ class SandboxExecutor:
             await self._preload_helpers()
             await self._bootstrap_site_packages()
 
+            # Track existing VFS files for fallback detection (compiled libraries issue)
+            before_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
+
             # Build code with preludes
             prelude_parts = [self._build_site_prelude()]
 
@@ -584,6 +583,20 @@ class SandboxExecutor:
                     await self.vfs.write_file(file_path, file_content)
                     created_files.append(file_path)
                 logger.debug(f"Created {len(created_files)} files via pool")
+
+            # VFS Fallback - detect files missed by TypeScript/Pyodide snapshot
+            # This handles files created by compiled libraries (matplotlib, openpyxl, xlsxwriter)
+            # that may not be immediately visible to Pyodide's FS snapshot mechanism
+            if not created_files and result.get("success"):
+                after_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
+                vfs_created = list(after_vfs_files - before_vfs_files)
+
+                if vfs_created:
+                    created_files = vfs_created
+                    logger.info(
+                        f"VFS fallback detected {len(vfs_created)} files from compiled libraries "
+                        f"for thread {self.thread_id}: {vfs_created}"
+                    )
 
             execution_time = time.time() - start_time
             logger.info(
@@ -637,213 +650,4 @@ class SandboxExecutor:
         Returns:
             ExecutionResult with output and created files
         """
-        # Route to pool or legacy execution based on feature flag
-        if self._use_pool:
-            return await self._execute_with_pool(code, session_bytes, session_metadata)
-
-        # Legacy execution (one-shot process)
-        import hashlib
-        import time
-
-        start_time = time.time()
-
-        # Provenance logging: Hash content for audit trail
-        code_hash = hashlib.sha256(code.encode()).hexdigest()
-        logger.info(
-            "Code execution started",
-            extra={
-                "thread_id": self.thread_id,
-                "code_hash": code_hash,
-                "code_size": len(code),
-                "allow_net": self.allow_net,
-                "timeout": self.timeout_seconds,
-                "stateful": self.stateful,
-            },
-        )
-
-        try:
-            stdout_bytes = b""
-            stderr_bytes = b""
-            before_vfs_files: set[str] = set()
-
-            # Check resource quotas before execution
-            within_limits, quota_error = await self._check_resource_quotas()
-            if not within_limits:
-                logger.warning(
-                    "Resource quota exceeded",
-                    extra={
-                        "thread_id": self.thread_id,
-                        "code_hash": code_hash,
-                        "error": quota_error,
-                    },
-                )
-                return ExecutionResult(
-                    success=False,
-                    stdout="",
-                    stderr=quota_error or "Resource quota exceeded",
-                    execution_time=time.time() - start_time,
-                )
-            bridge_server: asyncio.AbstractServer | None = None
-            bridge_port: int | None = None
-            bridge_prelude = ""
-
-            try:
-                # Step 0: Pre-load helper modules into VFS (once per executor instance)
-                await self._preload_helpers()
-                await self._bootstrap_site_packages()
-
-                servers = await self._get_mcp_server_configs()
-                if servers:
-                    bridge_server, bridge_port = await self._start_mcp_bridge(servers)
-                    bridge_prelude = self._build_mcp_prelude(servers, bridge_port)
-
-                # Step 1: Pre-load files from PostgreSQL VFS
-                vfs_files = await self.vfs.get_all_files_for_pyodide()
-                logger.debug(
-                    f"Pre-loaded {len(vfs_files)} files from VFS for thread {self.thread_id}"
-                )
-
-                # Track existing VFS files for fallback detection (compiled libraries issue)
-                before_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
-
-                # Step 2: Build command and prepare stdin
-                prelude_parts = [self._build_site_prelude()]
-                if bridge_prelude:
-                    prelude_parts.append(bridge_prelude)
-                combined_prelude = "\n".join(prelude_parts)
-                code_to_run = combined_prelude + ("\n" if not code.startswith("\n") else "") + code
-                cmd = self._build_command(
-                    code_to_run,
-                    session_bytes,
-                    session_metadata,
-                    mcp_bridge_port=bridge_port,
-                )
-                stdin_data = self._prepare_stdin(vfs_files)
-
-                # Step 3: Execute in Pyodide
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.PIPE if stdin_data else None,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-
-                try:
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        process.communicate(input=stdin_data),
-                        timeout=self.timeout_seconds,
-                    )
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
-                    return ExecutionResult(
-                        success=False,
-                        stdout="",
-                        stderr=f"Execution timed out after {self.timeout_seconds} seconds",
-                        execution_time=time.time() - start_time,
-                    )
-            finally:
-                if bridge_server is not None:
-                    bridge_server.close()
-                    await bridge_server.wait_closed()
-
-            # Step 4: Parse result
-            stdout_text = stdout_bytes.decode("utf-8", errors="replace")
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace")
-
-            try:
-                # Handle case where stdout has extra output before JSON (e.g., "Loading micropip")
-                # Find the first '{' which marks the start of the JSON output
-                json_start = stdout_text.find("{")
-                if json_start > 0:
-                    # Strip everything before the JSON
-                    stdout_text = stdout_text[json_start:]
-
-                result_data = json.loads(stdout_text)
-
-                # Extract session bytes if present
-                result_session_bytes = None
-                if result_data.get("sessionBytes"):
-                    result_session_bytes = bytes(result_data["sessionBytes"])
-
-                # Step 5: Post-save created files to PostgreSQL VFS
-                # Only save files if execution succeeded to avoid tracking incomplete/corrupted files
-                created_files = []
-                if result_data.get("files") and result_data.get("success", False):
-                    for file_info in result_data["files"]:
-                        file_path = file_info["path"]
-                        file_content = bytes(file_info["content"])
-
-                        # Save to PostgreSQL
-                        await self.vfs.write_file(file_path, file_content)
-                        created_files.append(file_path)
-
-                    logger.debug(
-                        f"Post-saved {len(created_files)} files to VFS for thread {self.thread_id}"
-                    )
-
-                # Step 5b: VFS Fallback - detect files missed by TypeScript snapshot
-                # This handles files created by compiled libraries (openpyxl, xlsxwriter)
-                # that may not be immediately visible to Pyodide's FS snapshot mechanism
-                logger.info(
-                    f"VFS fallback check: created_files={created_files}, success={result_data.get('success', False)}"
-                )
-                if not result_data.get("success", False):
-                    logger.error(f"Execution failed - stderr: {result_data.get('stderr', '')}")
-                    logger.info(f"Execution stdout: {result_data.get('stdout', '')}")
-                if not created_files and result_data.get("success", False):
-                    after_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
-                    logger.info(f"VFS fallback: before={before_vfs_files}, after={after_vfs_files}")
-                    vfs_created = list(after_vfs_files - before_vfs_files)
-
-                    if vfs_created:
-                        created_files = vfs_created
-                        logger.info(
-                            f"VFS fallback detected {len(vfs_created)} files from compiled libraries "
-                            f"for thread {self.thread_id}: {vfs_created}"
-                        )
-                    else:
-                        logger.info("VFS fallback: No new files detected")
-
-                # Provenance logging: Record execution completion
-                execution_time = time.time() - start_time
-                logger.info(
-                    "Code execution completed",
-                    extra={
-                        "thread_id": self.thread_id,
-                        "code_hash": code_hash,
-                        "success": result_data.get("success", False),
-                        "execution_time": execution_time,
-                        "created_files": created_files,
-                        "num_created_files": len(created_files) if created_files else 0,
-                        "stdout_size": len(result_data.get("stdout", "")),
-                        "stderr_size": len(result_data.get("stderr", "")),
-                    },
-                )
-
-                return ExecutionResult(
-                    success=result_data.get("success", False),
-                    stdout=result_data.get("stdout", ""),
-                    stderr=result_data.get("stderr", ""),
-                    result=result_data.get("result"),
-                    execution_time=execution_time,
-                    created_files=created_files if created_files else None,
-                    session_bytes=result_session_bytes,
-                    session_metadata=result_data.get("sessionMetadata"),
-                )
-
-            except json.JSONDecodeError as e:
-                return ExecutionResult(
-                    success=False,
-                    stdout=stdout_text,
-                    stderr=f"Failed to parse executor output: {e}\n{stderr_text}",
-                    execution_time=time.time() - start_time,
-                )
-
-        except Exception as e:
-            return ExecutionResult(
-                success=False,
-                stdout="",
-                stderr=f"Execution failed: {e}",
-                execution_time=time.time() - start_time,
-            )
+        return await self._execute_with_pool(code, session_bytes, session_metadata)

@@ -288,6 +288,11 @@ importlib.invalidate_caches()
       const createdFiles = new Set<string>();
       const modifiedFiles = new Set<string>();
 
+      // Snapshot filesystem BEFORE execution for fallback detection
+      // This catches files created by compiled libraries (matplotlib, PIL) that
+      // may not trigger FS.trackingDelegate callbacks
+      const beforeSnapshot = snapshotFiles(this.pyodide, ["/tmp", "/home"]);
+
       // Install tracking delegate before execution
       this.pyodide.FS.trackingDelegate = {
         onOpenFile: (path: string, flags: number) => {
@@ -364,6 +369,18 @@ list(cloudpickle.dumps(_session_dict))
 
       // Collect all tracked files (created OR modified) with contents for VFS persistence
       const allChangedPaths = new Set([...createdFiles, ...modifiedFiles]);
+
+      // Fallback: Compare before/after filesystem snapshots to catch files
+      // created by compiled libraries (matplotlib, PIL) that bypass FS.trackingDelegate
+      const afterSnapshot = snapshotFiles(this.pyodide, ["/tmp", "/home"]);
+      for (const [path, size] of afterSnapshot) {
+        const beforeSize = beforeSnapshot.get(path);
+        // New file (not in before) or modified file (different size)
+        if (beforeSize === undefined || beforeSize !== size) {
+          allChangedPaths.add(path);
+        }
+      }
+
       if (allChangedPaths.size > 0) {
         const changedFiles = collectFilesFromPaths(this.pyodide, Array.from(allChangedPaths));
         if (changedFiles.length > 0) {
