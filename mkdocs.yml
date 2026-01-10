@@ -1,0 +1,66 @@
+site_name: Mayflower Sandbox
+site_description: Production-ready Python sandbox with PostgreSQL-backed virtual filesystem for LangGraph agents
+repo_url: https://github.com/mayflower/mayflower-sandbox
+repo_name: mayflower/mayflower-sandbox
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - techdocs-core
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quickstart.md
+  - User Guide:
+      - Tools Reference: user-guide/tools.md
+      - Document Helpers: user-guide/helpers.md
+      - Examples: user-guide/examples.md
+  - Advanced:
+      - Stateful Execution: advanced/stateful-execution.md
+      - Worker Pool: advanced/worker-pool.md
+      - MCP Integration: advanced/mcp.md
+  - Reference:
+      - API Reference: reference/api.md
+  - Development:
+      - Architecture: development/architecture.md

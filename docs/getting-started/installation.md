@@ -78,5 +78,5 @@ pytest tests/test_executor.py -v
 ## Next Steps
 
 - [Quick Start Guide](quickstart.md) - Get started with basic usage
-- [Tools Reference](tools.md) - Learn about the 5 LangChain tools
-- [Helpers Reference](helpers.md) - Document processing helpers
+- [Tools Reference](../user-guide/tools.md) - Learn about the 10 LangChain tools
+- [Helpers Reference](../user-guide/helpers.md) - Document processing helpers

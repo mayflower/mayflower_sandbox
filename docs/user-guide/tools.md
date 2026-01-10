@@ -338,5 +338,5 @@ All tools validate paths to prevent:
 ## Related Documentation
 
 - [Helpers Reference](helpers.md) - Document processing helpers available in ExecutePythonTool
-- [Advanced Features](advanced.md) - Stateful execution, file server, cleanup
+- [Advanced Features](../advanced/stateful-execution.md) - Stateful execution, file server, cleanup
 - [Examples](examples.md) - Complete working examples

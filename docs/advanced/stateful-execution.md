@@ -333,6 +333,6 @@ All file operations validate paths:
 
 ## Related Documentation
 
-- [Tools Reference](tools.md) - The 5 LangChain tools
-- [API Reference](api.md) - Low-level API documentation
-- [Examples](examples.md) - Complete working examples
+- [Tools Reference](../user-guide/tools.md) - The 10 LangChain tools
+- [API Reference](../reference/api.md) - Low-level API documentation
+- [Examples](../user-guide/examples.md) - Complete working examples

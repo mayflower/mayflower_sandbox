@@ -125,7 +125,7 @@ await executor.reset_session()
 
 ## Next Steps
 
-- [Tools Reference](tools.md) - Detailed documentation for all 5 tools
-- [Helpers Reference](helpers.md) - Document processing helpers
-- [Advanced Features](advanced.md) - File server, cleanup, and more
-- [Examples](examples.md) - Complete working examples
+- [Tools Reference](../user-guide/tools.md) - Detailed documentation for all 10 tools
+- [Helpers Reference](../user-guide/helpers.md) - Document processing helpers
+- [Advanced Features](../advanced/stateful-execution.md) - File server, cleanup, and more
+- [Examples](../user-guide/examples.md) - Complete working examples

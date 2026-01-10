@@ -1,0 +1,21 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: mayflower-sandbox
+  title: Mayflower Sandbox
+  description: Production-ready Python sandbox with PostgreSQL-backed virtual filesystem for LangGraph agents
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: mayflower/mayflower-sandbox
+  tags:
+    - python
+    - sandbox
+    - langchain
+    - langgraph
+    - pyodide
+    - postgresql
+spec:
+  type: library
+  lifecycle: production
+  owner: team:maistack
+  system: maistack

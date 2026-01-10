@@ -370,7 +370,7 @@ from document.xlsx_helpers import xlsx_read_cells
 from document.pdf_manipulation import pdf_merge
 ```
 
-See [Helpers Reference](helpers.md) for complete documentation.
+See [Helpers Reference](../user-guide/helpers.md) for complete documentation.
 
 ## Error Handling
 
@@ -383,6 +383,6 @@ All operations can raise:
 
 ## Related Documentation
 
-- [Tools Reference](tools.md) - The 5 LangChain tools
-- [Advanced Features](advanced.md) - Stateful execution, file server, cleanup
-- [Examples](examples.md) - Complete working examples
+- [Tools Reference](../user-guide/tools.md) - The 10 LangChain tools
+- [Advanced Features](../advanced/stateful-execution.md) - Stateful execution, file server, cleanup
+- [Examples](../user-guide/examples.md) - Complete working examples
