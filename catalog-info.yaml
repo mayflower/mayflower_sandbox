@@ -17,5 +17,5 @@ metadata:
 spec:
   type: library
   lifecycle: production
-  owner: team:maistack
+  owner: group:maistack
   system: maistack
