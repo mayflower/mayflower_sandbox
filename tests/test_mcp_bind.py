@@ -37,7 +37,13 @@ async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
                 {
                     "name": "echo",
                     "description": "Echo tool",
-                    "inputSchema": {"type": "object"},
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string", "description": "Message to echo"}
+                        },
+                        "required": ["message"],
+                    },
                 }
             ]
 

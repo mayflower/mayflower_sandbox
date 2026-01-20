@@ -10,8 +10,7 @@ import logging
 import re
 from typing import Any
 
-from datamodel_code_generator import DataModelType, generate
-from datamodel_code_generator.parser.jsonschema import JsonSchemaParser
+from datamodel_code_generator import DataModelType, InputFileType, generate
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ def generate_model_for_tool(
         try:
             generate(
                 json.dumps(schema),
-                input_file_type=JsonSchemaParser,
+                input_file_type=InputFileType.JsonSchema,
                 output_model_type=DataModelType.PydanticV2BaseModel,
                 output=output_path,
                 use_standard_collections=True,

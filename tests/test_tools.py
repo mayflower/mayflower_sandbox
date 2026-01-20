@@ -59,7 +59,7 @@ async def test_tool_factory_all_tools(db_pool, clean_files):
     """Test creating all tools via factory."""
     tools = create_sandbox_tools(db_pool, "test_tools")
 
-    assert len(tools) == 10
+    assert len(tools) == 12
     tool_names = {tool.name for tool in tools}
     assert tool_names == {
         "python_run",
@@ -72,6 +72,8 @@ async def test_tool_factory_all_tools(db_pool, clean_files):
         "file_edit",
         "file_glob",
         "file_grep",
+        "skill_install",
+        "mcp_bind_http",
     }
 
 
@@ -124,17 +126,25 @@ print('File created')
 
 async def test_file_write_and_read_tools(db_pool, clean_files):
     """Test FileWriteTool and FileReadTool."""
+    from langgraph.types import Command
+
     write_tool = FileWriteTool(db_pool=db_pool, thread_id="test_tools")
     read_tool = FileReadTool(db_pool=db_pool, thread_id="test_tools")
 
-    # Write file
+    # Write file - content must be in pending_content_map keyed by tool_call_id
     write_result = await write_tool._arun(
         file_path="/tmp/test.txt",
         description="Test file",
-        _state={"pending_content": "Hello from write tool!"},
+        tool_call_id="test_call_1",
+        _state={"pending_content_map": {"test_call_1": "Hello from write tool!"}},
     )
-    assert "Successfully wrote" in write_result
-    assert "/tmp/test.txt" in write_result
+    # Result can be a Command (with langgraph) or a string
+    if isinstance(write_result, Command):
+        write_message = write_result.resume
+    else:
+        write_message = write_result
+    assert "Successfully wrote" in write_message
+    assert "/tmp/test.txt" in write_message
 
     # Read file
     read_result = await read_tool._arun(file_path="/tmp/test.txt")
@@ -151,12 +161,18 @@ async def test_file_list_tool(db_pool, clean_files):
     result = await list_tool._arun()
     assert "No files found" in result
 
-    # Write some files
+    # Write some files - content must be in pending_content_map keyed by tool_call_id
     await write_tool._arun(
-        file_path="/tmp/file1.txt", description="File 1", _state={"pending_content": "Content 1"}
+        file_path="/tmp/file1.txt",
+        description="File 1",
+        tool_call_id="call_1",
+        _state={"pending_content_map": {"call_1": "Content 1"}},
     )
     await write_tool._arun(
-        file_path="/data/file2.csv", description="CSV file", _state={"pending_content": "a,b,c"}
+        file_path="/data/file2.csv",
+        description="CSV file",
+        tool_call_id="call_2",
+        _state={"pending_content_map": {"call_2": "a,b,c"}},
     )
 
     # List all files
@@ -178,11 +194,12 @@ async def test_file_delete_tool(db_pool, clean_files):
     delete_tool = FileDeleteTool(db_pool=db_pool, thread_id="test_tools")
     list_tool = FileListTool(db_pool=db_pool, thread_id="test_tools")
 
-    # Write file
+    # Write file - content must be in pending_content_map keyed by tool_call_id
     await write_tool._arun(
         file_path="/tmp/to_delete.txt",
         description="File to delete",
-        _state={"pending_content": "Delete me"},
+        tool_call_id="delete_call",
+        _state={"pending_content_map": {"delete_call": "Delete me"}},
     )
 
     # Verify exists
@@ -212,16 +229,24 @@ async def test_file_delete_tool(db_pool, clean_files):
 
 async def test_integration_workflow(db_pool, clean_files):
     """Test full workflow: write → execute → read → delete."""
+    from langgraph.types import Command
+
     tools = create_sandbox_tools(db_pool, "test_tools")
     tool_map = {tool.name: tool for tool in tools}
 
-    # 1. Write input file
+    # 1. Write input file - content must be in pending_content_map keyed by tool_call_id
     write_result = await tool_map["file_write"]._arun(
         file_path="/data/input.csv",
         description="Input CSV",
-        _state={"pending_content": "a,b\n1,2\n3,4"},
+        tool_call_id="workflow_write",
+        _state={"pending_content_map": {"workflow_write": "a,b\n1,2\n3,4"}},
     )
-    assert "Successfully wrote" in write_result
+    # Result can be a Command (with langgraph) or a string
+    if isinstance(write_result, Command):
+        write_message = write_result.resume
+    else:
+        write_message = write_result
+    assert "Successfully wrote" in write_message
 
     # 2. Execute Python to process file
     code = """
@@ -283,18 +308,20 @@ async def test_thread_isolation(db_pool):
     list_1 = next(t for t in tools_1 if t.name == "file_list")
     list_2 = next(t for t in tools_2 if t.name == "file_list")
 
-    # Write to thread_1
+    # Write to thread_1 - content must be in pending_content_map keyed by tool_call_id
     await write_1._arun(
         file_path="/tmp/thread1.txt",
         description="Thread 1 file",
-        _state={"pending_content": "Thread 1 data"},
+        tool_call_id="t1_call",
+        _state={"pending_content_map": {"t1_call": "Thread 1 data"}},
     )
 
-    # Write to thread_2
+    # Write to thread_2 - content must be in pending_content_map keyed by tool_call_id
     await write_2._arun(
         file_path="/tmp/thread2.txt",
         description="Thread 2 file",
-        _state={"pending_content": "Thread 2 data"},
+        tool_call_id="t2_call",
+        _state={"pending_content_map": {"t2_call": "Thread 2 data"}},
     )
 
     # Thread 1 should only see its file
@@ -338,19 +365,21 @@ async def test_context_aware_thread_id(db_pool):
     mock_manager_2.metadata = {"configurable": {"thread_id": "context_thread_2"}}
     mock_manager_2.tags = []
 
-    # Write to thread_1 via context
+    # Write to thread_1 via context - content must be in pending_content_map
     await write_tool._arun(
         file_path="/tmp/context1.txt",
         description="Context 1 file",
-        _state={"pending_content": "Context thread 1 data"},
+        tool_call_id="ctx1_call",
+        _state={"pending_content_map": {"ctx1_call": "Context thread 1 data"}},
         run_manager=mock_manager_1,
     )
 
-    # Write to thread_2 via context
+    # Write to thread_2 via context - content must be in pending_content_map
     await write_tool._arun(
         file_path="/tmp/context2.txt",
         description="Context 2 file",
-        _state={"pending_content": "Context thread 2 data"},
+        tool_call_id="ctx2_call",
+        _state={"pending_content_map": {"ctx2_call": "Context thread 2 data"}},
         run_manager=mock_manager_2,
     )
 
@@ -381,10 +410,12 @@ async def test_context_aware_fallback_to_default(db_pool, clean_files):
         await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'default'")
 
     # Write without callback manager (should use "default" thread_id)
+    # Content must be in pending_content_map keyed by tool_call_id
     await write_tool._arun(
         file_path="/tmp/default.txt",
         description="Default file",
-        _state={"pending_content": "Default thread data"},
+        tool_call_id="default_call",
+        _state={"pending_content_map": {"default_call": "Default thread data"}},
     )
 
     # List should see the file
