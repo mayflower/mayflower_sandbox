@@ -15,7 +15,7 @@ class FileDeleteInput(BaseModel):
     file_path: str = Field(description="Path to the file to delete (e.g., /tmp/data.txt)")
     approved: bool = Field(
         default=False,
-        description="User approval status for deletion. When False, triggers approval dialog in frontend."
+        description="User approval status for deletion. When False, triggers approval dialog in frontend.",
     )
 
 

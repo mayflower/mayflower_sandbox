@@ -3,7 +3,6 @@
 Tests for schema_codegen module - Pydantic model generation from JSON schemas.
 """
 
-
 from mayflower_sandbox.schema_codegen import (
     generate_init_module,
     generate_model_for_tool,

@@ -107,6 +107,7 @@ Returns:
             # Format message with markdown link (similar to python_run_prepared)
             # This makes the file appear as a download link in the chat
             import os
+
             filename = os.path.basename(file_path)
 
             # Check if it's an image file
@@ -137,7 +138,9 @@ Returns:
                         "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)],
                     }
 
-                    logger.info(f"file_write: Returning Command with state_update keys: {list(state_update.keys())}")
+                    logger.info(
+                        f"file_write: Returning Command with state_update keys: {list(state_update.keys())}"
+                    )
                     logger.info(f"file_write: created_files = {state_update['created_files']}")
                     logger.info(f"file_write: resume message length = {len(message)}")
                     logger.info(f"file_write: resume message = {message}")

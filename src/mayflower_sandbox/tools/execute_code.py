@@ -158,42 +158,56 @@ Returns:
 
         # Emit ToolCall events for progress streaming
         try:
-            from langgraph.config import get_stream_writer
-            from uuid import uuid4
             import json
+            from uuid import uuid4
+
+            from langgraph.config import get_stream_writer
 
             writer = get_stream_writer()
             exec_tool_call_id = f"python_exec:{uuid4()}"
 
             # Emit ToolCallStart
-            writer({"aguiTool": {
-                "type": "ToolCallStart",
-                "toolCallId": exec_tool_call_id,
-                "toolCallName": "python_execution"
-            }})
-            logger.debug(f"Emitted ToolCallStart for Python execution")
+            writer(
+                {
+                    "aguiTool": {
+                        "type": "ToolCallStart",
+                        "toolCallId": exec_tool_call_id,
+                        "toolCallName": "python_execution",
+                    }
+                }
+            )
+            logger.debug("Emitted ToolCallStart for Python execution")
 
             # Emit file path and description
-            writer({"aguiTool": {
-                "type": "ToolCallArgs",
-                "toolCallId": exec_tool_call_id,
-                "delta": json.dumps({
-                    "file_path": file_path,
-                    "description": description,
-                    "code_size": len(code),
-                    "status": "preparing"
-                })
-            }})
+            writer(
+                {
+                    "aguiTool": {
+                        "type": "ToolCallArgs",
+                        "toolCallId": exec_tool_call_id,
+                        "delta": json.dumps(
+                            {
+                                "file_path": file_path,
+                                "description": description,
+                                "code_size": len(code),
+                                "status": "preparing",
+                            }
+                        ),
+                    }
+                }
+            )
 
             # Emit execution start
-            writer({"aguiTool": {
-                "type": "ToolCallArgs",
-                "toolCallId": exec_tool_call_id,
-                "delta": json.dumps({
-                    "status": "executing",
-                    "message": f"Executing {description}..."
-                })
-            }})
+            writer(
+                {
+                    "aguiTool": {
+                        "type": "ToolCallArgs",
+                        "toolCallId": exec_tool_call_id,
+                        "delta": json.dumps(
+                            {"status": "executing", "message": f"Executing {description}..."}
+                        ),
+                    }
+                }
+            )
 
         except Exception as e:
             logger.error(f"execute_code: Failed to emit start events: {e}", exc_info=True)
@@ -248,27 +262,36 @@ Returns:
 
             # Emit execution completion events
             try:
-                from langgraph.config import get_stream_writer
                 import json
+
+                from langgraph.config import get_stream_writer
 
                 writer = get_stream_writer()
 
                 # Emit success status
-                writer({"aguiTool": {
-                    "type": "ToolCallArgs",
-                    "toolCallId": exec_tool_call_id,
-                    "delta": json.dumps({
-                        "status": "completed",
-                        "message": "Execution completed successfully",
-                        "files_created": len(exec_result.created_files) if exec_result.created_files else 0
-                    })
-                }})
+                writer(
+                    {
+                        "aguiTool": {
+                            "type": "ToolCallArgs",
+                            "toolCallId": exec_tool_call_id,
+                            "delta": json.dumps(
+                                {
+                                    "status": "completed",
+                                    "message": "Execution completed successfully",
+                                    "files_created": len(exec_result.created_files)
+                                    if exec_result.created_files
+                                    else 0,
+                                }
+                            ),
+                        }
+                    }
+                )
 
                 # Emit stdout if present as ToolCallResult
                 result_content = {
                     "description": description,
                     "file_path": file_path,
-                    "success": True
+                    "success": True,
                 }
 
                 if exec_result.stdout:
@@ -277,21 +300,22 @@ Returns:
                 if exec_result.created_files:
                     result_content["files"] = exec_result.created_files
 
-                writer({"aguiTool": {
-                    "type": "ToolCallResult",
-                    "toolCallId": exec_tool_call_id,
-                    "messageId": str(uuid4()),
-                    "role": "tool",
-                    "content": result_content
-                }})
+                writer(
+                    {
+                        "aguiTool": {
+                            "type": "ToolCallResult",
+                            "toolCallId": exec_tool_call_id,
+                            "messageId": str(uuid4()),
+                            "role": "tool",
+                            "content": result_content,
+                        }
+                    }
+                )
 
                 # Emit ToolCallEnd
-                writer({"aguiTool": {
-                    "type": "ToolCallEnd",
-                    "toolCallId": exec_tool_call_id
-                }})
+                writer({"aguiTool": {"type": "ToolCallEnd", "toolCallId": exec_tool_call_id}})
 
-                logger.debug(f"Emitted Python execution completion events")
+                logger.debug("Emitted Python execution completion events")
 
             except Exception as e:
                 logger.error(f"execute_code: Failed to emit completion events: {e}", exc_info=True)
@@ -323,42 +347,47 @@ Returns:
 
             # Emit error events
             try:
-                from langgraph.config import get_stream_writer
                 import json
+
+                from langgraph.config import get_stream_writer
 
                 writer = get_stream_writer()
 
                 # Emit error status
-                writer({"aguiTool": {
-                    "type": "ToolCallArgs",
-                    "toolCallId": exec_tool_call_id,
-                    "delta": json.dumps({
-                        "status": "error",
-                        "message": f"Execution failed: {str(e)}"
-                    })
-                }})
+                writer(
+                    {
+                        "aguiTool": {
+                            "type": "ToolCallArgs",
+                            "toolCallId": exec_tool_call_id,
+                            "delta": json.dumps(
+                                {"status": "error", "message": f"Execution failed: {str(e)}"}
+                            ),
+                        }
+                    }
+                )
 
                 # Emit error result
-                writer({"aguiTool": {
-                    "type": "ToolCallResult",
-                    "toolCallId": exec_tool_call_id,
-                    "messageId": str(uuid4()),
-                    "role": "tool",
-                    "content": {
-                        "description": description,
-                        "file_path": file_path,
-                        "success": False,
-                        "error": str(e)
+                writer(
+                    {
+                        "aguiTool": {
+                            "type": "ToolCallResult",
+                            "toolCallId": exec_tool_call_id,
+                            "messageId": str(uuid4()),
+                            "role": "tool",
+                            "content": {
+                                "description": description,
+                                "file_path": file_path,
+                                "success": False,
+                                "error": str(e),
+                            },
+                        }
                     }
-                }})
+                )
 
                 # Emit ToolCallEnd
-                writer({"aguiTool": {
-                    "type": "ToolCallEnd",
-                    "toolCallId": exec_tool_call_id
-                }})
+                writer({"aguiTool": {"type": "ToolCallEnd", "toolCallId": exec_tool_call_id}})
 
-            except:
+            except Exception:
                 pass  # Don't fail if streaming fails
 
             return f"Error executing code: {e}"
