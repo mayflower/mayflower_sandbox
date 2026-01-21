@@ -396,11 +396,10 @@ async def test_agent_can_reference_created_files(db_pool, clean_files):
     )
 
     # Verify file read was successful by checking ToolMessage content (deterministic)
-    tool_messages = [
-        msg for msg in result2["messages"]
-        if isinstance(msg, ToolMessage)
-    ]
+    tool_messages = [msg for msg in result2["messages"] if isinstance(msg, ToolMessage)]
     assert tool_messages, "Expected at least one ToolMessage from file_read"
     # Check that the file content appears in tool output
     tool_content = " ".join(str(msg.content) for msg in tool_messages).lower()
-    assert "important data" in tool_content, f"Expected 'important data' in tool output: {tool_content[:200]}"
+    assert "important data" in tool_content, (
+        f"Expected 'important data' in tool output: {tool_content[:200]}"
+    )

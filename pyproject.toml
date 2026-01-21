@@ -26,6 +26,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "mypy>=1.5.0",
     "ruff>=0.1.0",
+    "pre-commit>=3.0.0",
     "asyncpg-stubs>=0.30.0",
     "python-dotenv>=1.0.0",
     "aiohttp>=3.9.0",
@@ -102,6 +103,10 @@ ignore = [
     "S101",   # assert in tests is expected
     "S102",   # exec usage in tests for dynamic module creation
     "S311",   # pseudo-random generator ok in tests
+]
+# Document helpers parse docx/pptx XML from user-uploaded files (trusted source)
+"**/helpers/document/*_ooxml.py" = [
+    "S314",   # XML parsing is intentional for Office document manipulation
 ]
 
 [tool.mypy]

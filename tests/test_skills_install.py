@@ -21,7 +21,9 @@ async def test_install_skill_and_import():
 
     try:
         thread_id = "test_skill_thread"
-        skill = await install_skill(db, thread_id, "github:anthropics/skills/skills/algorithmic-art")
+        skill = await install_skill(
+            db, thread_id, "github:anthropics/skills/skills/algorithmic-art"
+        )
 
         vfs = VirtualFilesystem(db, thread_id)
         pkg_root = PurePosixPath(skill["path"])
