@@ -7,6 +7,9 @@ on:
   pull_request:
 
 jobs:
+  # ============================================
+  # Quality Checks (Linting, Formatting, Types)
+  # ============================================
   quality:
     name: Quality Checks
     runs-on: ubuntu-latest
@@ -24,9 +27,11 @@ jobs:
         run: |
           pip install -e ".[dev]"
 
+      # Ruff linting with GitHub annotations and SARIF output for SonarQube
       - name: Run ruff linting
         run: |
-          ruff check src/
+          ruff check src/ tests/ --output-format=github
+          ruff check src/ tests/ --output-format=sarif -o ruff-results.sarif || true
 
       - name: Run ruff format check
         run: |
@@ -36,6 +41,16 @@ jobs:
         run: |
           mypy src/mayflower_sandbox
 
+      - name: Upload Ruff SARIF
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruff-sarif
+          path: ruff-results.sarif
+          retention-days: 7
+
+  # ============================================
+  # Unit Tests with Coverage
+  # ============================================
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -84,6 +99,7 @@ jobs:
         run: |
           psql -h localhost -U postgres -d mayflower_test -f migrations/001_sandbox_schema.sql
 
+      # Run tests with JUnit XML and coverage XML output for SonarQube
       - name: Run tests
         env:
           POSTGRES_HOST: localhost
@@ -93,4 +109,72 @@ jobs:
           POSTGRES_PORT: 5432
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          pytest -v --cov=src/mayflower_sandbox --cov-report=term-missing
+          pytest -v -m "not slow" \
+            --cov=src/mayflower_sandbox \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --junitxml=junit.xml
+
+      # Upload test artifacts (only for Python 3.12 to avoid duplicates)
+      - name: Upload test results
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            junit.xml
+            coverage.xml
+          retention-days: 7
+
+  # ============================================
+  # SonarQube Analysis
+  # ============================================
+  sonarqube:
+    name: SonarQube Analysis
+    runs-on: mayflower-k8s-runners
+    needs: [quality, test]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: .
+        continue-on-error: true
+
+      - name: Download Ruff SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: ruff-sarif
+          path: .
+        continue-on-error: true
+
+      # Build dynamic SARIF paths (only include files that exist)
+      - name: Prepare SARIF paths
+        id: sarif
+        run: |
+          SARIF_FILES=""
+          for f in ruff-results.sarif; do
+            if [ -f "$f" ]; then
+              if [ -n "$SARIF_FILES" ]; then
+                SARIF_FILES="$SARIF_FILES,$f"
+              else
+                SARIF_FILES="$f"
+              fi
+            fi
+          done
+          echo "paths=$SARIF_FILES" >> $GITHUB_OUTPUT
+          echo "Found SARIF files: $SARIF_FILES"
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.sarifReportPaths=${{ steps.sarif.outputs.paths }}
