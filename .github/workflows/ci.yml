@@ -133,6 +133,7 @@ jobs:
     name: SonarQube Analysis
     runs-on: mayflower-k8s-runners
     needs: [quality, test]
+    if: always()  # Run even if tests fail - we still want quality metrics
 
     steps:
       - uses: actions/checkout@v4

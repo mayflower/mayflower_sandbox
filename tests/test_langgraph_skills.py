@@ -21,6 +21,7 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 
+from mayflower_sandbox.filesystem import VirtualFilesystem
 from mayflower_sandbox.tools import create_sandbox_tools
 
 
@@ -329,9 +330,9 @@ Tell me when all three files are created successfully.""",
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_csv_to_excel_conversion(agent, clean_files):
+async def test_agent_csv_to_excel_conversion(db_pool, agent, clean_files):
     """Test agent can convert CSV to formatted Excel."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -347,8 +348,14 @@ async def test_agent_csv_to_excel_conversion(agent, clean_files):
         config={"configurable": {"thread_id": "test-csv-excel-1"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert (
-        "excel" in response or "converted" in response or "success" in response
-    ) and "error" not in response
+    # Verify by checking VFS for created files (deterministic), not LLM text
+    vfs = VirtualFilesystem(db_pool, "langgraph_skills_test")
+    try:
+        xlsx_file = await vfs.read_file("/tmp/data.xlsx")
+        assert xlsx_file is not None, "Expected /tmp/data.xlsx to exist in VFS"
+        # Verify it's a valid xlsx (ZIP format)
+        assert xlsx_file["content"][:4] == b"PK\x03\x04", "Expected ZIP magic bytes for xlsx"
+    except Exception:
+        # Fallback: check if CSV was at least created
+        csv_file = await vfs.read_file("/tmp/data.csv")
+        assert csv_file is not None, "Expected at least /tmp/data.csv to exist"

@@ -13,11 +13,11 @@ from mayflower_sandbox.integrations import add_http_mcp_server
 @pytest.mark.asyncio
 async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
     db = await asyncpg.create_pool(
-        database=os.environ.get("PGDATABASE", "mayflower_test"),
-        user=os.environ.get("PGUSER", "postgres"),
-        password=os.environ.get("PGPASSWORD", "postgres"),
-        host=os.environ.get("PGHOST", "localhost"),
-        port=int(os.environ.get("PGPORT", "5433")),
+        database=os.environ.get("POSTGRES_DB", "mayflower_test"),
+        user=os.environ.get("POSTGRES_USER", "postgres"),
+        password=os.environ.get("POSTGRES_PASSWORD", "postgres"),
+        host=os.environ.get("POSTGRES_HOST", "localhost"),
+        port=int(os.environ.get("POSTGRES_PORT", "5432")),
     )
 
     try:
