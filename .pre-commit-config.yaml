@@ -7,14 +7,16 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  # Type checking with mypy
+  # Type checking with ty (Astral's Rust-based type checker)
+  # Note: ty has no SARIF output yet, so SonarQube import not possible
+  # Ignoring unresolved-import for Pyodide-only modules (micropip, pypdf, etc.)
+  # Ignoring unknown-argument for langchain which lacks proper type stubs
   - repo: local
     hooks:
-      - id: mypy
-        name: mypy
-        entry: uv run mypy
+      - id: ty
+        name: ty
+        entry: ty check src/ --ignore unresolved-import --ignore unknown-argument
         language: system
         types: [python]
         files: ^src/
         pass_filenames: false
-        args: [src/mayflower_sandbox]

@@ -8,7 +8,7 @@ No external dependencies required.
 import io
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Namespace mappings for OOXML
 NS = {
@@ -48,7 +48,7 @@ def docx_add_comment(
     text: str,
     author: str = "Pyodide Tool",
     initials: str = "PT",
-    date_iso: str = None,
+    date_iso: str | None = None,
 ) -> bytes:
     """
     Add a comment to the n-th paragraph in a Word document.
@@ -125,7 +125,9 @@ def docx_add_comment(
         int(c.get(f"{{{NS['w']}}}id", "0")) for c in comments.findall(".//w:comment", NS)
     ]
     cid = (max(existing_ids) + 1) if existing_ids else 0
-    date_iso = date_iso or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    date_iso = date_iso or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
 
     # Create comment in comments.xml
     cmt = ET.SubElement(
