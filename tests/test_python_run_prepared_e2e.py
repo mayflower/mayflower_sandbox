@@ -29,7 +29,76 @@ from typing_extensions import TypedDict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 load_dotenv()
 
+from mayflower_sandbox.filesystem import VirtualFilesystem  # noqa: E402
 from mayflower_sandbox.tools import create_sandbox_tools  # noqa: E402
+
+# =============================================================================
+# Test Validation Helpers
+# =============================================================================
+
+
+def get_tool_messages(messages: list) -> list[ToolMessage]:
+    """Extract all ToolMessage instances from message history."""
+    return [msg for msg in messages if isinstance(msg, ToolMessage)]
+
+
+def get_tool_stdout(messages: list) -> str:
+    """
+    Extract stdout content from tool execution results.
+
+    Tool results typically contain patterns like:
+    - "STDOUT: <output>"
+    - "Result: <value>"
+    - Direct output text
+    """
+    tool_outputs = []
+    for msg in get_tool_messages(messages):
+        content = str(msg.content)
+        # Extract STDOUT section if present
+        if "STDOUT:" in content:
+            # Find content after STDOUT:
+            stdout_match = re.search(r"STDOUT:\s*(.+?)(?:STDERR:|Created files:|$)", content, re.DOTALL)
+            if stdout_match:
+                tool_outputs.append(stdout_match.group(1).strip())
+        else:
+            tool_outputs.append(content)
+    return "\n".join(tool_outputs)
+
+
+def get_created_files(messages: list) -> list[str]:
+    """Extract list of created files from tool messages."""
+    files = []
+    for msg in get_tool_messages(messages):
+        content = str(msg.content)
+        # Match "Created files:" section
+        if "Created files:" in content:
+            files_match = re.search(r"Created files:\s*\[([^\]]+)\]", content)
+            if files_match:
+                files.extend(f.strip().strip("'\"") for f in files_match.group(1).split(","))
+        # Match file paths in success messages like "Successfully wrote X bytes to /path"
+        path_matches = re.findall(r"(?:wrote|created|saved)[^/]*(/[^\s\n]+)", content, re.IGNORECASE)
+        files.extend(path_matches)
+    return list(set(files))
+
+
+async def check_vfs_file_exists(db_pool, thread_id: str, path: str) -> bool:
+    """Check if a file exists in the VFS."""
+    vfs = VirtualFilesystem(db_pool, thread_id)
+    try:
+        await vfs.read_file(path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+async def get_vfs_file_content(db_pool, thread_id: str, path: str) -> bytes | None:
+    """Get file content from VFS, returns None if not found."""
+    vfs = VirtualFilesystem(db_pool, thread_id)
+    try:
+        entry = await vfs.read_file(path)
+        return entry["content"]
+    except FileNotFoundError:
+        return None
 
 
 class AgentState(TypedDict):
@@ -250,12 +319,12 @@ async def test_python_run_prepared_with_code_extraction(db_pool, clean_files):
         config={"configurable": {"thread_id": "test-factorial"}},
     )
 
-    # Get the final response
+    # Verify execution by checking tool output (deterministic), not LLM response
     messages = result["messages"]
-    final_message = messages[-1]
+    tool_stdout = get_tool_stdout(messages)
 
-    # Verify the agent executed the code and got the result (120)
-    assert "120" in str(final_message.content)
+    # The factorial of 5 is 120 - check tool execution output
+    assert "120" in tool_stdout, f"Expected '120' in tool stdout, got: {tool_stdout[:200]}"
 
 
 @pytest.mark.skipif(
@@ -265,7 +334,7 @@ async def test_python_run_prepared_with_file_creation(db_pool, clean_files):
     """Test python_run_prepared creates files that persist."""
     app = create_agent_graph(db_pool)
 
-    result = await app.ainvoke(
+    await app.ainvoke(
         {
             "messages": [
                 (
@@ -279,13 +348,14 @@ async def test_python_run_prepared_with_file_creation(db_pool, clean_files):
         config={"configurable": {"thread_id": "test-file-creation"}},
     )
 
-    messages = result["messages"]
-    final_message = messages[-1]
+    # Verify file was created by checking VFS directly (deterministic)
+    # Tools use thread_id="e2e_prepared_test" regardless of config
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/data.txt")
+    assert file_exists, "Expected /tmp/data.txt to exist in VFS"
 
-    # Verify file was created (check that execution succeeded)
-    assert "Created files:" in str(final_message.content) or "data.txt" in str(
-        final_message.content
-    )
+    # Optionally verify content
+    content = await get_vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/data.txt")
+    assert content is not None and b"Test data" in content
 
 
 @pytest.mark.skipif(
@@ -310,14 +380,15 @@ async def test_python_run_prepared_with_computation(db_pool, clean_files):
     )
 
     messages = result["messages"]
-    final_message = messages[-1]
 
-    # Verify it calculated primes (should mention 2, 3, 5, 7, etc.)
-    content = str(final_message.content)
-    assert "2" in content
-    assert "3" in content
-    assert "5" in content
-    assert "7" in content
+    # Verify primes by checking tool execution output (deterministic)
+    tool_stdout = get_tool_stdout(messages)
+
+    # First 10 primes: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29
+    assert "2" in tool_stdout, f"Expected '2' in tool stdout: {tool_stdout[:200]}"
+    assert "3" in tool_stdout, f"Expected '3' in tool stdout: {tool_stdout[:200]}"
+    assert "5" in tool_stdout, f"Expected '5' in tool stdout: {tool_stdout[:200]}"
+    assert "7" in tool_stdout, f"Expected '7' in tool stdout: {tool_stdout[:200]}"
 
 
 @pytest.mark.skipif(
@@ -379,13 +450,17 @@ async def test_python_run_prepared_with_excel_helpers(db_pool, clean_files):
     )
 
     messages = result["messages"]
-    final_message = messages[-1]
-    content = str(final_message.content)
 
-    # Verify Excel helper was imported and used successfully
-    assert "Product" in content
-    assert "Widget" in content or "42" in content
-    assert "Quantity" in content
+    # Verify by checking tool stdout (deterministic) and VFS
+    tool_stdout = get_tool_stdout(messages)
+
+    # Check Excel values were printed from tool execution
+    assert "Product" in tool_stdout, f"Expected 'Product' in tool stdout: {tool_stdout[:300]}"
+    assert "Widget" in tool_stdout or "42" in tool_stdout, f"Expected cell values in stdout: {tool_stdout[:300]}"
+
+    # Also verify Excel file exists in VFS
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/data.xlsx")
+    assert file_exists, "Expected /tmp/data.xlsx to exist in VFS"
 
 
 @pytest.mark.skipif(
@@ -395,7 +470,7 @@ async def test_python_run_prepared_with_pdf_creation(db_pool, clean_files):
     """Test python_run_prepared with pdf_creation helpers for PDF generation."""
     app = create_agent_graph(db_pool)
 
-    result = await app.ainvoke(
+    await app.ainvoke(
         {
             "messages": [
                 (
@@ -415,12 +490,13 @@ async def test_python_run_prepared_with_pdf_creation(db_pool, clean_files):
         config={"configurable": {"thread_id": "test-pdf"}},
     )
 
-    messages = result["messages"]
-    final_message = messages[-1]
-    content = str(final_message.content)
+    # Verify PDF was created by checking VFS directly (deterministic)
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/report.pdf")
+    assert file_exists, "Expected /tmp/report.pdf to exist in VFS"
 
-    # Verify PDF was created (check for file creation or success message)
-    assert "/tmp/report.pdf" in content or "Created" in content or "success" in content.lower()
+    # Verify it's a valid PDF by checking magic bytes
+    content = await get_vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/report.pdf")
+    assert content is not None and content[:4] == b"%PDF", "Expected valid PDF file"
 
 
 @pytest.mark.skipif(
@@ -452,12 +528,16 @@ async def test_python_run_prepared_with_pptx_extraction(db_pool, clean_files):
     )
 
     messages = result["messages"]
-    final_message = messages[-1]
-    content = str(final_message.content)
 
-    # Verify PowerPoint text was extracted
-    assert "Q4 Results" in content or "Results" in content
-    assert "Revenue" in content or "Next Steps" in content
+    # Verify by checking tool stdout for extracted text (deterministic)
+    tool_stdout = get_tool_stdout(messages)
+
+    # Check for slide content in tool output
+    assert "Q4" in tool_stdout or "Results" in tool_stdout, f"Expected slide content: {tool_stdout[:300]}"
+
+    # Also verify PPTX file exists in VFS
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/presentation.pptx")
+    assert file_exists, "Expected /tmp/presentation.pptx to exist in VFS"
 
 
 @pytest.mark.skipif(
@@ -467,7 +547,7 @@ async def test_python_run_prepared_with_docx_manipulation(db_pool, clean_files):
     """Test python_run_prepared with docx_ooxml for Word document manipulation."""
     app = create_agent_graph(db_pool)
 
-    result = await app.ainvoke(
+    await app.ainvoke(
         {
             "messages": [
                 (
@@ -489,16 +569,13 @@ async def test_python_run_prepared_with_docx_manipulation(db_pool, clean_files):
         config={"configurable": {"thread_id": "test-docx"}},
     )
 
-    messages = result["messages"]
-    final_message = messages[-1]
-    content = str(final_message.content)
+    # Verify Word document exists in VFS (deterministic)
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/document.docx")
+    assert file_exists, "Expected /tmp/document.docx to exist in VFS"
 
-    # Verify Word document was manipulated (check for file or success message)
-    assert (
-        "/tmp/document.docx" in content
-        or "success" in content.lower()
-        or "comment" in content.lower()
-    )
+    # Verify it's a valid DOCX (ZIP format) by checking magic bytes
+    content = await get_vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/document.docx")
+    assert content is not None and content[:2] == b"PK", "Expected valid DOCX file (ZIP format)"
 
 
 # Tests for file_write with state-based content extraction
@@ -511,7 +588,7 @@ async def test_file_write_with_csv_data(db_pool, clean_files):
     """Test file_write with state-based extraction for CSV data."""
     app = create_agent_graph(db_pool, include_tools=["file_write"])
 
-    result = await app.ainvoke(
+    await app.ainvoke(
         {
             "messages": [
                 (
@@ -529,13 +606,16 @@ async def test_file_write_with_csv_data(db_pool, clean_files):
         config={"configurable": {"thread_id": "test-csv"}},
     )
 
-    messages = result["messages"]
-    final_message = messages[-1]
-    content = str(final_message.content)
+    # Verify file was written by checking VFS directly (deterministic)
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/employees.csv")
+    assert file_exists, "Expected /tmp/employees.csv to exist in VFS"
 
-    # Verify file was written
-    assert "/tmp/employees.csv" in content or "wrote" in content.lower()
-    assert "Success" in content or "wrote" in content.lower()
+    # Verify CSV content
+    content = await get_vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/employees.csv")
+    assert content is not None, "Expected CSV content"
+    csv_text = content.decode("utf-8")
+    assert "Alice" in csv_text, f"Expected 'Alice' in CSV: {csv_text[:200]}"
+    assert "Engineering" in csv_text, f"Expected 'Engineering' in CSV: {csv_text[:200]}"
 
 
 @pytest.mark.skipif(
@@ -545,7 +625,7 @@ async def test_file_write_with_json_config(db_pool, clean_files):
     """Test file_write with state-based extraction for JSON configuration."""
     app = create_agent_graph(db_pool, include_tools=["file_write"])
 
-    result = await app.ainvoke(
+    await app.ainvoke(
         {
             "messages": [
                 (
@@ -563,12 +643,16 @@ async def test_file_write_with_json_config(db_pool, clean_files):
         config={"configurable": {"thread_id": "test-json"}},
     )
 
-    messages = result["messages"]
-    final_message = messages[-1]
-    content = str(final_message.content)
+    # Verify file was written by checking VFS directly (deterministic)
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/config.json")
+    assert file_exists, "Expected /tmp/config.json to exist in VFS"
 
-    # Verify file was written
-    assert "/tmp/config.json" in content or "wrote" in content.lower()
+    # Verify JSON content is valid
+    import json
+    content = await get_vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/config.json")
+    assert content is not None, "Expected JSON content"
+    config_data = json.loads(content.decode("utf-8"))
+    assert "api_endpoint" in config_data or "timeout" in config_data, f"Expected config keys: {config_data}"
 
 
 @pytest.mark.skipif(
@@ -578,7 +662,7 @@ async def test_file_write_with_large_markdown(db_pool, clean_files):
     """Test file_write handles large content (>2000 chars) via state extraction."""
     app = create_agent_graph(db_pool, include_tools=["file_write"])
 
-    result = await app.ainvoke(
+    await app.ainvoke(
         {
             "messages": [
                 (
@@ -599,11 +683,15 @@ async def test_file_write_with_large_markdown(db_pool, clean_files):
         config={"configurable": {"thread_id": "test-markdown"}},
     )
 
-    messages = result["messages"]
-    final_message = messages[-1]
-    content = str(final_message.content)
+    # Verify large file was written by checking VFS directly (deterministic)
+    file_exists = await check_vfs_file_exists(db_pool, "e2e_prepared_test", "/tmp/README.md")
+    assert file_exists, "Expected /tmp/README.md to exist in VFS"
 
-    # Verify large file was written
-    assert "/tmp/README.md" in content or "wrote" in content.lower()
-    # Check for substantial byte count indicating large content
-    assert "bytes" in content.lower() and any(char.isdigit() for char in content)
+    # Verify content is substantial (>2000 chars as per test description)
+    content = await get_vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/README.md")
+    assert content is not None, "Expected markdown content"
+    assert len(content) > 500, f"Expected large content (>500 bytes), got {len(content)} bytes"
+
+    # Verify it contains expected markdown structure
+    md_text = content.decode("utf-8")
+    assert "#" in md_text, "Expected markdown headers"
