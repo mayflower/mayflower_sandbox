@@ -37,6 +37,11 @@ env/
 .coverage
 htmlcov/
 *.cover
+junit.xml
+coverage.xml
+
+# Static analysis
+ruff-results.sarif
 
 # Type checking and linting
 .mypy_cache/
