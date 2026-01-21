@@ -159,7 +159,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           pytest -v -m "not slow" \
-            --cov=src/mayflower_sandbox \
+            --cov=src \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --junitxml=junit.xml

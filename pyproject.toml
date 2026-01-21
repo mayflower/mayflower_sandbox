@@ -55,7 +55,7 @@ addopts = "--junitxml=junit.xml"
 [tool.coverage.run]
 # Use relative paths in coverage.xml for SonarQube compatibility
 relative_files = true
-source = ["src/mayflower_sandbox"]
+source = ["src"]
 
 [tool.coverage.xml]
 output = "coverage.xml"
