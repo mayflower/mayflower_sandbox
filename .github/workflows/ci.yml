@@ -92,7 +92,10 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          psql -h localhost -U postgres -d mayflower_test -f migrations/001_sandbox_schema.sql
+          for f in migrations/*.sql; do
+            echo "Running migration: $f"
+            psql -h localhost -U postgres -d mayflower_test -f "$f"
+          done
 
       # Run tests with JUnit XML and coverage XML output for SonarQube
       - name: Run tests
