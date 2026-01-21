@@ -493,7 +493,7 @@ class SandboxExecutor:
 
     async def _bootstrap_site_packages(self) -> None:
         """Ensure mayflower MCP shim and sitecustomize are present in VFS."""
-        await write_bootstrap_files(self.vfs, thread_id=self.thread_id)
+        await write_bootstrap_files(self.vfs)
 
     async def _execute_with_pool(
         self,

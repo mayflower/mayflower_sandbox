@@ -117,7 +117,7 @@ if _site_str not in sys.path:
 """
 
 
-async def write_bootstrap_files(vfs, *, thread_id: str) -> None:
+async def write_bootstrap_files(vfs) -> None:
     """
     Write bootstrap files into the thread's VFS.
 

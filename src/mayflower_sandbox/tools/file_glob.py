@@ -3,12 +3,46 @@ FileGlobTool - Find files by glob pattern.
 """
 
 import fnmatch
+from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
 from mayflower_sandbox.tools.base import SandboxTool
+
+
+def _match_recursive_pattern(file_path: str, pattern: str) -> bool:
+    """Match file path against a ** recursive glob pattern."""
+    pattern_parts = pattern.split("**")
+    if len(pattern_parts) != 2:
+        return False
+
+    prefix, suffix = pattern_parts
+    if prefix and not file_path.startswith(prefix):
+        return False
+
+    remaining = file_path[len(prefix) :] if prefix else file_path
+    return fnmatch.fnmatch(remaining, suffix.lstrip("/"))
+
+
+def _matches_pattern(file_path: str, pattern: str) -> bool:
+    """Check if a file path matches the given glob pattern."""
+    if fnmatch.fnmatch(file_path, pattern):
+        return True
+    if "**" in pattern:
+        return _match_recursive_pattern(file_path, pattern)
+    return False
+
+
+def _format_file_info(file_info: dict[str, Any]) -> str:
+    """Format a single file's info for display."""
+    size_kb = file_info["size"] / 1024
+    return (
+        f"  {file_info['file_path']}\n"
+        f"    Size: {size_kb:.2f} KB\n"
+        f"    Type: {file_info['content_type']}"
+    )
 
 
 class FileGlobInput(BaseModel):
@@ -47,46 +81,18 @@ Returns:
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Find files matching glob pattern."""
-        # Get thread_id from context
         thread_id = self._get_thread_id(run_manager)
-
         vfs = VirtualFilesystem(self.db_pool, thread_id)
 
         try:
-            # Get all files
             all_files = await vfs.list_files()
-
-            # Filter by glob pattern
-            matching_files = []
-            for file_info in all_files:
-                file_path = file_info["file_path"]
-
-                # Support both ** (recursive) and * (non-recursive) patterns
-                if fnmatch.fnmatch(file_path, pattern):
-                    matching_files.append(file_info)
-                # Also try matching with ** expansion
-                elif "**" in pattern:
-                    # Convert ** pattern to regex-like matching
-                    pattern_parts = pattern.split("**")
-                    if len(pattern_parts) == 2:
-                        prefix, suffix = pattern_parts
-                        # Check if path starts with prefix and ends with suffix pattern
-                        if file_path.startswith(prefix) or not prefix:
-                            remaining = file_path[len(prefix) :] if prefix else file_path
-                            if fnmatch.fnmatch(remaining, suffix.lstrip("/")):
-                                matching_files.append(file_info)
+            matching_files = [f for f in all_files if _matches_pattern(f["file_path"], pattern)]
 
             if not matching_files:
                 return f"No files found matching pattern: {pattern}"
 
             lines = [f"Found {len(matching_files)} file(s) matching '{pattern}':\n"]
-            for file_info in matching_files:
-                size_kb = file_info["size"] / 1024
-                lines.append(
-                    f"  {file_info['file_path']}\n"
-                    f"    Size: {size_kb:.2f} KB\n"
-                    f"    Type: {file_info['content_type']}"
-                )
+            lines.extend(_format_file_info(f) for f in matching_files)
 
             return "\n".join(lines)
         except Exception as e:

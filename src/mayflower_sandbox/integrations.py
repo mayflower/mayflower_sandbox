@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.S)
 _CODEBLOCK_RE = re.compile(r"```python\s*(.*?)```", re.S)
 
+# File names
+_INIT_PY = "__init__.py"
+
 _mcp_manager = MCPBindingManager()
 
 
@@ -70,7 +73,7 @@ async def _fetch_skill_skillmd(source: str) -> str:
 
 def _sanitize_pkg_name(name: str) -> str:
     name = name.replace("-", "_")
-    return re.sub(r"[^0-9a-zA-Z_]", "_", name)
+    return re.sub(r"\W", "_", name)
 
 
 async def _write_text(vfs: VirtualFilesystem, path: PurePosixPath, content: str) -> None:
@@ -142,7 +145,7 @@ async def install_skill(
             return (Path(__file__).with_name("SKILL.md")).read_text(encoding="utf-8")
         """
     ).lstrip()
-    await _write_text(vfs, pkg_root / "__init__.py", init_body)
+    await _write_text(vfs, pkg_root / _INIT_PY, init_body)
 
     if compile_python:
         lib_root = pkg_root / "lib"
@@ -153,7 +156,7 @@ async def install_skill(
         if wrote_any:
             await _append_text(
                 vfs,
-                pkg_root / "__init__.py",
+                pkg_root / _INIT_PY,
                 "\nfrom .lib import *  # auto-generated from SKILL.md code fences\n",
             )
 
@@ -334,7 +337,7 @@ async def add_http_mcp_server(
     if not use_typed:
         # Use legacy kwargs-based wrappers
         init_py, tools_py = _render_wrapper_module(name, tool_specs)
-        await _write_text(vfs, pkg_root / "__init__.py", init_py)
+        await _write_text(vfs, pkg_root / _INIT_PY, init_py)
         await _write_text(vfs, pkg_root / "tools.py", tools_py)
         await _write_text(
             vfs,

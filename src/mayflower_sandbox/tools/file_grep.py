@@ -3,12 +3,56 @@ FileGrepTool - Search file contents using regex.
 """
 
 import re
+from re import Pattern
 
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
 from mayflower_sandbox.tools.base import SandboxTool
+
+# Valid output modes
+_VALID_OUTPUT_MODES = {"files_with_matches", "content", "count"}
+_MAX_MATCHES_PER_FILE = 10
+
+
+def _search_files_with_matches(regex: Pattern[str], content: str) -> bool:
+    """Check if content matches the pattern."""
+    return regex.search(content) is not None
+
+
+def _search_content_mode(regex: Pattern[str], content: str) -> list[str]:
+    """Find matching lines in content."""
+    lines = content.split("\n")
+    return [f"  {line_num}: {line}" for line_num, line in enumerate(lines, 1) if regex.search(line)]
+
+
+def _format_content_result(file_path: str, matches: list[str]) -> str:
+    """Format content mode result for a single file."""
+    result = f"{file_path}:\n" + "\n".join(matches[:_MAX_MATCHES_PER_FILE])
+    if len(matches) > _MAX_MATCHES_PER_FILE:
+        result += f"\n  ... ({len(matches) - _MAX_MATCHES_PER_FILE} more matches)"
+    return result
+
+
+def _search_count_mode(regex: Pattern[str], content: str) -> int:
+    """Count matches in content."""
+    return len(regex.findall(content))
+
+
+def _format_results(output_mode: str, pattern: str, results: list) -> str:
+    """Format final results based on output mode."""
+    if not results:
+        return f"No matches found for pattern: {pattern}"
+
+    if output_mode == "files_with_matches":
+        return f"Found {len(results)} file(s) matching '{pattern}':\n" + "\n".join(
+            f"  {path}" for path in results
+        )
+    if output_mode == "content":
+        return f"Matches for '{pattern}':\n\n" + "\n\n".join(results)
+    # count mode
+    return f"Match counts for '{pattern}':\n" + "\n".join(results)
 
 
 class FileGrepInput(BaseModel):
@@ -62,76 +106,68 @@ Examples:
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> str:
         """Search file contents with regex."""
-        # Get thread_id from context
         thread_id = self._get_thread_id(run_manager)
-
         vfs = VirtualFilesystem(self.db_pool, thread_id)
 
-        # Validate output_mode
-        valid_modes = {"files_with_matches", "content", "count"}
-        if output_mode not in valid_modes:
-            return f"Error: Invalid output_mode '{output_mode}'. Must be one of: {', '.join(valid_modes)}"
+        if output_mode not in _VALID_OUTPUT_MODES:
+            return f"Error: Invalid output_mode '{output_mode}'. Must be one of: {', '.join(_VALID_OUTPUT_MODES)}"
 
         try:
-            # Compile regex pattern
-            flags = re.IGNORECASE if case_insensitive else 0
-            try:
-                regex = re.compile(pattern, flags)
-            except re.error as e:
-                return f"Error: Invalid regex pattern: {e}"
+            regex = re.compile(pattern, re.IGNORECASE if case_insensitive else 0)
+        except re.error as e:
+            return f"Error: Invalid regex pattern: {e}"
 
-            # Get all files
-            all_files = await vfs.list_files()
-
-            # Search files
-            results = []
-            for file_info in all_files:
-                file_path = file_info["file_path"]
-
-                # Read file content
-                try:
-                    file_data = await vfs.read_file(file_path)
-                    content = file_data["content"].decode("utf-8", errors="replace")
-                except Exception:
-                    # Skip files that can't be read as text
-                    continue
-
-                # Search for pattern
-                if output_mode == "files_with_matches":
-                    if regex.search(content):
-                        results.append(file_path)
-
-                elif output_mode == "content":
-                    lines = content.split("\n")
-                    matches = []
-                    for line_num, line in enumerate(lines, 1):
-                        if regex.search(line):
-                            matches.append(f"  {line_num}: {line}")
-
-                    if matches:
-                        results.append(
-                            f"{file_path}:\n"
-                            + "\n".join(matches[:10])  # Limit to 10 matches per file
-                        )
-                        if len(matches) > 10:
-                            results[-1] += f"\n  ... ({len(matches) - 10} more matches)"
-
-                elif output_mode == "count":
-                    matches = regex.findall(content)
-                    if matches:
-                        results.append(f"{file_path}: {len(matches)} match(es)")
-
-            if not results:
-                return f"No matches found for pattern: {pattern}"
-
-            if output_mode == "files_with_matches":
-                return f"Found {len(results)} file(s) matching '{pattern}':\n" + "\n".join(
-                    f"  {path}" for path in results
-                )
-            elif output_mode == "content":
-                return f"Matches for '{pattern}':\n\n" + "\n\n".join(results)
-            else:  # count
-                return f"Match counts for '{pattern}':\n" + "\n".join(results)
-
+        try:
+            results = await self._search_all_files(vfs, regex, output_mode)
+            return _format_results(output_mode, pattern, results)
         except Exception as e:
             return f"Error searching files: {e}"
+
+    async def _search_all_files(
+        self,
+        vfs: VirtualFilesystem,
+        regex: Pattern[str],
+        output_mode: str,
+    ) -> list:
+        """Search all files and collect results."""
+        all_files = await vfs.list_files()
+        results = []
+
+        for file_info in all_files:
+            file_path = file_info["file_path"]
+            content = await self._read_file_content(vfs, file_path)
+            if content is None:
+                continue
+
+            result = self._process_file(file_path, content, regex, output_mode)
+            if result is not None:
+                results.append(result)
+
+        return results
+
+    async def _read_file_content(self, vfs: VirtualFilesystem, file_path: str) -> str | None:
+        """Read file content, returning None if unreadable."""
+        try:
+            file_data = await vfs.read_file(file_path)
+            return file_data["content"].decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    def _process_file(
+        self,
+        file_path: str,
+        content: str,
+        regex: Pattern[str],
+        output_mode: str,
+    ):
+        """Process a single file based on output mode."""
+        if output_mode == "files_with_matches":
+            return file_path if _search_files_with_matches(regex, content) else None
+
+        if output_mode == "content":
+            matches = _search_content_mode(regex, content)
+            return _format_content_result(file_path, matches) if matches else None
+
+        # count mode
+        count = _search_count_mode(regex, content)
+        return f"{file_path}: {count} match(es)" if count else None

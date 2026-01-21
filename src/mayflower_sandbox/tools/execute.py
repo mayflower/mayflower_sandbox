@@ -15,6 +15,10 @@ from mayflower_sandbox.tools.base import SandboxTool
 
 logger = logging.getLogger(__name__)
 
+# LLM response parsing markers
+_EXPLANATION_MARKER = "EXPLANATION:"
+_RECOMMENDATION_MARKER = "RECOMMENDATION:"
+
 # Error history cache: thread_id -> list of analyses
 _error_history: dict[str, list[dict]] = {}
 
@@ -116,10 +120,12 @@ RECOMMENDATION: [recommendation]"""
         explanation = ""
         recommendation = ""
 
-        if "EXPLANATION:" in response_text:
-            explanation = response_text.split("EXPLANATION:")[1].split("RECOMMENDATION:")[0].strip()
-        if "RECOMMENDATION:" in response_text:
-            recommendation = response_text.split("RECOMMENDATION:")[1].strip()
+        if _EXPLANATION_MARKER in response_text:
+            explanation = (
+                response_text.split(_EXPLANATION_MARKER)[1].split(_RECOMMENDATION_MARKER)[0].strip()
+            )
+        if _RECOMMENDATION_MARKER in response_text:
+            recommendation = response_text.split(_RECOMMENDATION_MARKER)[1].strip()
 
         return {"explanation": explanation, "recommendation": recommendation}
 
