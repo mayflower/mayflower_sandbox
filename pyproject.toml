@@ -52,6 +52,14 @@ python_functions = "test_*"
 # Usage: pytest --junitxml=junit.xml --cov=src --cov-report=xml
 addopts = "--junitxml=junit.xml"
 
+[tool.coverage.run]
+# Use relative paths in coverage.xml for SonarQube compatibility
+relative_files = true
+source = ["src/mayflower_sandbox"]
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
