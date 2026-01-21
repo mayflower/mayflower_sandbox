@@ -47,6 +47,9 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+# SonarQube-compatible output (junit.xml and coverage.xml)
+# Usage: pytest --junitxml=junit.xml --cov=src --cov-report=xml
+addopts = "--junitxml=junit.xml"
 
 [tool.ruff]
 line-length = 100
@@ -64,6 +67,7 @@ select = [
     "C4",   # flake8-comprehensions
     "SIM",  # flake8-simplify
     "TCH",  # flake8-type-checking
+    "S",    # flake8-bandit (security) - for SARIF/SonarQube
 ]
 
 ignore = [
@@ -74,6 +78,16 @@ ignore = [
     "SIM105", # use contextlib.suppress
     "SIM108", # use ternary operator instead of if-else
     "N806",   # variable in function should be lowercase (for XML elements)
+    # Security rules - intentional patterns
+    "S101",   # Allow assert in tests
+    "S104",   # Binding to all interfaces (intentional for Docker services)
+    "S105",   # Hardcoded password (dev tokens, not real secrets)
+    "S106",   # Hardcoded password argument
+    "S108",   # Hardcoded temp file (often intentional)
+    "S110",   # try-except-pass (often intentional for graceful fallbacks)
+    "S112",   # try-except-continue (often intentional)
+    "S603",   # subprocess call (sandbox intentionally runs code)
+    "S607",   # partial path executable (sandbox intentionally uses python)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -81,6 +95,13 @@ ignore = [
     "N802",   # function name should be lowercase
     "N803",   # argument name should be lowercase
     "E402",   # module level import not at top of file (needed for load_dotenv)
+    "S101",   # assert in tests is expected
+    "S311",   # pseudo-random generator ok in tests
+]
+"**/test_*.py" = [
+    "S101",   # assert in tests is expected
+    "S102",   # exec usage in tests for dynamic module creation
+    "S311",   # pseudo-random generator ok in tests
 ]
 
 [tool.mypy]

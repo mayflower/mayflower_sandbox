@@ -7,7 +7,6 @@ import sys
 
 import asyncpg
 import pytest
-
 from conftest import requires_deno
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
