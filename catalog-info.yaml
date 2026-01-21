@@ -7,6 +7,7 @@ metadata:
   annotations:
     backstage.io/techdocs-ref: url:https://github.com/mayflower/mayflower_sandbox/tree/main
     github.com/project-slug: mayflower/mayflower_sandbox
+    sonarqube.org/project-key: mayflower_mayflower_sandbox_c110f116-4c70-4ebf-8e19-287338408514
     # Monitoring not applicable for library components
     prometheus.io/alert: "false"
     grafana/dashboard-selector: ""
