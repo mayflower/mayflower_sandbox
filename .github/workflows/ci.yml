@@ -85,6 +85,34 @@ jobs:
           # Also run with normal output for GitHub annotations
           mypy src/mayflower_sandbox || true
 
+      # Bandit security scanner for Python
+      - name: Run Bandit security scan
+        run: |
+          bandit -r src/mayflower_sandbox -f json -o bandit-results.json || true
+          echo "Bandit scan complete"
+
+      # ESLint for TypeScript
+      - name: Run ESLint on TypeScript
+        run: |
+          npm init -y > /dev/null 2>&1
+          npm install --save-dev eslint @typescript-eslint/parser @typescript-eslint/eslint-plugin typescript > /dev/null 2>&1
+          cat > eslint.config.mjs << 'ESLINTCONFIG'
+          import tsParser from "@typescript-eslint/parser";
+          import tsPlugin from "@typescript-eslint/eslint-plugin";
+          export default [{
+            files: ["**/*.ts"],
+            languageOptions: { parser: tsParser, parserOptions: { project: null } },
+            plugins: { "@typescript-eslint": tsPlugin },
+            rules: {
+              ...tsPlugin.configs.recommended.rules,
+              "@typescript-eslint/no-explicit-any": "warn",
+              "@typescript-eslint/no-unused-vars": "warn"
+            }
+          }];
+          ESLINTCONFIG
+          npx eslint src/**/*.ts -f json -o eslint-results.json || true
+          echo "ESLint scan complete"
+
       - name: Upload Ruff SARIF
         uses: actions/upload-artifact@v4
         with:
@@ -97,6 +125,20 @@ jobs:
         with:
           name: mypy-sarif
           path: mypy-results.sarif
+          retention-days: 7
+
+      - name: Upload Bandit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-results
+          path: bandit-results.json
+          retention-days: 7
+
+      - name: Upload ESLint results
+        uses: actions/upload-artifact@v4
+        with:
+          name: eslint-results
+          path: eslint-results.json
           retention-days: 7
 
   # ============================================
@@ -208,6 +250,20 @@ jobs:
           path: .
         continue-on-error: true
 
+      - name: Download Bandit results
+        uses: actions/download-artifact@v4
+        with:
+          name: bandit-results
+          path: .
+        continue-on-error: true
+
+      - name: Download ESLint results
+        uses: actions/download-artifact@v4
+        with:
+          name: eslint-results
+          path: .
+        continue-on-error: true
+
       # Build dynamic SARIF paths (only include files that exist)
       - name: Prepare SARIF paths
         id: sarif
@@ -225,6 +281,18 @@ jobs:
           echo "paths=$SARIF_FILES" >> $GITHUB_OUTPUT
           echo "Found SARIF files: $SARIF_FILES"
 
+      # Prepare external analyzer paths
+      - name: Prepare external analyzer paths
+        id: external
+        run: |
+          BANDIT_PATH=""
+          ESLINT_PATH=""
+          [ -f "bandit-results.json" ] && BANDIT_PATH="bandit-results.json"
+          [ -f "eslint-results.json" ] && ESLINT_PATH="eslint-results.json"
+          echo "bandit=$BANDIT_PATH" >> $GITHUB_OUTPUT
+          echo "eslint=$ESLINT_PATH" >> $GITHUB_OUTPUT
+          echo "Bandit: $BANDIT_PATH, ESLint: $ESLINT_PATH"
+
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
@@ -233,3 +301,5 @@ jobs:
         with:
           args: >
             -Dsonar.sarifReportPaths=${{ steps.sarif.outputs.paths }}
+            -Dsonar.python.bandit.reportPaths=${{ steps.external.outputs.bandit }}
+            -Dsonar.eslint.reportPaths=${{ steps.external.outputs.eslint }}
