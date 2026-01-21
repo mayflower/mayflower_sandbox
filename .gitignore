@@ -40,8 +40,9 @@ htmlcov/
 junit.xml
 coverage.xml
 
-# Static analysis
+# Static analysis (SARIF output for SonarQube)
 ruff-results.sarif
+mypy-results.sarif
 
 # Type checking and linting
 .mypy_cache/

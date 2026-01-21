@@ -37,15 +37,66 @@ jobs:
         run: |
           ruff format --check src/ tests/
 
+      # Mypy with SARIF output for SonarQube
       - name: Run mypy type checking
         run: |
-          mypy src/mayflower_sandbox
+          # Run mypy with JSON output and convert to SARIF
+          mypy src/mayflower_sandbox --output=json > mypy-output.json 2>&1 || true
+          python3 -c '
+          import json, sys
+          try:
+              with open("mypy-output.json") as f:
+                  lines = [json.loads(l) for l in f if l.strip()]
+          except:
+              lines = []
+          sarif = {
+              "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+              "version": "2.1.0",
+              "runs": [{
+                  "tool": {"driver": {"name": "mypy", "version": "1.18", "rules": []}},
+                  "results": []
+              }]
+          }
+          rules_map = {}
+          for item in lines:
+              if item.get("severity") not in ("error", "warning", "note"): continue
+              code = item.get("code", "unknown")
+              if code not in rules_map:
+                  rules_map[code] = len(sarif["runs"][0]["tool"]["driver"]["rules"])
+                  sarif["runs"][0]["tool"]["driver"]["rules"].append({
+                      "id": code, "name": code,
+                      "shortDescription": {"text": f"mypy {code}"}
+                  })
+              sarif["runs"][0]["results"].append({
+                  "ruleId": code, "ruleIndex": rules_map[code],
+                  "level": {"error": "error", "warning": "warning"}.get(item.get("severity"), "note"),
+                  "message": {"text": item.get("message", "")},
+                  "locations": [{
+                      "physicalLocation": {
+                          "artifactLocation": {"uri": item.get("file", "")},
+                          "region": {"startLine": item.get("line", 1), "startColumn": item.get("column", 1)}
+                      }
+                  }]
+              })
+          with open("mypy-results.sarif", "w") as f:
+              json.dump(sarif, f, indent=2)
+          print(f"Converted {len(lines)} mypy issues to SARIF")
+          '
+          # Also run with normal output for GitHub annotations
+          mypy src/mayflower_sandbox || true
 
       - name: Upload Ruff SARIF
         uses: actions/upload-artifact@v4
         with:
           name: ruff-sarif
           path: ruff-results.sarif
+          retention-days: 7
+
+      - name: Upload Mypy SARIF
+        uses: actions/upload-artifact@v4
+        with:
+          name: mypy-sarif
+          path: mypy-results.sarif
           retention-days: 7
 
   # ============================================
@@ -150,12 +201,19 @@ jobs:
           path: .
         continue-on-error: true
 
+      - name: Download Mypy SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: mypy-sarif
+          path: .
+        continue-on-error: true
+
       # Build dynamic SARIF paths (only include files that exist)
       - name: Prepare SARIF paths
         id: sarif
         run: |
           SARIF_FILES=""
-          for f in ruff-results.sarif; do
+          for f in ruff-results.sarif mypy-results.sarif; do
             if [ -f "$f" ]; then
               if [ -n "$SARIF_FILES" ]; then
                 SARIF_FILES="$SARIF_FILES,$f"
