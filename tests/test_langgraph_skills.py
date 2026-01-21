@@ -24,6 +24,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from mayflower_sandbox.filesystem import VirtualFilesystem
 from mayflower_sandbox.tools import create_sandbox_tools
 
+# Mark all tests in this module as slow (LLM-based)
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 async def db_pool():
@@ -274,6 +277,9 @@ async def test_agent_excel_data_analysis_workflow(agent, clean_files):
     assert "average" in response.lower() or "salary" in response.lower()
 
 
+@pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
+)
 async def test_agent_pdf_with_multiple_pages(agent, clean_files):
     """Test agent can create a multi-page PDF."""
     result = await agent.ainvoke(
