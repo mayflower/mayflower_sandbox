@@ -143,7 +143,8 @@ def generate_models_module(
 
     # Add any extra imports from generated code
     for imp in sorted(imports_needed):
-        if "pydantic" not in imp and "typing" not in imp:
+        # Skip imports we already have in the header
+        if "pydantic" not in imp and "typing" not in imp and "__future__" not in imp:
             module_parts.append(imp)
 
     if imports_needed:

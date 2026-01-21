@@ -83,13 +83,38 @@ async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
         monkeypatch.setitem(sys.modules, "pyodide.ffi", ffi_module)
 
         vfs = VirtualFilesystem(db, thread_id)
+
+        # Read both generated modules
         tools_entry = await vfs.read_file(f"{server_info['path']}/tools.py")
-        code = tools_entry["content"].decode("utf-8")
+        tools_code = tools_entry["content"].decode("utf-8")
 
-        module = ModuleType("servers.demo.tools")
-        exec(code, module.__dict__)
+        models_entry = await vfs.read_file(f"{server_info['path']}/models.py")
+        models_code = models_entry["content"].decode("utf-8")
 
-        result = await module.echo(message="hello")
+        # Set up the module hierarchy for relative imports to work
+        # Create servers package
+        servers_pkg = ModuleType("servers")
+        servers_pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "servers", servers_pkg)
+
+        # Create servers.demo package
+        demo_pkg = ModuleType("servers.demo")
+        demo_pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "servers.demo", demo_pkg)
+
+        # Create and execute models module
+        models_module = ModuleType("servers.demo.models")
+        models_module.__package__ = "servers.demo"
+        exec(models_code, models_module.__dict__)
+        monkeypatch.setitem(sys.modules, "servers.demo.models", models_module)
+
+        # Create and execute tools module
+        tools_module = ModuleType("servers.demo.tools")
+        tools_module.__package__ = "servers.demo"
+        exec(tools_code, tools_module.__dict__)
+        monkeypatch.setitem(sys.modules, "servers.demo.tools", tools_module)
+
+        result = await tools_module.echo(message="hello")
         assert result == {"echoed": {"message": "hello"}}
         assert calls == [("echo", {"message": "hello"})]
     finally:

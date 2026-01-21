@@ -8,6 +8,8 @@ import sys
 import asyncpg
 import pytest
 
+from conftest import requires_deno
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from mayflower_sandbox.tools import (
@@ -92,6 +94,7 @@ async def test_tool_factory_invalid_tool(db_pool, clean_files):
         create_sandbox_tools(db_pool, "test_tools", include_tools=["invalid_tool"])
 
 
+@requires_deno
 async def test_execute_python_tool(db_pool, clean_files):
     """Test ExecutePythonTool."""
     tool = ExecutePythonTool(db_pool=db_pool, thread_id="test_tools")
@@ -108,6 +111,7 @@ async def test_execute_python_tool(db_pool, clean_files):
     assert "test error" in result
 
 
+@requires_deno
 async def test_execute_python_tool_with_files(db_pool, clean_files):
     """Test ExecutePythonTool creates files."""
     tool = ExecutePythonTool(db_pool=db_pool, thread_id="test_tools")
@@ -227,6 +231,7 @@ async def test_file_delete_tool(db_pool, clean_files):
     assert "File not found" in delete_result
 
 
+@requires_deno
 async def test_integration_workflow(db_pool, clean_files):
     """Test full workflow: write → execute → read → delete."""
     from langgraph.types import Command
