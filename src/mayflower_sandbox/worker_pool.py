@@ -6,6 +6,7 @@ Provides 70-95% performance improvement over one-shot processes.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -276,6 +277,7 @@ class WorkerPool:
         self.started = False
         self._health_task: asyncio.Task[None] | None = None
         self._allowed_hosts: set[str] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         """Start all workers in the pool."""
@@ -344,8 +346,10 @@ class WorkerPool:
                     )
                 except Exception as e:
                     logger.error(f"Worker {worker.worker_id} execution failed: {e}")
-                    # Try to restart worker
-                    asyncio.create_task(self._restart_worker(worker))
+                    # Try to restart worker (store reference to prevent GC)
+                    task = asyncio.create_task(self._restart_worker(worker))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                     # Continue to next worker
 
         # All busy or failed, use next in rotation anyway
@@ -425,10 +429,8 @@ class WorkerPool:
         # Cancel health monitoring
         if self._health_task:
             self._health_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._health_task
-            except asyncio.CancelledError:
-                pass
 
         # Shutdown all workers
         await asyncio.gather(*[w.shutdown() for w in self.workers], return_exceptions=True)

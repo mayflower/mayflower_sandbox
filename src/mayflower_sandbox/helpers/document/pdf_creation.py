@@ -78,8 +78,12 @@ async def pdf_create_with_unicode(
     # Load Unicode font
     font_bytes = await load_dejavu_font()
     font_path = "/tmp/DejaVuSans.ttf"
-    with open(font_path, "wb") as f:
-        f.write(font_bytes)
+    # Use run_in_executor for non-blocking file write (works in both CPython and Pyodide)
+    import asyncio
+    from pathlib import Path
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, lambda: Path(font_path).write_bytes(font_bytes))
 
     # Create PDF
     pdf = FPDF()
