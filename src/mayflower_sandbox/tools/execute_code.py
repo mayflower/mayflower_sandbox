@@ -2,13 +2,18 @@
 ExecuteCodeTool - Execute code from graph state.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import uuid4
 
-from langchain_core.callbacks import AsyncCallbackManagerForToolRun
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from langchain_core.callbacks import AsyncCallbackManagerForToolRun
 from langchain_core.tools import InjectedToolCallId
 from pydantic import BaseModel, Field
 
@@ -56,7 +61,7 @@ class AguiEventEmitter:
 
     def __init__(self, tool_call_id: str):
         self.tool_call_id = tool_call_id
-        self._writer = None
+        self._writer: Callable[[Any], None] | None = None
 
     def _get_writer(self):
         """Get the stream writer, caching for reuse."""
@@ -66,7 +71,8 @@ class AguiEventEmitter:
 
                 self._writer = get_stream_writer()
             except Exception:
-                pass
+                # Stream writer not available (not in langgraph context)
+                self._writer = None
         return self._writer
 
     def emit_start(self, file_path: str, description: str, code_size: int) -> None:
@@ -201,7 +207,8 @@ class AguiEventEmitter:
             )
             writer({"aguiTool": {"type": "ToolCallEnd", "toolCallId": self.tool_call_id}})
         except Exception:
-            pass
+            # Streaming not available - emit silently fails
+            logger.debug("Failed to emit error event - streaming not available")
 
 
 class ExecuteCodeInput(BaseModel):

@@ -9,6 +9,8 @@ import io
 import xml.etree.ElementTree as ET
 import zipfile
 
+import defusedxml.ElementTree as DefusedET
+
 # Namespace mappings for PowerPoint OOXML
 NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -60,7 +62,7 @@ def pptx_extract_text(pptx_bytes: bytes) -> dict[int, list[str]]:
     for name, data in parts.items():
         if name.startswith("ppt/slides/slide") and name.endswith(".xml"):
             try:
-                slide = ET.fromstring(data)
+                slide = DefusedET.fromstring(data)
                 # Find all text nodes (a:t)
                 texts = [t.text or "" for t in slide.findall(".//a:t", NS) if t.text]
                 # Extract slide number from filename: ppt/slides/slide1.xml -> 1
@@ -98,7 +100,7 @@ def pptx_inventory(pptx_bytes: bytes) -> dict:
     for name, data in parts.items():
         if name.startswith("ppt/slides/slide") and name.endswith(".xml"):
             try:
-                slide = ET.fromstring(data)
+                slide = DefusedET.fromstring(data)
                 items = []
                 # Find all text runs
                 for run in slide.findall(".//a:r", NS):
@@ -142,7 +144,7 @@ def pptx_replace_text(pptx_bytes: bytes, replacements: dict[str, dict[str, str]]
             continue
 
         try:
-            slide = ET.fromstring(parts[path])
+            slide = DefusedET.fromstring(parts[path])
             # Replace text in all text nodes
             for tnode in slide.findall(".//a:t", NS):
                 if tnode.text in mapping:
@@ -179,7 +181,7 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
         return pptx_bytes
 
     try:
-        pres = ET.fromstring(parts[_PRESENTATION_XML])
+        pres = DefusedET.fromstring(parts[_PRESENTATION_XML])
         slide_id_list = pres.find(".//p:slide_id_list", NS)
 
         if slide_id_list is None:
@@ -190,7 +192,7 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
         if rels_path not in parts:
             return pptx_bytes
 
-        rels = ET.fromstring(parts[rels_path])
+        rels = DefusedET.fromstring(parts[rels_path])
         relmap = {}
         for rel in rels.findall(".//Relationship"):
             relmap[rel.get("Id")] = rel
