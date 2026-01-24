@@ -215,7 +215,7 @@ class ExecuteCodeInput(BaseModel):
     """Input schema for ExecuteCodeTool."""
 
     file_path: str = Field(
-        default="/tmp/script.py",
+        default="/tmp/script.py",  # nosec B108 - sandbox VFS path, not host filesystem
         description="Path where code will be saved (e.g., /tmp/visualization.py)",
     )
     description: str = Field(

@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
+import subprocess  # nosec B404 - required for worker pool management
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -426,7 +426,8 @@ class SandboxExecutor:
         )
 
         sock = server.sockets[0]
-        assert sock is not None
+        if sock is None:
+            raise RuntimeError("Server socket not available")
         port = sock.getsockname()[1]
         return server, port
 
