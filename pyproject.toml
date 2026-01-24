@@ -58,6 +58,12 @@ addopts = "--junitxml=junit.xml"
 # Use relative paths in coverage.xml for SonarQube compatibility
 relative_files = true
 source = ["src"]
+# Exclude modules that run inside Pyodide sandbox (coverage not trackable)
+omit = [
+    "src/mayflower_sandbox/helpers/document/*",
+    "src/mayflower_sandbox/helpers/_install.py",
+    "src/mayflower_sandbox/helpers/__init__.py",
+]
 
 [tool.coverage.xml]
 output = "coverage.xml"
