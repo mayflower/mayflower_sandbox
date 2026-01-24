@@ -24,7 +24,33 @@ from typing_extensions import TypedDict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 load_dotenv()
 
+from mayflower_sandbox.agent_state import SandboxAgentState  # noqa: E402
 from mayflower_sandbox.tools import create_sandbox_tools  # noqa: E402
+
+
+def test_sandbox_agent_state_schema():
+    """Test that SandboxAgentState has the correct schema structure."""
+    # Verify TypedDict fields
+    annotations = SandboxAgentState.__annotations__
+    assert "messages" in annotations, "SandboxAgentState should have 'messages' field"
+    assert "created_files" in annotations, "SandboxAgentState should have 'created_files' field"
+
+    # Verify types are Annotated with add reducer
+    from typing import get_args, get_origin
+
+    messages_type = annotations["messages"]
+    created_files_type = annotations["created_files"]
+
+    # Check that both are Annotated types
+    assert get_origin(messages_type) is Annotated, "messages should be Annotated type"
+    assert get_origin(created_files_type) is Annotated, "created_files should be Annotated type"
+
+    # Check the inner types
+    messages_args = get_args(messages_type)
+    created_files_args = get_args(created_files_type)
+
+    assert messages_args[0] is list, "messages inner type should be list"
+    assert created_files_args[0] is list, "created_files inner type should be list[str]"
 
 
 class AgentState(TypedDict):
