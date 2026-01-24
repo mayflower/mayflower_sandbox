@@ -69,7 +69,8 @@ class MCPBridgeServer:
             The port number the server is listening on
         """
         if self.is_running:
-            assert self._port is not None
+            if self._port is None:
+                raise RuntimeError("MCP bridge is running but port is not set")
             return self._port
 
         # Load MCP server configs from database
@@ -83,7 +84,8 @@ class MCPBridgeServer:
         )
 
         sock = self._server.sockets[0]
-        assert sock is not None
+        if sock is None:
+            raise RuntimeError("Server socket not available")
         self._port = sock.getsockname()[1]
 
         logger.info(
