@@ -34,8 +34,8 @@ class TestSandboxToolBase:
         from mayflower_sandbox.tools.base import SandboxTool
 
         class TestTool(SandboxTool):
-            name = "test_tool"
-            description = "Test tool"
+            name: str = "test_tool"
+            description: str = "Test tool"
 
             async def _arun(self, **kwargs):
                 return "test"
@@ -49,8 +49,8 @@ class TestSandboxToolBase:
         from mayflower_sandbox.tools.base import SandboxTool
 
         class TestTool(SandboxTool):
-            name = "test_tool"
-            description = "Test tool"
+            name: str = "test_tool"
+            description: str = "Test tool"
 
             async def _arun(self, **kwargs):
                 return "test"
@@ -64,8 +64,8 @@ class TestSandboxToolBase:
         from mayflower_sandbox.tools.base import SandboxTool
 
         class TestTool(SandboxTool):
-            name = "test_tool"
-            description = "Test tool"
+            name: str = "test_tool"
+            description: str = "Test tool"
 
             async def _arun(self, **kwargs):
                 return "test"
@@ -85,8 +85,8 @@ class TestSandboxToolBase:
         from mayflower_sandbox.tools.base import SandboxTool
 
         class TestTool(SandboxTool):
-            name = "test_tool"
-            description = "Test tool"
+            name: str = "test_tool"
+            description: str = "Test tool"
 
             async def _arun(self, **kwargs):
                 return "test"
@@ -106,8 +106,8 @@ class TestSandboxToolBase:
         from mayflower_sandbox.tools.base import SandboxTool
 
         class TestTool(SandboxTool):
-            name = "test_tool"
-            description = "Test tool"
+            name: str = "test_tool"
+            description: str = "Test tool"
 
             async def _arun(self, **kwargs):
                 return "test"
@@ -139,8 +139,8 @@ class TestSandboxToolBase:
         from mayflower_sandbox.tools.base import SandboxTool
 
         class TestTool(SandboxTool):
-            name = "test_tool"
-            description = "Test tool"
+            name: str = "test_tool"
+            description: str = "Test tool"
 
             async def _arun(self, **kwargs):
                 return "async_result"
