@@ -165,7 +165,7 @@ class SandboxExecutor:
     def _check_deno(self):
         """Verify Deno is installed."""
         try:
-            subprocess.run(
+            subprocess.run(  # nosec B603 B607 - hardcoded safe command
                 ["deno", "--version"],
                 check=True,
                 capture_output=True,
