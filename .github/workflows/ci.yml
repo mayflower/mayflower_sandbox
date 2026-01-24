@@ -86,9 +86,10 @@ jobs:
           mypy src/mayflower_sandbox || true
 
       # Bandit security scanner for Python
+      # Exclude Pyodide sandbox helpers - they run in isolated WebAssembly, not host environment
       - name: Run Bandit security scan
         run: |
-          bandit -r src/mayflower_sandbox -f json -o bandit-results.json || true
+          bandit -r src/mayflower_sandbox --exclude src/mayflower_sandbox/helpers/document -f json -o bandit-results.json || true
           echo "Bandit scan complete"
 
       # ESLint for TypeScript
