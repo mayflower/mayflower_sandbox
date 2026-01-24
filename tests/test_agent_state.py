@@ -50,7 +50,9 @@ def test_sandbox_agent_state_schema():
     created_files_args = get_args(created_files_type)
 
     assert messages_args[0] is list, "messages inner type should be list"
-    assert created_files_args[0] is list, "created_files inner type should be list[str]"
+    # created_files is list[str], so check origin is list
+    cf_inner = created_files_args[0]
+    assert cf_inner is list or get_origin(cf_inner) is list, "created_files inner type should be list[str]"
 
 
 class AgentState(TypedDict):
