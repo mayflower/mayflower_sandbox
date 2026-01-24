@@ -495,6 +495,35 @@ class SandboxExecutor:
         """Ensure mayflower MCP shim and sitecustomize are present in VFS."""
         await write_bootstrap_files(self.vfs)
 
+    async def _save_created_files(self, result: dict) -> list[str]:
+        """Save created files from execution result to VFS."""
+        created_files = []
+        if result.get("created_files") and result.get("success"):
+            for file_info in result["created_files"]:
+                file_path = file_info["path"]
+                file_content = bytes(file_info["content"])
+                await self.vfs.write_file(file_path, file_content)
+                created_files.append(file_path)
+            logger.debug(f"Created {len(created_files)} files via pool")
+        return created_files
+
+    async def _detect_vfs_fallback_files(
+        self, before_files: set[str], result: dict, created_files: list[str]
+    ) -> list[str]:
+        """Detect files created by compiled libraries not visible to Pyodide snapshot."""
+        if created_files or not result.get("success"):
+            return created_files
+
+        after_files = {f["file_path"] for f in await self.vfs.list_files()}
+        vfs_created = list(after_files - before_files)
+        if vfs_created:
+            logger.info(
+                f"VFS fallback detected {len(vfs_created)} files from compiled libraries "
+                f"for thread {self.thread_id}: {vfs_created}"
+            )
+            return vfs_created
+        return created_files
+
     async def _execute_with_pool(
         self,
         code: str,
@@ -573,30 +602,11 @@ class SandboxExecutor:
                 timeout_ms=int(self.timeout_seconds * 1000),
             )
 
-            # Save created files to VFS
-            created_files = []
-            if result.get("created_files") and result.get("success"):
-                # Save files to PostgreSQL VFS
-                for file_info in result["created_files"]:
-                    file_path = file_info["path"]
-                    file_content = bytes(file_info["content"])
-                    await self.vfs.write_file(file_path, file_content)
-                    created_files.append(file_path)
-                logger.debug(f"Created {len(created_files)} files via pool")
-
-            # VFS Fallback - detect files missed by TypeScript/Pyodide snapshot
-            # This handles files created by compiled libraries (matplotlib, openpyxl, xlsxwriter)
-            # that may not be immediately visible to Pyodide's FS snapshot mechanism
-            if not created_files and result.get("success"):
-                after_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
-                vfs_created = list(after_vfs_files - before_vfs_files)
-
-                if vfs_created:
-                    created_files = vfs_created
-                    logger.info(
-                        f"VFS fallback detected {len(vfs_created)} files from compiled libraries "
-                        f"for thread {self.thread_id}: {vfs_created}"
-                    )
+            # Save created files and detect VFS fallback files
+            created_files = await self._save_created_files(result)
+            created_files = await self._detect_vfs_fallback_files(
+                before_vfs_files, result, created_files
+            )
 
             execution_time = time.time() - start_time
             logger.info(
