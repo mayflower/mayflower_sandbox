@@ -10,14 +10,6 @@ import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timezone
 
-# Use defusedxml when available (prevents XXE attacks), fall back to stdlib
-# when running in Pyodide sandbox where defusedxml isn't available.
-# The sandbox isolation mitigates the XML vulnerability risk.
-try:
-    import defusedxml.ElementTree as DefusedET
-except ImportError:
-    DefusedET = ET  # type: ignore[misc]  # noqa: N816
-
 # Namespace mappings for OOXML
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -90,7 +82,7 @@ def docx_add_comment(
     parts = unzip_docx_like(docx_bytes)
 
     # Load document.xml
-    doc = DefusedET.fromstring(parts[_DOCUMENT_XML])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
     paras = doc.findall(".//w:body/w:p", NS)
     if paragraph_index < 0 or paragraph_index >= len(paras):
         raise IndexError(f"paragraph_index {paragraph_index} out of range (0-{len(paras) - 1})")
@@ -101,7 +93,7 @@ def docx_add_comment(
         comments = ET.Element(f"{{{NS['w']}}}comments")
         parts[_COMMENTS_XML] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
     else:
-        comments = DefusedET.fromstring(parts[_COMMENTS_XML])
+        comments = ET.fromstring(parts[_COMMENTS_XML])
 
     # Ensure relationship to comments.xml
     rels_path = "word/_rels/document.xml.rels"
@@ -111,7 +103,7 @@ def docx_add_comment(
         )
         parts[rels_path] = ET.tostring(rels, encoding="utf-8", xml_declaration=True)
     else:
-        rels = DefusedET.fromstring(parts[rels_path])
+        rels = ET.fromstring(parts[rels_path])
 
     # Check if comments relationship exists
     has_comment_rel = False
@@ -214,7 +206,7 @@ def docx_extract_text(docx_bytes: bytes) -> str:
     if _DOCUMENT_XML not in parts:
         return ""
 
-    doc = DefusedET.fromstring(parts[_DOCUMENT_XML])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     # Extract all text nodes
     texts = [t.text or "" for t in doc.findall(_XPATH_TEXT, NS) if t.text]
@@ -242,7 +234,7 @@ def docx_extract_paragraphs(docx_bytes: bytes) -> list[str]:
     if _DOCUMENT_XML not in parts:
         return []
 
-    doc = DefusedET.fromstring(parts[_DOCUMENT_XML])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     paragraphs = []
     for para in doc.findall(".//w:p", NS):
@@ -278,7 +270,7 @@ def docx_read_tables(docx_bytes: bytes) -> list[list[list[str]]]:
     if _DOCUMENT_XML not in parts:
         return []
 
-    doc = DefusedET.fromstring(parts[_DOCUMENT_XML])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     tables = []
     for table in doc.findall(".//w:tbl", NS):
@@ -321,7 +313,7 @@ def docx_find_replace(docx_bytes: bytes, replacements: dict[str, str]) -> bytes:
     if _DOCUMENT_XML not in parts:
         return docx_bytes
 
-    doc = DefusedET.fromstring(parts[_DOCUMENT_XML])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     # Replace in all text nodes
     for text_node in doc.findall(_XPATH_TEXT, NS):
