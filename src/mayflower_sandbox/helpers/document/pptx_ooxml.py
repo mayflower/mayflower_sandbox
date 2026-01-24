@@ -9,7 +9,13 @@ import io
 import xml.etree.ElementTree as ET
 import zipfile
 
-import defusedxml.ElementTree as DefusedET
+# Use defusedxml when available (prevents XXE attacks), fall back to stdlib
+# when running in Pyodide sandbox where defusedxml isn't available.
+# The sandbox isolation mitigates the XML vulnerability risk.
+try:
+    import defusedxml.ElementTree as DefusedET
+except ImportError:
+    DefusedET = ET  # type: ignore[misc]  # noqa: N816
 
 # Namespace mappings for PowerPoint OOXML
 NS = {
