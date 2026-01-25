@@ -43,6 +43,7 @@ async def vfs_read_file(db_pool, thread_id: str, path: str) -> bytes | None:
         )
         return row["content"] if row else None
 
+
 # Mark all tests in this module as slow (LLM-based)
 pytestmark = pytest.mark.slow
 
