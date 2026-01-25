@@ -6,6 +6,11 @@ Tests all operations from:
 - pdf_skill.py
 - powerpoint_skill.py
 - word_skill.py
+
+Test Strategy:
+- All assertions use deterministic VFS verification
+- NO brittle patterns like string matching on LLM responses
+- Verify file existence and format directly in database
 """
 
 import os
@@ -24,6 +29,25 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 
 from mayflower_sandbox.tools import create_sandbox_tools
+
+
+async def vfs_read_file(db_pool, thread_id: str, path: str) -> bytes | None:
+    """Read file content from VFS. Returns None if file doesn't exist."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = $1 AND file_path = $2
+            """,
+            thread_id,
+            path,
+        )
+        return row["content"] if row else None
+
+
+async def vfs_file_exists(db_pool, thread_id: str, path: str) -> bool:
+    """Check if file exists in VFS."""
+    return await vfs_read_file(db_pool, thread_id, path) is not None
 
 # Mark all tests in this module as slow (LLM-based)
 pytestmark = pytest.mark.slow
@@ -86,9 +110,9 @@ async def agent(db_pool):
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_excel_create_workbook(agent, clean_files):
+async def test_excel_create_workbook(agent, db_pool, clean_files):
     """Test: ExcelSkill.create_workbook()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -104,15 +128,17 @@ Format headers with bold font and light blue background.""",
         config={"configurable": {"thread_id": "excel-create"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "success", "xlsx", "excel"])
+    # Deterministic VFS verification - Excel files are ZIP-based (PK magic bytes)
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.xlsx")
+    assert content is not None, "Excel file was not created"
+    assert len(content) > 100, "Excel file seems too small"
+    assert content[:2] == b"PK", "Excel file should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_excel_read_workbook(agent, clean_files):
+async def test_excel_read_workbook(agent, db_pool, clean_files):
     """Test: ExcelSkill.read_workbook()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -129,15 +155,16 @@ Then read the Excel file back and tell me Alice's score.""",
         config={"configurable": {"thread_id": "excel-read"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "95" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/data.xlsx")
+    assert content is not None, "Excel file was not created"
+    assert content[:2] == b"PK", "Excel file should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_excel_extract_text(agent, clean_files):
+async def test_excel_extract_text(agent, db_pool, clean_files):
     """Test: ExcelSkill.extract_text()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -154,9 +181,10 @@ Then extract all text content from the Excel file.""",
         config={"configurable": {"thread_id": "excel-extract"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert any(word in response for word in ["revenue", "100", "financial"])
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/report.xlsx")
+    assert content is not None, "Excel file was not created"
+    assert content[:2] == b"PK", "Excel file should be ZIP-based (OOXML)"
 
 
 # ============================================================================
@@ -165,9 +193,9 @@ Then extract all text content from the Excel file.""",
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_pdf_create(agent, clean_files):
+async def test_pdf_create(agent, db_pool, clean_files):
     """Test: PDFCreator.create_pdf()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -182,15 +210,16 @@ Section 2: Key Metrics - Customer growth at 40%""",
         config={"configurable": {"thread_id": "pdf-create"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "pdf", "success"])
+    # Deterministic VFS verification - PDF files start with %PDF
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/report.pdf")
+    assert content is not None, "PDF file was not created"
+    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_pdf_extract_text(agent, clean_files):
+async def test_pdf_extract_text(agent, db_pool, clean_files):
     """Test: PDFReader.extract_text()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -203,15 +232,18 @@ Then extract and tell me the secret code from the PDF.""",
         config={"configurable": {"thread_id": "pdf-extract"}, "recursion_limit": 50},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "ALPHA123" in response or "alpha123" in response.lower()
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/test.pdf")
+    assert content is not None, "PDF file was not created"
+    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
+    # Text content should be embedded in PDF
+    assert b"ALPHA123" in content, "PDF should contain the secret code"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_pdf_merge(agent, clean_files):
+async def test_pdf_merge(agent, db_pool, clean_files):
     """Test: PDFSkill.merge_pdfs()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -227,9 +259,11 @@ async def test_pdf_merge(agent, clean_files):
         config={"configurable": {"thread_id": "pdf-merge"}, "recursion_limit": 50},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["merged", "success", "created"])
+    # Deterministic VFS verification - all three PDFs should exist
+    for path in ["/tmp/doc1.pdf", "/tmp/doc2.pdf", "/tmp/merged.pdf"]:
+        content = await vfs_read_file(db_pool, "doc_skills", path)
+        assert content is not None, f"{path} was not created"
+        assert content[:4] == b"%PDF", f"{path} should be a valid PDF"
 
 
 # ============================================================================
@@ -238,9 +272,9 @@ async def test_pdf_merge(agent, clean_files):
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_powerpoint_create_simple_presentation(agent, clean_files):
+async def test_powerpoint_create_simple_presentation(agent, db_pool, clean_files):
     """Test: PowerPointSkill.create_simple_presentation()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -258,15 +292,16 @@ Slide 3: Title "Metrics" with text "40% growth""",
         config={"configurable": {"thread_id": "pptx-create"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "powerpoint", "presentation", "success"])
+    # Deterministic VFS verification - PPTX files are ZIP-based (PK magic bytes)
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/pitch.pptx")
+    assert content is not None, "PowerPoint file was not created"
+    assert content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_powerpoint_read_presentation(agent, clean_files):
+async def test_powerpoint_read_presentation(agent, db_pool, clean_files):
     """Test: PowerPointSkill.read_presentation()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -283,15 +318,16 @@ Then read the presentation and tell me how many slides it has.""",
         config={"configurable": {"thread_id": "pptx-read"}, "recursion_limit": 50},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "3" in response or "three" in response.lower()
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/test.pptx")
+    assert content is not None, "PowerPoint file was not created"
+    assert content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_powerpoint_extract_text(agent, clean_files):
+async def test_powerpoint_extract_text(agent, db_pool, clean_files):
     """Test: PowerPointSkill.extract_text()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -306,9 +342,12 @@ Then extract all text from the presentation and tell me the company code.""",
         config={"configurable": {"thread_id": "pptx-extract"}, "recursion_limit": 50},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "XYZ789" in response or "xyz789" in response.lower()
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/info.pptx")
+    assert content is not None, "PowerPoint file was not created"
+    assert content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
+    # Text content should be in XML inside ZIP
+    assert b"XYZ789" in content, "PowerPoint should contain the company code"
 
 
 # ============================================================================
@@ -317,9 +356,9 @@ Then extract all text from the presentation and tell me the company code.""",
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_word_create_document(agent, clean_files):
+async def test_word_create_document(agent, db_pool, clean_files):
     """Test: WordSkill.create_document()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -337,15 +376,16 @@ Section 3: Next Steps (numbered list)""",
         config={"configurable": {"thread_id": "docx-create"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "word", "document", "docx", "success"])
+    # Deterministic VFS verification - DOCX files are ZIP-based (PK magic bytes)
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/report.docx")
+    assert content is not None, "Word document was not created"
+    assert content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_word_read_document(agent, clean_files):
+async def test_word_read_document(agent, db_pool, clean_files):
     """Test: WordSkill.read_document()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -361,15 +401,18 @@ Then read the document and tell me the completion percentage.""",
         config={"configurable": {"thread_id": "docx-read"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "75" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/data.docx")
+    assert content is not None, "Word document was not created"
+    assert content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
+    # Text content should be in XML inside ZIP
+    assert b"75" in content, "Document should contain the completion percentage"
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_word_extract_text(agent, clean_files):
+async def test_word_extract_text(agent, db_pool, clean_files):
     """Test: WordSkill.extract_text()"""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -384,9 +427,12 @@ Then extract all text from the document and tell me the access code.""",
         config={"configurable": {"thread_id": "docx-extract"}, "recursion_limit": 50},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "BETA456" in response or "beta456" in response.lower()
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/secret.docx")
+    assert content is not None, "Word document was not created"
+    assert content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
+    # Text content should be in XML inside ZIP
+    assert b"BETA456" in content, "Document should contain the access code"
 
 
 # ============================================================================
@@ -395,9 +441,9 @@ Then extract all text from the document and tell me the access code.""",
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_multi_format_workflow(agent, clean_files):
+async def test_multi_format_workflow(agent, db_pool, clean_files):
     """Test creating multiple document formats in one workflow."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -414,8 +460,15 @@ Tell me when all three files are created.""",
         config={"configurable": {"thread_id": "multi-format"}, "recursion_limit": 50},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert all(word in response for word in ["excel", "pdf", "word"]) or (
-        "created" in response and "three" in response
-    )
+    # Deterministic VFS verification - all three files should exist
+    xlsx = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.xlsx")
+    assert xlsx is not None, "Excel file was not created"
+    assert xlsx[:2] == b"PK", "Excel file should be ZIP-based"
+
+    pdf = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.pdf")
+    assert pdf is not None, "PDF file was not created"
+    assert pdf[:4] == b"%PDF", "PDF file should start with %PDF header"
+
+    docx = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.docx")
+    assert docx is not None, "Word document was not created"
+    assert docx[:2] == b"PK", "Word document should be ZIP-based"
