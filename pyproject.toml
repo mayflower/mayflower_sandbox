@@ -94,16 +94,6 @@ ignore = [
     "SIM105", # use contextlib.suppress
     "SIM108", # use ternary operator instead of if-else
     "N806",   # variable in function should be lowercase (for XML elements)
-    # Security rules - intentional patterns
-    "S101",   # Allow assert in tests
-    "S104",   # Binding to all interfaces (intentional for Docker services)
-    "S105",   # Hardcoded password (dev tokens, not real secrets)
-    "S106",   # Hardcoded password argument
-    "S108",   # Hardcoded temp file (often intentional)
-    "S110",   # try-except-pass (often intentional for graceful fallbacks)
-    "S112",   # try-except-continue (often intentional)
-    "S603",   # subprocess call (sandbox intentionally runs code)
-    "S607",   # partial path executable (sandbox intentionally uses python)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -112,16 +102,31 @@ ignore = [
     "N803",   # argument name should be lowercase
     "E402",   # module level import not at top of file (needed for load_dotenv)
     "S101",   # assert in tests is expected
+    "S108",   # /tmp paths in tests refer to sandbox VFS, not host filesystem
     "S311",   # pseudo-random generator ok in tests
 ]
 "**/test_*.py" = [
     "S101",   # assert in tests is expected
     "S102",   # exec usage in tests for dynamic module creation
+    "S108",   # /tmp paths in tests refer to sandbox VFS, not host filesystem
     "S311",   # pseudo-random generator ok in tests
 ]
-# Document helpers parse docx/pptx XML from user-uploaded files (trusted source)
-"**/helpers/document/*_ooxml.py" = [
+# Document helpers run in Pyodide sandbox - /tmp paths are VFS, not host filesystem
+"**/helpers/document/*.py" = [
+    "S108",   # /tmp paths are sandbox VFS paths, not host filesystem
     "S314",   # XML parsing is intentional for Office document manipulation
+]
+# Server binds to 0.0.0.0 for container deployment
+"**/server.py" = [
+    "S104",   # Binding to all interfaces is intentional for Docker/K8s
+]
+# Sandbox executor runs Deno subprocess by design
+"**/sandbox_executor.py" = [
+    "S607",   # Partial path 'deno' is intentional - installed in PATH
+]
+# Execute code tool uses /tmp as default VFS path
+"**/tools/execute_code.py" = [
+    "S108",   # /tmp paths are sandbox VFS paths, not host filesystem
 ]
 
 [tool.mypy]
