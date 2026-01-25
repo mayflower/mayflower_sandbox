@@ -72,12 +72,27 @@ result = await agent.ainvoke({
 })
 ```
 
-The agent now has access to 5 tools:
-- `execute_python` - Execute Python code
-- `read_file` - Read files from VFS
-- `write_file` - Write files to VFS
-- `list_files` - List files
-- `delete_file` - Delete files
+The agent now has access to 12 tools:
+
+**Code Execution:**
+- `python_run` - Execute Python code directly
+- `python_run_file` - Execute .py files from VFS
+- `python_run_prepared` - State-based execution for large code
+
+**File Management:**
+- `file_read` - Read files from VFS
+- `file_write` - Write files to VFS
+- `file_edit` - Edit files by string replacement
+- `file_list` - List files with prefix filtering
+- `file_delete` - Delete files
+
+**File Search:**
+- `file_glob` - Find files with glob patterns
+- `file_grep` - Search file contents with regex
+
+**Skills & MCP:**
+- `skill_install` - Install Claude Skills into sandbox
+- `mcp_bind_http` - Bind Streamable HTTP MCP servers
 
 ## Working with Documents
 
@@ -125,7 +140,7 @@ await executor.reset_session()
 
 ## Next Steps
 
-- [Tools Reference](../user-guide/tools.md) - Detailed documentation for all 10 tools
+- [Tools Reference](../user-guide/tools.md) - Detailed documentation for all 12 tools
 - [Helpers Reference](../user-guide/helpers.md) - Document processing helpers
 - [Advanced Features](../advanced/stateful-execution.md) - File server, cleanup, and more
 - [Examples](../user-guide/examples.md) - Complete working examples
