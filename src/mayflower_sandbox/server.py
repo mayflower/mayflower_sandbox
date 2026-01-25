@@ -38,7 +38,10 @@ class FileServer:
         self.app.router.add_get("/files/{thread_id}", self.list_files)
 
     async def health_check(self, request: web.Request) -> web.Response:
-        """Health check endpoint."""
+        """Health check endpoint.
+
+        Note: async required by aiohttp handler interface.
+        """
         return web.json_response({"status": "healthy", "service": "mayflower-sandbox"})
 
     async def serve_file(self, request: web.Request) -> web.Response:
@@ -127,7 +130,7 @@ class FileServer:
         web.run_app(self.app, host=self.host, port=self.port)
 
 
-async def create_file_server(
+def create_file_server(
     db_pool: asyncpg.Pool,
     host: str = "0.0.0.0",  # nosec B104 - intentional for container deployment
     port: int = 8080,
