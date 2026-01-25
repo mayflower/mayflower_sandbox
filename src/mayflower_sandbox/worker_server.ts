@@ -10,6 +10,15 @@ import { snapshotFiles, collectFilesFromPaths } from "./fs_utils.ts";
 
 const START_TIME = Date.now();
 
+/**
+ * Convert unknown error to string safely
+ */
+function errorToString(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  return String(e);
+}
+
 interface ExecuteRequest {
   code: string;
   thread_id: string;
@@ -206,7 +215,7 @@ async function tryRestoreSession(ctx: ExecutionContext, sessionBytes: number[]):
     ctx.pyodide.setStdout(createSuppressedStdout());
     await restoreSession(ctx.pyodide, sessionBytes);
   } catch (e: unknown) {
-    ctx.stderrBuffer.value += `Session restore error: ${e}\n`;
+    ctx.stderrBuffer.value += `Session restore error: ${errorToString(e)}\n`;
   } finally {
     ctx.pyodide.setStdout(createStdoutHandler(ctx.stdoutBuffer, ctx.stdoutDecoder));
   }
@@ -230,7 +239,7 @@ async function executeCode(ctx: ExecutionContext, code: string): Promise<{ succe
     const result = await ctx.pyodide.runPythonAsync(code);
     return { success: true, result };
   } catch (e: unknown) {
-    ctx.stderrBuffer.value += `${e}\n`;
+    ctx.stderrBuffer.value += `${errorToString(e)}\n`;
     return { success: false, result: null };
   }
 }
@@ -260,7 +269,7 @@ except ImportError:
       session_metadata: { ...metadata, last_modified: new Date().toISOString() },
     };
   } catch (e: unknown) {
-    ctx.stderrBuffer.value += `Session save error: ${e}\n`;
+    ctx.stderrBuffer.value += `Session save error: ${errorToString(e)}\n`;
     ctx.pyodide.setStdout(createStdoutHandler(ctx.stdoutBuffer, ctx.stdoutDecoder));
     return {};
   }
@@ -373,7 +382,7 @@ if 'matplotlib' not in sys.modules:
       return {
         success: false,
         stdout: "",
-        stderr: `Execution error: ${e}\n`,
+        stderr: `Execution error: ${errorToString(e)}\n`,
         result: null,
         execution_time_ms: Date.now() - startTime,
       };

@@ -3,7 +3,18 @@
  *
  * Extracted from executor.ts and worker_server.ts to reduce duplication
  * and simplify cognitive complexity.
+ *
+ * Note: These functions intentionally catch and suppress FS errors,
+ * returning safe default values. This is by design for graceful degradation.
  */
+
+/**
+ * Safely check if FS operation result exists
+ */
+function safeExists(pyodide: any, path: string): boolean | null {
+  const result = pyodide.FS.analyzePath(path);
+  return result?.exists ?? null;
+}
 
 /**
  * Check if a path exists in Pyodide FS.
@@ -11,10 +22,9 @@
  */
 export function pathExists(pyodide: any, path: string): boolean {
   try {
-    return pyodide.FS.analyzePath(path).exists;
-  } catch (_e: unknown) {
-    // Path doesn't exist or FS error - treat as non-existent
-    return false;
+    return safeExists(pyodide, path) === true;
+  } catch {
+    return false; // FS error - treat as non-existent
   }
 }
 
@@ -26,9 +36,8 @@ export function isDirectory(pyodide: any, path: string): boolean {
   try {
     const stat = pyodide.FS.stat(path);
     return pyodide.FS.isDir(stat.mode);
-  } catch (_e: unknown) {
-    // Path doesn't exist or not accessible - treat as non-directory
-    return false;
+  } catch {
+    return false; // Path not accessible - treat as non-directory
   }
 }
 
@@ -39,9 +48,8 @@ export function isDirectory(pyodide: any, path: string): boolean {
 export function getFileSize(pyodide: any, path: string): number {
   try {
     return pyodide.FS.stat(path).size;
-  } catch (_e: unknown) {
-    // File not accessible - return invalid size
-    return -1;
+  } catch {
+    return -1; // File not accessible - return invalid size
   }
 }
 
@@ -53,9 +61,8 @@ export function readDirEntries(pyodide: any, path: string): string[] {
   try {
     const entries: string[] = pyodide.FS.readdir(path);
     return entries.filter((e: string) => e !== "." && e !== "..");
-  } catch (_e: unknown) {
-    // Directory not readable - return empty
-    return [];
+  } catch {
+    return []; // Directory not readable - return empty
   }
 }
 
@@ -74,9 +81,8 @@ export function readFileContent(pyodide: any, path: string): number[] | null {
   try {
     const content = pyodide.FS.readFile(path);
     return Array.from(content);
-  } catch (_e: unknown) {
-    // File not readable - return null
-    return null;
+  } catch {
+    return null; // File not readable - return null
   }
 }
 
