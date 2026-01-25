@@ -34,7 +34,7 @@ createdb mayflower_test
 psql -d mayflower_test -f migrations/001_sandbox_schema.sql
 ```
 
-See [Installation Guide](docs/installation.md) for detailed setup instructions.
+See [Installation Guide](docs/getting-started/installation.md) for detailed setup instructions.
 
 ### Basic Usage
 
@@ -65,21 +65,23 @@ result = await agent.ainvoke({
 })
 ```
 
-See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
+See [Quick Start Guide](docs/getting-started/quickstart.md) for a complete tutorial.
 
 ## Documentation
 
 ### Getting Started
-- **[Installation Guide](docs/installation.md)** - Install and configure Mayflower Sandbox
-- **[Quick Start](docs/quickstart.md)** - Get started in 5 minutes
-- **[Examples](docs/examples.md)** - Complete working examples
+- **[Installation Guide](docs/getting-started/installation.md)** - Install and configure Mayflower Sandbox
+- **[Quick Start](docs/getting-started/quickstart.md)** - Get started in 5 minutes
+- **[Examples](docs/user-guide/examples.md)** - Complete working examples
 
 ### Reference
-- **[Tools Reference](docs/tools.md)** - Documentation for the 10 LangChain tools
-- **[Helpers Reference](docs/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
+- **[Tools Reference](docs/user-guide/tools.md)** - Documentation for the 12 LangChain tools
+- **[Helpers Reference](docs/user-guide/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
 - **[HITL Guide](#human-in-the-loop-hitl-approval)** - Human-in-the-Loop approval for destructive operations
-- **[Advanced Features](docs/advanced.md)** - Stateful execution, file server, cleanup
-- **[API Reference](docs/api.md)** - Low-level API documentation
+- **[Advanced Features](docs/advanced/stateful-execution.md)** - Stateful execution, file server, cleanup
+- **[Worker Pool](docs/advanced/worker-pool.md)** - Performance optimization with worker pool
+- **[MCP Integration](docs/advanced/mcp.md)** - Model Context Protocol support
+- **[API Reference](docs/reference/api.md)** - Low-level API documentation
 
 ## Architecture
 
@@ -114,9 +116,9 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 10 Tools
+## The 12 Tools
 
-Mayflower Sandbox provides 10 LangChain tools:
+Mayflower Sandbox provides 12 LangChain tools:
 
 ### Code Execution Tools
 
@@ -147,7 +149,20 @@ Mayflower Sandbox provides 10 LangChain tools:
 9. **FileGlobTool** (`file_glob`) - Find files matching glob patterns
 10. **FileGrepTool** (`file_grep`) - Search file contents with regex
 
-See [Tools Reference](docs/tools.md) for detailed documentation.
+### Skills & MCP Tools (Code Mode)
+
+11. **SkillInstallTool** (`skill_install`) - Install Claude Skills into sandbox
+12. **MCPBindHttpTool** (`mcp_bind_http`) - Bind Streamable HTTP MCP servers
+
+**Code Mode Pattern:** MCP tools are converted to **typed local Python code** rather than tool-call tokens. This follows [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/) approach—LLMs write Python code that calls typed functions with IDE-style autocompletion, improving batching and context efficiency.
+
+```python
+# After binding an MCP server, LLM writes code like:
+from servers.deepwiki import read_wiki_structure
+result = await read_wiki_structure(repoName="langchain-ai/langchain")
+```
+
+See [MCP Integration Guide](docs/advanced/mcp.md) for detailed documentation.
 
 ### When to Use Which Execution Tool?
 

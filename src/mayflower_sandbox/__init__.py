@@ -5,4 +5,4 @@ from .manager import SandboxManager
 from .sandbox_executor import SandboxExecutor
 
 __all__ = ["SandboxManager", "VirtualFilesystem", "SandboxExecutor"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

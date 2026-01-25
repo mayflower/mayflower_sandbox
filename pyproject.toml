@@ -52,6 +52,10 @@ python_functions = "test_*"
 # SonarQube-compatible output (junit.xml and coverage.xml)
 # Usage: pytest --junitxml=junit.xml --cov=src --cov-report=xml
 addopts = "--junitxml=junit.xml"
+markers = [
+    "external: marks tests that require network access to external services",
+    "slow: marks tests that may take several seconds due to network latency",
+]
 
 [tool.coverage.run]
 # Use relative paths in coverage.xml for SonarQube compatibility
