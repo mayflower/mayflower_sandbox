@@ -39,6 +39,8 @@ htmlcov/
 *.cover
 junit.xml
 coverage.xml
+deno-coverage/
+deno-coverage.lcov
 
 # Static analysis (SARIF output for SonarQube)
 ruff-results.sarif
