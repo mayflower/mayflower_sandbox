@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 _FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n(.*)$", re.S)
-_CODEBLOCK_RE = re.compile(r"```python\s*(.*?)```", re.S)
+_CODEBLOCK_RE = re.compile(r"```python[ \t]*\n(.*?)```", re.S)
 
 # File names
 _INIT_PY = "__init__.py"
