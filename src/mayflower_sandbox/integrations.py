@@ -17,7 +17,7 @@ from .mcp_bindings import MCPBindingManager
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.S)
+_FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n(.*)$", re.S)
 _CODEBLOCK_RE = re.compile(r"```python\s*(.*?)```", re.S)
 
 # File names

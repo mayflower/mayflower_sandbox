@@ -6,47 +6,55 @@
  */
 
 /**
- * Check if a path exists in Pyodide FS
+ * Check if a path exists in Pyodide FS.
+ * Returns false for non-existent paths or on any FS error.
  */
 export function pathExists(pyodide: any, path: string): boolean {
   try {
     return pyodide.FS.analyzePath(path).exists;
-  } catch {
+  } catch (_e: unknown) {
+    // Path doesn't exist or FS error - treat as non-existent
     return false;
   }
 }
 
 /**
- * Check if a path is a directory in Pyodide FS
+ * Check if a path is a directory in Pyodide FS.
+ * Returns false for non-directories or on any FS error.
  */
 export function isDirectory(pyodide: any, path: string): boolean {
   try {
     const stat = pyodide.FS.stat(path);
     return pyodide.FS.isDir(stat.mode);
-  } catch {
+  } catch (_e: unknown) {
+    // Path doesn't exist or not accessible - treat as non-directory
     return false;
   }
 }
 
 /**
- * Get file size for a path
+ * Get file size for a path.
+ * Returns -1 on any FS error (file not found, permission denied, etc).
  */
 export function getFileSize(pyodide: any, path: string): number {
   try {
     return pyodide.FS.stat(path).size;
-  } catch {
+  } catch (_e: unknown) {
+    // File not accessible - return invalid size
     return -1;
   }
 }
 
 /**
- * Read directory entries (excluding . and ..)
+ * Read directory entries (excluding . and ..).
+ * Returns empty array on any FS error.
  */
 export function readDirEntries(pyodide: any, path: string): string[] {
   try {
     const entries: string[] = pyodide.FS.readdir(path);
     return entries.filter((e: string) => e !== "." && e !== "..");
-  } catch {
+  } catch (_e: unknown) {
+    // Directory not readable - return empty
     return [];
   }
 }
@@ -59,13 +67,15 @@ export function joinPath(parent: string, entry: string): string {
 }
 
 /**
- * Read file content from Pyodide FS
+ * Read file content from Pyodide FS.
+ * Returns null on any FS error (file not found, permission denied, etc).
  */
 export function readFileContent(pyodide: any, path: string): number[] | null {
   try {
     const content = pyodide.FS.readFile(path);
     return Array.from(content);
-  } catch {
+  } catch (_e: unknown) {
+    // File not readable - return null
     return null;
   }
 }

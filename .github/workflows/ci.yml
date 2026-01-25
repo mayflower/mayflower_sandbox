@@ -182,6 +182,12 @@ jobs:
         run: |
           pip install -e ".[dev]"
 
+      # Run TypeScript tests with Deno (with coverage)
+      - name: Run TypeScript tests
+        run: |
+          deno test --allow-read --coverage=deno-coverage src/mayflower_sandbox/*_test.ts
+          deno coverage deno-coverage --lcov --output=deno-coverage.lcov
+
       - name: Set up database schema
         env:
           PGPASSWORD: postgres
@@ -214,6 +220,7 @@ jobs:
           path: |
             junit.xml
             coverage.xml
+            deno-coverage.lcov
           retention-days: 7
 
   # ============================================
