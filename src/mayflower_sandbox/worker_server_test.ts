@@ -26,6 +26,7 @@ Deno.test("errorToString handles string errors", () => {
 
 Deno.test("errorToString handles other types", () => {
   assertEquals(errorToString(42), "42");
+  assertEquals(errorToString(true), "true");
   assertEquals(errorToString({ foo: "bar" }), '{"foo":"bar"}');
   assertEquals(errorToString(null), "null");
   assertEquals(errorToString(undefined), "undefined");
