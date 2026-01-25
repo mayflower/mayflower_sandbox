@@ -9,6 +9,13 @@
 export function errorToString(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "string") return e;
+  if (e !== null && typeof e === "object") {
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return "[object]";
+    }
+  }
   return String(e);
 }
 

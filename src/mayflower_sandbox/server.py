@@ -38,11 +38,20 @@ class FileServer:
         self.app.router.add_get("/files/{thread_id}", self.list_files)
 
     async def health_check(self, request: web.Request) -> web.Response:
-        """Health check endpoint.
-
-        Note: async required by aiohttp handler interface.
-        """
-        return web.json_response({"status": "healthy", "service": "mayflower-sandbox"})
+        """Health check endpoint with database connectivity verification."""
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            return web.json_response({"status": "healthy", "service": "mayflower-sandbox"})
+        except Exception:
+            return web.json_response(
+                {
+                    "status": "unhealthy",
+                    "service": "mayflower-sandbox",
+                    "error": "database unavailable",
+                },
+                status=503,
+            )
 
     async def serve_file(self, request: web.Request) -> web.Response:
         """Serve a file from VFS.
