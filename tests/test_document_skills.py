@@ -226,19 +226,24 @@ async def test_pdf_extract_text(agent, db_pool, clean_files):
                 (
                     "user",
                     """Create a PDF at /tmp/test.pdf with text "Secret Code: ALPHA123".
-Then extract and tell me the secret code from the PDF.""",
+Then extract the text from the PDF using pypdf and save the extracted text to /tmp/extracted.txt.""",
                 )
             ]
         },
         config={"configurable": {"thread_id": "pdf-extract"}, "recursion_limit": 50},
     )
 
-    # Deterministic VFS verification
-    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/test.pdf")
-    assert content is not None, "PDF file was not created"
-    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
-    # Text content should be embedded in PDF
-    assert b"ALPHA123" in content, "PDF should contain the secret code"
+    # Verify PDF was created with correct format
+    pdf_content = await vfs_read_file(db_pool, "doc_skills", "/tmp/test.pdf")
+    assert pdf_content is not None, "PDF file was not created"
+    assert pdf_content[:4] == b"%PDF", "PDF file should start with %PDF header"
+
+    # Verify extraction worked by checking the extracted text file
+    extracted = await vfs_read_file(db_pool, "doc_skills", "/tmp/extracted.txt")
+    assert extracted is not None, "Extracted text file was not created"
+    assert b"ALPHA123" in extracted, (
+        f"Extracted text should contain secret code. Got: {extracted.decode()}"
+    )
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
@@ -336,19 +341,24 @@ async def test_powerpoint_extract_text(agent, db_pool, clean_files):
                     """Create PowerPoint at /tmp/info.pptx with:
 Slide 1: Title "Company Code: XYZ789"
 
-Then extract all text from the presentation and tell me the company code.""",
+Then extract all text from the presentation using python-pptx and save to /tmp/extracted.txt.""",
                 )
             ]
         },
         config={"configurable": {"thread_id": "pptx-extract"}, "recursion_limit": 50},
     )
 
-    # Deterministic VFS verification
-    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/info.pptx")
-    assert content is not None, "PowerPoint file was not created"
-    assert content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
-    # Text content should be in XML inside ZIP
-    assert b"XYZ789" in content, "PowerPoint should contain the company code"
+    # Verify PowerPoint was created with correct format
+    pptx_content = await vfs_read_file(db_pool, "doc_skills", "/tmp/info.pptx")
+    assert pptx_content is not None, "PowerPoint file was not created"
+    assert pptx_content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
+
+    # Verify extraction worked by checking the extracted text file
+    extracted = await vfs_read_file(db_pool, "doc_skills", "/tmp/extracted.txt")
+    assert extracted is not None, "Extracted text file was not created"
+    assert b"XYZ789" in extracted, (
+        f"Extracted text should contain company code. Got: {extracted.decode()}"
+    )
 
 
 # ============================================================================
@@ -395,19 +405,24 @@ async def test_word_read_document(agent, db_pool, clean_files):
 Paragraph 1: Project Alpha Status
 Paragraph 2: Completion: 75%
 
-Then read the document and tell me the completion percentage.""",
+Then extract all text from the document using python-docx and save to /tmp/extracted.txt.""",
                 )
             ]
         },
-        config={"configurable": {"thread_id": "docx-read"}},
+        config={"configurable": {"thread_id": "docx-read"}, "recursion_limit": 50},
     )
 
-    # Deterministic VFS verification
-    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/data.docx")
-    assert content is not None, "Word document was not created"
-    assert content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
-    # Text content should be in XML inside ZIP
-    assert b"75" in content, "Document should contain the completion percentage"
+    # Verify Word document was created with correct format
+    docx_content = await vfs_read_file(db_pool, "doc_skills", "/tmp/data.docx")
+    assert docx_content is not None, "Word document was not created"
+    assert docx_content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
+
+    # Verify extraction worked by checking the extracted text file
+    extracted = await vfs_read_file(db_pool, "doc_skills", "/tmp/extracted.txt")
+    assert extracted is not None, "Extracted text file was not created"
+    assert b"75" in extracted, (
+        f"Extracted text should contain completion percentage. Got: {extracted.decode()}"
+    )
 
 
 @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
@@ -421,19 +436,24 @@ async def test_word_extract_text(agent, db_pool, clean_files):
                     """Create Word document at /tmp/secret.docx with text:
 "Access Code: BETA456"
 
-Then extract all text from the document and tell me the access code.""",
+Then extract all text from the document using python-docx and save to /tmp/extracted.txt.""",
                 )
             ]
         },
         config={"configurable": {"thread_id": "docx-extract"}, "recursion_limit": 50},
     )
 
-    # Deterministic VFS verification
-    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/secret.docx")
-    assert content is not None, "Word document was not created"
-    assert content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
-    # Text content should be in XML inside ZIP
-    assert b"BETA456" in content, "Document should contain the access code"
+    # Verify Word document was created with correct format
+    docx_content = await vfs_read_file(db_pool, "doc_skills", "/tmp/secret.docx")
+    assert docx_content is not None, "Word document was not created"
+    assert docx_content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
+
+    # Verify extraction worked by checking the extracted text file
+    extracted = await vfs_read_file(db_pool, "doc_skills", "/tmp/extracted.txt")
+    assert extracted is not None, "Extracted text file was not created"
+    assert b"BETA456" in extracted, (
+        f"Extracted text should contain access code. Got: {extracted.decode()}"
+    )
 
 
 # ============================================================================

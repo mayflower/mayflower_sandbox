@@ -236,10 +236,17 @@ async def test_agent_list_and_delete(agent, db_pool, clean_files):
             b"test2",
         )
 
-    # Ask agent to list and delete
+    # Ask agent to list and delete (with approved=True to bypass HITL in tests)
     await agent.ainvoke(
-        {"messages": [("user", "List all files in /tmp/ and then delete /tmp/file1.txt")]},
-        config={"configurable": {"thread_id": "test-list-delete"}},
+        {
+            "messages": [
+                (
+                    "user",
+                    "List all files in /tmp/ directory. Then delete /tmp/file1.txt using file_delete with approved=True.",
+                )
+            ]
+        },
+        config={"configurable": {"thread_id": "test-list-delete"}, "recursion_limit": 50},
     )
 
     # Deterministic VFS verification - file1 should be deleted, file2 should remain

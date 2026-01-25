@@ -196,19 +196,24 @@ async def test_agent_pdf_text_extraction(agent, db_pool, clean_files):
                 (
                     "user",
                     """Create a simple PDF at /tmp/test_doc.pdf with the text:
-'The secret password is: ALPHA2024'. Then extract and tell me the text content.""",
+'The secret password is: ALPHA2024'. Then extract the text using pypdf and save to /tmp/extracted.txt.""",
                 )
             ]
         },
-        config={"configurable": {"thread_id": "test-pdf-2"}},
+        config={"configurable": {"thread_id": "test-pdf-2"}, "recursion_limit": 50},
     )
 
-    # Deterministic VFS verification
-    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/test_doc.pdf")
-    assert content is not None, "PDF file was not created"
-    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
-    # Text content should be embedded in PDF
-    assert b"ALPHA2024" in content, "PDF should contain the secret password"
+    # Verify PDF was created with correct format
+    pdf_content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/test_doc.pdf")
+    assert pdf_content is not None, "PDF file was not created"
+    assert pdf_content[:4] == b"%PDF", "PDF file should start with %PDF header"
+
+    # Verify extraction worked by checking the extracted text file
+    extracted = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/extracted.txt")
+    assert extracted is not None, "Extracted text file was not created"
+    assert b"ALPHA2024" in extracted, (
+        f"Extracted text should contain password. Got: {extracted.decode()}"
+    )
 
 
 @pytest.mark.skipif(
