@@ -3,6 +3,11 @@ LangGraph integration tests with document processing skills using sandbox.
 
 These tests demonstrate how to use the PyodideSandbox with document processing
 skills similar to the maistack skills implementation.
+
+Test Strategy:
+- All assertions use deterministic VFS verification
+- NO brittle patterns like string matching on LLM responses
+- Verify file existence and format directly in database
 """
 
 import os
@@ -23,6 +28,20 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
 from mayflower_sandbox.tools import create_sandbox_tools
+
+
+async def vfs_read_file(db_pool, thread_id: str, path: str) -> bytes | None:
+    """Read file content from VFS. Returns None if file doesn't exist."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = $1 AND file_path = $2
+            """,
+            thread_id,
+            path,
+        )
+        return row["content"] if row else None
 
 # Mark all tests in this module as slow (LLM-based)
 pytestmark = pytest.mark.slow
@@ -86,9 +105,9 @@ def agent(db_pool):
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_excel_creation_skill(agent, clean_files):
+async def test_agent_excel_creation_skill(agent, db_pool, clean_files):
     """Test agent can create Excel files with openpyxl."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -105,18 +124,18 @@ Use openpyxl to format the headers with bold font and a blue background.""",
         config={"configurable": {"thread_id": "test-excel-1"}},
     )
 
-    # Check the agent's response
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert "excel" in response or "xlsx" in response or "success" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/sales_data.xlsx")
+    assert content is not None, "Excel file was not created"
+    assert content[:2] == b"PK", "Excel file should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_excel_with_formulas(agent, clean_files):
+async def test_agent_excel_with_formulas(agent, db_pool, clean_files):
     """Test agent can create Excel with formulas using openpyxl."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -132,17 +151,18 @@ Add formulas in the Total column to sum the quarterly values.""",
         config={"configurable": {"thread_id": "test-excel-2"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert "excel" in response or "formula" in response or "sum" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/budget.xlsx")
+    assert content is not None, "Excel file was not created"
+    assert content[:2] == b"PK", "Excel file should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_pdf_creation_skill(agent, clean_files):
+async def test_agent_pdf_creation_skill(agent, db_pool, clean_files):
     """Test agent can create PDF files with reportlab."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -158,9 +178,10 @@ Use reportlab or a similar library to create the PDF.""",
         config={"configurable": {"thread_id": "test-pdf-1"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert "pdf" in response or "report" in response or "created" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/quarterly_report.pdf")
+    assert content is not None, "PDF file was not created"
+    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
 
 
 @pytest.mark.skipif(
@@ -168,9 +189,7 @@ Use reportlab or a similar library to create the PDF.""",
 )
 async def test_agent_pdf_text_extraction(agent, db_pool, clean_files):
     """Test agent can extract text from PDF using pypdf."""
-    # Pre-create a simple PDF file in the database
-    # For this test, we'll have the agent create one first, then extract
-    create_result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -183,17 +202,20 @@ async def test_agent_pdf_text_extraction(agent, db_pool, clean_files):
         config={"configurable": {"thread_id": "test-pdf-2"}},
     )
 
-    last_message = create_result["messages"][-1]
-    response = last_message.content
-    assert "ALPHA2024" in response or "alpha2024" in response.lower()
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/test_doc.pdf")
+    assert content is not None, "PDF file was not created"
+    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
+    # Text content should be embedded in PDF
+    assert b"ALPHA2024" in content, "PDF should contain the secret password"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_powerpoint_creation_skill(agent, clean_files):
+async def test_agent_powerpoint_creation_skill(agent, db_pool, clean_files):
     """Test agent can create PowerPoint presentations."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -209,22 +231,18 @@ Use python-pptx library.""",
         config={"configurable": {"thread_id": "test-pptx-1"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert (
-        "powerpoint" in response
-        or "presentation" in response
-        or "pptx" in response
-        or "created" in response
-    )
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/company_overview.pptx")
+    assert content is not None, "PowerPoint file was not created"
+    assert content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_word_document_creation_skill(agent, clean_files):
+async def test_agent_word_document_creation_skill(agent, db_pool, clean_files):
     """Test agent can create Word documents."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -241,19 +259,18 @@ Use python-docx library.""",
         config={"configurable": {"thread_id": "test-docx-1"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert (
-        "word" in response or "document" in response or "docx" in response or "created" in response
-    )
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/project_report.docx")
+    assert content is not None, "Word document was not created"
+    assert content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_excel_data_analysis_workflow(agent, clean_files):
+async def test_agent_excel_data_analysis_workflow(agent, db_pool, clean_files):
     """Test complete workflow: create Excel, analyze data, generate report."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -262,27 +279,30 @@ async def test_agent_excel_data_analysis_workflow(agent, clean_files):
 1. Create Excel file /tmp/employee_data.xlsx with columns: Name, Department, Salary
 2. Add 5 sample employee records
 3. Calculate the average salary using Python
-4. Create a summary report in /tmp/analysis.txt with the findings
-5. Tell me the average salary""",
+4. Create a summary report in /tmp/analysis.txt with the findings""",
                 )
             ]
         },
         config={"configurable": {"thread_id": "test-workflow-1"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    # Should have calculated and reported an average salary
-    assert any(char.isdigit() for char in response)
-    assert "average" in response.lower() or "salary" in response.lower()
+    # Deterministic VFS verification
+    xlsx_content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/employee_data.xlsx")
+    assert xlsx_content is not None, "Excel file was not created"
+    assert xlsx_content[:2] == b"PK", "Excel file should be ZIP-based"
+
+    analysis_content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/analysis.txt")
+    assert analysis_content is not None, "Analysis file was not created"
+    # Analysis should contain some numeric value (the average)
+    assert any(char.isdigit() for char in analysis_content.decode("utf-8"))
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_pdf_with_multiple_pages(agent, clean_files):
+async def test_agent_pdf_with_multiple_pages(agent, db_pool, clean_files):
     """Test agent can create a multi-page PDF."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -298,17 +318,18 @@ Tell me when the PDF is created.""",
         config={"configurable": {"thread_id": "test-pdf-multi-1"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert "pdf" in response or "created" in response or "page" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/multi_page.pdf")
+    assert content is not None, "PDF file was not created"
+    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_multi_format_report_generation(agent, clean_files):
+async def test_agent_multi_format_report_generation(agent, db_pool, clean_files):
     """Test agent can generate reports in multiple formats."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -324,13 +345,18 @@ Tell me when all three files are created successfully.""",
         config={"configurable": {"thread_id": "test-multi-format-1"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert (
-        ("excel" in response or "xlsx" in response)
-        and ("pdf" in response)
-        and ("powerpoint" in response or "pptx" in response)
-    ) or ("created" in response and "successfully" in response)
+    # Deterministic VFS verification - all three files should exist
+    xlsx = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/sales_report.xlsx")
+    assert xlsx is not None, "Excel file was not created"
+    assert xlsx[:2] == b"PK", "Excel file should be ZIP-based"
+
+    pdf = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/sales_report.pdf")
+    assert pdf is not None, "PDF file was not created"
+    assert pdf[:4] == b"%PDF", "PDF file should start with %PDF header"
+
+    pptx = await vfs_read_file(db_pool, "langgraph_skills_test", "/tmp/sales_report.pptx")
+    assert pptx is not None, "PowerPoint file was not created"
+    assert pptx[:2] == b"PK", "PowerPoint file should be ZIP-based"
 
 
 @pytest.mark.skipif(
