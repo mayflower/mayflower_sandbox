@@ -187,11 +187,11 @@ jobs:
         run: |
           deno test --allow-read --coverage=deno-coverage src/mayflower_sandbox/*_test.ts
           deno coverage deno-coverage --lcov > deno-coverage-raw.lcov
-          # Convert absolute paths to relative paths for SonarQube
-          # Deno outputs: SF:/home/runner/_work/repo/repo/src/...
-          # SonarQube needs: SF:src/...
+          # Convert absolute paths to paths relative to sonar.sources (src/)
+          # Deno outputs: SF:/home/runner/_work/repo/repo/src/mayflower_sandbox/...
+          # SonarQube indexes relative to sonar.sources=src, so needs: SF:mayflower_sandbox/...
           echo "PWD is: $PWD"
-          sed "s|SF:$PWD/|SF:|g" deno-coverage-raw.lcov > deno-coverage.lcov
+          sed "s|SF:$PWD/src/|SF:|g" deno-coverage-raw.lcov > deno-coverage.lcov
           # Show coverage summary
           echo "=== TypeScript coverage ==="
           deno coverage deno-coverage
@@ -199,7 +199,7 @@ jobs:
           echo "=== Raw LCOV SF paths ==="
           grep "^SF:" deno-coverage-raw.lcov
           echo ""
-          echo "=== Converted LCOV SF paths ==="
+          echo "=== Converted LCOV SF paths (relative to src/) ==="
           grep "^SF:" deno-coverage.lcov
           echo ""
           echo "=== LCOV file size ==="
