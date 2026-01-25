@@ -49,6 +49,7 @@ async def vfs_file_exists(db_pool, thread_id: str, path: str) -> bool:
     """Check if file exists in VFS."""
     return await vfs_read_file(db_pool, thread_id, path) is not None
 
+
 # Mark all tests in this module as slow (LLM-based)
 pytestmark = pytest.mark.slow
 
