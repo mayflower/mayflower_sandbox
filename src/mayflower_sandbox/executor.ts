@@ -7,6 +7,7 @@
 
 import { loadPyodide } from "npm:pyodide@0.28.3";
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
+import { collectFilesFromPaths } from "./fs_utils.ts";
 
 interface ExecutionOptions {
   code: string;
@@ -90,103 +91,142 @@ async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
   return files;
 }
 
+// File operations (snapshotFiles, collectFiles, collectFilesFromPaths)
+// are now in fs_utils.ts to reduce duplication and cognitive complexity
+
 /**
- * Create a snapshot of file metadata (path + size) for comparison
+ * Create stdout write handler
  */
-function snapshotFiles(pyodide: any, paths: string[]): Map<string, number> {
-  const snapshot = new Map<string, number>();
-
-  for (const path of paths) {
-    try {
-      const exists = pyodide.FS.analyzePath(path).exists;
-      if (!exists) continue;
-
-      const stat = pyodide.FS.stat(path);
-      if (pyodide.FS.isDir(stat.mode)) {
-        const entries = pyodide.FS.readdir(path);
-        for (const entry of entries) {
-          if (entry === "." || entry === "..") continue;
-          const fullPath = path === "/" ? `/${entry}` : `${path}/${entry}`;
-          const subSnapshot = snapshotFiles(pyodide, [fullPath]);
-          subSnapshot.forEach((size, filePath) => snapshot.set(filePath, size));
-        }
-      } else {
-        // Store file path and size
-        snapshot.set(path, stat.size);
-      }
-    } catch (e) {
-      // Skip files we can't read
-    }
-  }
-
-  return snapshot;
+function createStdoutHandler(
+  buffer: { value: string },
+  decoder: TextDecoder,
+): { write: (buf: Uint8Array) => number } {
+  return {
+    write: (buf: Uint8Array) => {
+      buffer.value += decoder.decode(buf, { stream: true });
+      return buf.length;
+    },
+  };
 }
 
 /**
- * Collect files from Pyodide filesystem
+ * Create suppressed stdout handler (discards output)
  */
-function collectFiles(pyodide: any, paths: string[]): Array<{ path: string; content: number[] }> {
-  const files: Array<{ path: string; content: number[] }> = [];
-
-  for (const path of paths) {
-    try {
-      // Check if path exists
-      const exists = pyodide.FS.analyzePath(path).exists;
-      if (!exists) continue;
-
-      // If directory, recurse
-      const stat = pyodide.FS.stat(path);
-      if (pyodide.FS.isDir(stat.mode)) {
-        const entries = pyodide.FS.readdir(path);
-        for (const entry of entries) {
-          if (entry === "." || entry === "..") continue;
-          const fullPath = path === "/" ? `/${entry}` : `${path}/${entry}`;
-          files.push(...collectFiles(pyodide, [fullPath]));
-        }
-      } else {
-        // Read file
-        const content = pyodide.FS.readFile(path);
-        files.push({
-          path,
-          content: Array.from(content),
-        });
-      }
-    } catch (e) {
-      // Skip files we can't read
-    }
-  }
-
-  return files;
+function createSuppressedStdout(): { write: (buf: Uint8Array) => number } {
+  return { write: (buf: Uint8Array) => buf.length };
 }
 
 /**
- * Collect files from specific paths (used with FS.trackingDelegate)
+ * Restore session state from bytes
  */
-function collectFilesFromPaths(
+async function restoreSession(
   pyodide: any,
-  paths: string[],
-): Array<{ path: string; content: number[] }> {
-  const files: Array<{ path: string; content: number[] }> = [];
+  sessionBytes: Uint8Array,
+  stdoutBuffer: { value: string },
+  stderrBuffer: { value: string },
+  stdoutDecoder: TextDecoder,
+): Promise<void> {
+  pyodide.setStdout(createSuppressedStdout());
 
-  for (const path of paths) {
-    // Filter out system paths - agent should not know these exist
-    if (path.startsWith('/lib') || path.startsWith('/share')) continue;
+  await pyodide.runPythonAsync(`
+try:
+    import cloudpickle
+except ImportError:
+    import micropip
+    await micropip.install('cloudpickle')
+    import cloudpickle
+`);
 
-    try {
-      const exists = pyodide.FS.analyzePath(path).exists;
-      if (!exists) continue;
+  pyodide.setStdout(createStdoutHandler(stdoutBuffer, stdoutDecoder));
 
-      const stat = pyodide.FS.stat(path);
-      if (pyodide.FS.isDir(stat.mode)) continue; // Skip directories
+  await pyodide.runPythonAsync(`
+_session_bytes = bytes(${JSON.stringify(Array.from(sessionBytes))})
+_session_obj = cloudpickle.loads(_session_bytes)
+globals().update(_session_obj)
+`);
+}
 
-      const content = pyodide.FS.readFile(path);
-      files.push({ path, content: Array.from(content) });
-    } catch (_e) {
-      // Skip files we can't read
+/**
+ * Save session state to bytes
+ */
+async function saveSession(pyodide: any): Promise<number[]> {
+  const sessionBytesResult = await pyodide.runPythonAsync(`
+import types
+_globals_snapshot = dict(globals())
+_session_dict = {}
+for k, v in _globals_snapshot.items():
+    if k.startswith('_'):
+        continue
+    if isinstance(v, type) and v.__module__ == 'builtins':
+        continue
+    if hasattr(v, 'read') or hasattr(v, 'write'):
+        continue
+    _session_dict[k] = v
+list(cloudpickle.dumps(_session_dict))
+`);
+  return sessionBytesResult.toJs();
+}
+
+/**
+ * Mount files to Pyodide filesystem
+ */
+async function mountFiles(
+  pyodide: any,
+  files: Record<string, Uint8Array>,
+): Promise<void> {
+  for (const [path, content] of Object.entries(files)) {
+    const dir = path.substring(0, path.lastIndexOf("/"));
+    if (dir && dir !== "/") {
+      pyodide.FS.mkdirTree(dir);
     }
+    pyodide.FS.writeFile(path, content);
   }
 
-  return files;
+  await pyodide.runPythonAsync(`
+import importlib
+importlib.invalidate_caches()
+`);
+}
+
+/**
+ * Configure matplotlib backend for non-browser environments
+ */
+async function configureEnvironment(pyodide: any): Promise<void> {
+  try {
+    await pyodide.runPythonAsync(`
+import os
+import sys
+if 'matplotlib' not in sys.modules:
+    os.environ['MPLBACKEND'] = 'Agg'
+`);
+  } catch {
+    // Setup failed, continue anyway
+  }
+}
+
+/**
+ * Create file tracking delegate
+ */
+function createFileTracker(): {
+  delegate: { onOpenFile: (path: string, flags: number) => void; onWriteToFile: (path: string, bytesWritten: number) => void };
+  createdFiles: Set<string>;
+  modifiedFiles: Set<string>;
+} {
+  const createdFiles = new Set<string>();
+  const modifiedFiles = new Set<string>();
+
+  return {
+    delegate: {
+      onOpenFile: (path: string, flags: number) => {
+        if (flags & 0x200) createdFiles.add(path);
+      },
+      onWriteToFile: (path: string, bytesWritten: number) => {
+        if (bytesWritten > 0) modifiedFiles.add(path);
+      },
+    },
+    createdFiles,
+    modifiedFiles,
+  };
 }
 
 /**
@@ -201,155 +241,56 @@ async function execute(options: ExecutionOptions): Promise<ExecutionResult> {
   };
 
   try {
-    // Load Pyodide (let it use default paths from npm package)
     const pyodide = await loadPyodide();
-
-    // Always load micropip - it's lightweight and commonly needed for package installation
-    // (needed for dill in stateful mode, and for NumPy/SciPy packages in general)
     await pyodide.loadPackage("micropip");
 
-    // Capture stdout/stderr
-    // Use 'write' handler instead of 'batched' for more reliable output capture
-    // especially with async code. See: https://github.com/pyodide/pyodide/issues/4139
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
-
+    const stdoutBuffer = { value: "" };
+    const stderrBuffer = { value: "" };
     const stdoutDecoder = new TextDecoder();
     const stderrDecoder = new TextDecoder();
 
-    pyodide.setStdout({
-      write: (buf: Uint8Array) => {
-        stdoutBuffer += stdoutDecoder.decode(buf, { stream: true });
-        return buf.length;
-      }
-    });
-    pyodide.setStderr({
-      write: (buf: Uint8Array) => {
-        stderrBuffer += stderrDecoder.decode(buf, { stream: true });
-        return buf.length;
-      }
-    });
+    pyodide.setStdout(createStdoutHandler(stdoutBuffer, stdoutDecoder));
+    pyodide.setStderr(createStdoutHandler(stderrBuffer, stderrDecoder));
 
-    // Load session state if provided
+    // Restore session if stateful
     if (options.stateful && options.sessionBytes) {
       try {
-        // Temporarily suppress stdout during cloudpickle installation to avoid polluting JSON output
-        const originalStdout = stdoutBuffer;
-        pyodide.setStdout({ write: (buf: Uint8Array) => buf.length }); // Suppress micropip output
-
-        await pyodide.runPythonAsync(`
-# Install cloudpickle if needed
-try:
-    import cloudpickle
-except ImportError:
-    import micropip
-    await micropip.install('cloudpickle')
-    import cloudpickle
-`);
-
-        // Restore stdout capture
-        pyodide.setStdout({
-          write: (buf: Uint8Array) => {
-            stdoutBuffer += stdoutDecoder.decode(buf, { stream: true });
-            return buf.length;
-          }
-        });
-
-        // Now restore the session
-        await pyodide.runPythonAsync(`
-_session_bytes = bytes(${JSON.stringify(Array.from(options.sessionBytes))})
-_session_obj = cloudpickle.loads(_session_bytes)
-globals().update(_session_obj)
-`);
+        await restoreSession(pyodide, options.sessionBytes, stdoutBuffer, stderrBuffer, stdoutDecoder);
       } catch (e) {
-        stderrBuffer += `Session restore error: ${e}\n`;
-        // Restore stdout capture in case of error
-        pyodide.setStdout({
-          write: (buf: Uint8Array) => {
-            stdoutBuffer += stdoutDecoder.decode(buf, { stream: true });
-            return buf.length;
-          }
-        });
+        stderrBuffer.value += `Session restore error: ${e}\n`;
+        pyodide.setStdout(createStdoutHandler(stdoutBuffer, stdoutDecoder));
       }
     }
 
-    // Mount files if provided
+    // Mount files
     if (options.files) {
-      for (const [path, content] of Object.entries(options.files)) {
-        const dir = path.substring(0, path.lastIndexOf("/"));
-        if (dir && dir !== "/") {
-          pyodide.FS.mkdirTree(dir);
-        }
-        pyodide.FS.writeFile(path, content);
-      }
-
-      // Invalidate Python import cache so new modules are recognized
-      await pyodide.runPythonAsync(`
-import importlib
-importlib.invalidate_caches()
-`);
+      await mountFiles(pyodide, options.files);
     }
 
-    // Pre-configure environment for common packages
-    // Set matplotlib backend to Agg for Deno/Node.js compatibility
-    // See: https://github.com/pyodide/matplotlib-pyodide/issues/36
-    try {
-      await pyodide.runPythonAsync(`
-import os
-import sys
+    await configureEnvironment(pyodide);
 
-# Set Agg backend for matplotlib (required for Deno/Node.js/non-browser contexts)
-if 'matplotlib' not in sys.modules:
-    os.environ['MPLBACKEND'] = 'Agg'
-`);
-    } catch (e) {
-      // Setup failed, continue anyway (matplotlib might not be used)
-    }
-
-    // Track file operations during execution using FS.trackingDelegate
-    const createdFiles = new Set<string>();
-    const modifiedFiles = new Set<string>();
-
-    // Install tracking delegate before execution
-    pyodide.FS.trackingDelegate = {
-      onOpenFile: (path: string, flags: number) => {
-        // flags & 0x200 (O_CREAT) means file is being created
-        if (flags & 0x200) {
-          createdFiles.add(path);
-        }
-      },
-      onWriteToFile: (path: string, bytesWritten: number) => {
-        if (bytesWritten > 0) {
-          modifiedFiles.add(path);
-        }
-      },
-    };
+    // Track file operations
+    const tracker = createFileTracker();
+    pyodide.FS.trackingDelegate = tracker.delegate;
 
     // Execute code
     try {
-      const execResult = await pyodide.runPythonAsync(options.code);
-      result.result = execResult;
+      result.result = await pyodide.runPythonAsync(options.code);
       result.success = true;
     } catch (e) {
-      stderrBuffer += `${e}\n`;
-      result.success = false;
+      stderrBuffer.value += `${e}\n`;
     }
 
-    // Remove tracking delegate
     pyodide.FS.trackingDelegate = {};
 
-    // Filter out micropip loading messages to keep output clean
-    result.stdout = filterMicropipMessages(stdoutBuffer);
-    result.stderr = stderrBuffer;
+    result.stdout = filterMicropipMessages(stdoutBuffer.value);
+    result.stderr = stderrBuffer.value;
 
-    // Save session state if stateful
+    // Save session if stateful and successful
     if (options.stateful && result.success) {
       try {
-        // Temporarily suppress stdout during cloudpickle installation to avoid polluting JSON output
-        pyodide.setStdout({ write: (buf: Uint8Array) => buf.length }); // Suppress micropip output
-
+        pyodide.setStdout(createSuppressedStdout());
         await pyodide.runPythonAsync(`
-# Install cloudpickle if needed for session serialization
 try:
     import cloudpickle
 except ImportError:
@@ -357,55 +298,22 @@ except ImportError:
     await micropip.install('cloudpickle')
     import cloudpickle
 `);
+        pyodide.setStdout(createStdoutHandler(stdoutBuffer, stdoutDecoder));
 
-        // Restore stdout capture (but don't append since we're done with user code)
-        pyodide.setStdout({
-          write: (buf: Uint8Array) => {
-            stdoutBuffer += stdoutDecoder.decode(buf, { stream: true });
-            return buf.length;
-          }
-        });
-
-        // Now serialize the session
-        const sessionBytesResult = await pyodide.runPythonAsync(`
-# Filter out unpicklable objects (file handles, built-in types, etc.)
-import types
-_globals_snapshot = dict(globals())  # Snapshot to avoid "changed size during iteration"
-_session_dict = {}
-for k, v in _globals_snapshot.items():
-    if k.startswith('_'):
-        continue
-    # Skip built-in types (classes like int, str, etc.)
-    if isinstance(v, type) and v.__module__ == 'builtins':
-        continue
-    # Skip file-like objects (closed file handles cause pickle errors)
-    if hasattr(v, 'read') or hasattr(v, 'write'):
-        continue
-    # cloudpickle can handle modules by reference, so include them
-    _session_dict[k] = v
-
-list(cloudpickle.dumps(_session_dict))
-`);
-        result.sessionBytes = sessionBytesResult.toJs();
+        result.sessionBytes = await saveSession(pyodide);
         result.sessionMetadata = {
           ...options.sessionMetadata,
           lastModified: new Date().toISOString(),
         };
       } catch (e) {
-        stderrBuffer += `Session save error: ${e}\n`;
-        result.stderr = stderrBuffer;
-        // Restore stdout capture in case of error
-        pyodide.setStdout({
-          write: (buf: Uint8Array) => {
-            stdoutBuffer += stdoutDecoder.decode(buf, { stream: true });
-            return buf.length;
-          }
-        });
+        stderrBuffer.value += `Session save error: ${e}\n`;
+        result.stderr = stderrBuffer.value;
+        pyodide.setStdout(createStdoutHandler(stdoutBuffer, stdoutDecoder));
       }
     }
 
-    // Collect all tracked files (created OR modified) with contents for VFS persistence
-    const allChangedPaths = new Set([...createdFiles, ...modifiedFiles]);
+    // Collect changed files
+    const allChangedPaths = new Set([...tracker.createdFiles, ...tracker.modifiedFiles]);
     result.files = collectFilesFromPaths(pyodide, Array.from(allChangedPaths));
 
     return result;
