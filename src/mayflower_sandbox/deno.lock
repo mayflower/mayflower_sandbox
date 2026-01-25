@@ -1,6 +1,7 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@std/assert@1": "1.0.17",
     "jsr:@std/cli@1.0.23": "1.0.23",
     "jsr:@std/cli@^1.0.23": "1.0.23",
     "jsr:@std/internal@^1.0.10": "1.0.12",
@@ -10,6 +11,12 @@
     "npm:pyodide@~0.28.3": "0.28.3"
   },
   "jsr": {
+    "@std/assert@1.0.17": {
+      "integrity": "df5ebfffe77c03b3fa1401e11c762cc8f603d51021c56c4d15a8c7ab45e90dbe",
+      "dependencies": [
+        "jsr:@std/internal@^1.0.12"
+      ]
+    },
     "@std/cli@1.0.23": {
       "integrity": "bf95b7a9425ba2af1ae5a6359daf58c508f2decf711a76ed2993cd352498ccca",
       "dependencies": [
