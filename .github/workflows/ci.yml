@@ -186,7 +186,10 @@ jobs:
       - name: Run TypeScript tests
         run: |
           deno test --allow-read --coverage=deno-coverage src/mayflower_sandbox/*_test.ts
-          deno coverage deno-coverage --lcov --output=deno-coverage.lcov
+          deno coverage deno-coverage --lcov > deno-coverage.lcov
+          # Show coverage summary
+          echo "TypeScript coverage:"
+          deno coverage deno-coverage
 
       - name: Set up database schema
         env:
