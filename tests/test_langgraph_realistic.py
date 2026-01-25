@@ -277,7 +277,7 @@ Then list all files in /tmp and tell me how many there are.""",
     ]:
         content = await vfs_read_file(db_pool, "realistic_test", filename)
         assert content is not None, f"File {filename} was not created"
-        assert expected_content in content.lower(), f"Expected '{expected_content}' in {filename}"
+        assert expected_content in content.lower(), f"Expected '{expected_content.decode()}' in {filename}"
 
 
 @pytest.mark.skipif(
