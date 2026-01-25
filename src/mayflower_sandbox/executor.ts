@@ -8,6 +8,12 @@
 import { loadPyodide } from "npm:pyodide@0.28.3";
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
 import { collectFilesFromPaths } from "./fs_utils.ts";
+import {
+  filterMicropipMessages,
+  createStdoutHandler,
+  createSuppressedStdout,
+  createFileTracker,
+} from "./worker_utils.ts";
 
 interface ExecutionOptions {
   code: string;
@@ -27,21 +33,8 @@ interface ExecutionResult {
   files?: Array<{ path: string; content: number[] }>;
 }
 
-/**
- * Filter out micropip package loading messages from stdout
- */
-function filterMicropipMessages(stdout: string): string {
-  const lines = stdout.split('\n');
-  const filtered = lines.filter(line => {
-    // Filter out micropip loading messages
-    if (line.startsWith('Loading ')) return false;
-    if (line.startsWith('Didn\'t find package ')) return false;
-    if (line.startsWith('Package ') && line.includes(' loaded from ')) return false;
-    if (line.startsWith('Loaded ')) return false;
-    return true;
-  });
-  return filtered.join('\n');
-}
+// Utility functions (filterMicropipMessages, createStdoutHandler, etc.)
+// are imported from worker_utils.ts
 
 /**
  * Read binary file data from stdin
@@ -93,28 +86,6 @@ async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
 
 // File operations (snapshotFiles, collectFiles, collectFilesFromPaths)
 // are now in fs_utils.ts to reduce duplication and cognitive complexity
-
-/**
- * Create stdout write handler
- */
-function createStdoutHandler(
-  buffer: { value: string },
-  decoder: TextDecoder,
-): { write: (buf: Uint8Array) => number } {
-  return {
-    write: (buf: Uint8Array) => {
-      buffer.value += decoder.decode(buf, { stream: true });
-      return buf.length;
-    },
-  };
-}
-
-/**
- * Create suppressed stdout handler (discards output)
- */
-function createSuppressedStdout(): { write: (buf: Uint8Array) => number } {
-  return { write: (buf: Uint8Array) => buf.length };
-}
 
 /**
  * Restore session state from bytes
@@ -202,31 +173,6 @@ if 'matplotlib' not in sys.modules:
   } catch {
     // matplotlib config failed - not critical, continue anyway
   }
-}
-
-/**
- * Create file tracking delegate
- */
-function createFileTracker(): {
-  delegate: { onOpenFile: (path: string, flags: number) => void; onWriteToFile: (path: string, bytesWritten: number) => void };
-  createdFiles: Set<string>;
-  modifiedFiles: Set<string>;
-} {
-  const createdFiles = new Set<string>();
-  const modifiedFiles = new Set<string>();
-
-  return {
-    delegate: {
-      onOpenFile: (path: string, flags: number) => {
-        if (flags & 0x200) createdFiles.add(path);
-      },
-      onWriteToFile: (path: string, bytesWritten: number) => {
-        if (bytesWritten > 0) modifiedFiles.add(path);
-      },
-    },
-    createdFiles,
-    modifiedFiles,
-  };
 }
 
 /**
