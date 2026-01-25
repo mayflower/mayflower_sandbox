@@ -186,10 +186,16 @@ jobs:
       - name: Run TypeScript tests
         run: |
           deno test --allow-read --coverage=deno-coverage src/mayflower_sandbox/*_test.ts
-          deno coverage deno-coverage --lcov > deno-coverage.lcov
+          deno coverage deno-coverage --lcov > deno-coverage-raw.lcov
+          # Convert absolute paths to relative paths for SonarQube
+          # Deno outputs: SF:/home/runner/_work/repo/repo/src/...
+          # SonarQube needs: SF:src/...
+          sed "s|SF:$PWD/|SF:|g" deno-coverage-raw.lcov > deno-coverage.lcov
           # Show coverage summary
           echo "TypeScript coverage:"
           deno coverage deno-coverage
+          echo "LCOV paths (first 5 SF lines):"
+          grep "^SF:" deno-coverage.lcov | head -5
 
       - name: Set up database schema
         env:
