@@ -5,77 +5,31 @@
  */
 
 import { assertEquals, assertExists } from "jsr:@std/assert@1";
+import {
+  errorToString,
+  filterMicropipMessages,
+  createStdoutHandler,
+  createSuppressedStdout,
+  createFileTracker,
+  findChangedFiles,
+} from "./worker_utils.ts";
 
-// Test filterMicropipMessages function
-// We need to test this function directly, so we'll create a local copy
-// since it's not exported from worker_server.ts
+// errorToString tests
+Deno.test("errorToString handles Error objects", () => {
+  const err = new Error("test error message");
+  assertEquals(errorToString(err), "test error message");
+});
 
-function filterMicropipMessages(stdout: string): string {
-  const lines = stdout.split("\n");
-  const filtered = lines.filter((line) => {
-    if (line.startsWith("Loading ")) return false;
-    if (line.startsWith("Didn't find package ")) return false;
-    if (line.startsWith("Package ") && line.includes(" loaded from ")) return false;
-    if (line.startsWith("Loaded ")) return false;
-    return true;
-  });
-  return filtered.join("\n");
-}
+Deno.test("errorToString handles string errors", () => {
+  assertEquals(errorToString("string error"), "string error");
+});
 
-// Test createStdoutHandler behavior
-function createStdoutHandler(
-  buffer: { value: string },
-  decoder: TextDecoder,
-): { write: (buf: Uint8Array) => number } {
-  return {
-    write: (buf: Uint8Array) => {
-      buffer.value += decoder.decode(buf, { stream: true });
-      return buf.length;
-    },
-  };
-}
-
-// Test createSuppressedStdout behavior
-function createSuppressedStdout(): { write: (buf: Uint8Array) => number } {
-  return { write: (buf: Uint8Array) => buf.length };
-}
-
-// Test createFileTracker behavior
-function createFileTracker(): {
-  delegate: { onOpenFile: (path: string, flags: number) => void; onWriteToFile: (path: string, bytesWritten: number) => void };
-  createdFiles: Set<string>;
-  modifiedFiles: Set<string>;
-} {
-  const createdFiles = new Set<string>();
-  const modifiedFiles = new Set<string>();
-  return {
-    delegate: {
-      onOpenFile: (path: string, flags: number) => {
-        if (flags & 0x200) createdFiles.add(path);
-      },
-      onWriteToFile: (path: string, bytesWritten: number) => {
-        if (bytesWritten > 0) modifiedFiles.add(path);
-      },
-    },
-    createdFiles,
-    modifiedFiles,
-  };
-}
-
-// Test findChangedFiles behavior
-function findChangedFiles(
-  beforeSnapshot: Map<string, number>,
-  afterSnapshot: Map<string, number>,
-): string[] {
-  const changed: string[] = [];
-  for (const [path, size] of afterSnapshot) {
-    const beforeSize = beforeSnapshot.get(path);
-    if (beforeSize === undefined || beforeSize !== size) {
-      changed.push(path);
-    }
-  }
-  return changed;
-}
+Deno.test("errorToString handles other types", () => {
+  assertEquals(errorToString(42), "42");
+  assertEquals(errorToString({ foo: "bar" }), "[object Object]");
+  assertEquals(errorToString(null), "null");
+  assertEquals(errorToString(undefined), "undefined");
+});
 
 // filterMicropipMessages tests
 Deno.test("filterMicropipMessages removes Loading messages", () => {
@@ -275,28 +229,4 @@ Deno.test("findChangedFiles handles empty snapshots", () => {
 
   const changed = findChangedFiles(before, after);
   assertEquals(changed.length, 0);
-});
-
-// ExecutionContext interface behavior test
-Deno.test("ExecutionContext structure is valid", () => {
-  interface ExecutionContext {
-    pyodide: any;
-    stdoutBuffer: { value: string };
-    stderrBuffer: { value: string };
-    stdoutDecoder: TextDecoder;
-  }
-
-  const ctx: ExecutionContext = {
-    pyodide: {},
-    stdoutBuffer: { value: "" },
-    stderrBuffer: { value: "" },
-    stdoutDecoder: new TextDecoder(),
-  };
-
-  assertExists(ctx.pyodide);
-  assertExists(ctx.stdoutBuffer);
-  assertExists(ctx.stderrBuffer);
-  assertExists(ctx.stdoutDecoder);
-  assertEquals(ctx.stdoutBuffer.value, "");
-  assertEquals(ctx.stderrBuffer.value, "");
 });
