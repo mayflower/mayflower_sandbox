@@ -192,33 +192,88 @@ def generate_models_module(
     return "\n".join(module_parts)
 
 
+_JSON_TO_PYTHON_TYPE = {
+    "string": "str",
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "null": "None",
+    "object": "dict[str, Any]",
+}
+
+
+def _get_union_type(json_types: list, items: dict | None) -> str:
+    """Convert JSON Schema union type to Python union."""
+    types = [_get_python_type(t, items) for t in json_types if t != "null"]
+    has_null = "null" in json_types
+
+    if not has_null:
+        return " | ".join(types)
+    if len(types) == 1:
+        return f"{types[0]} | None"
+    return f"({' | '.join(types)}) | None"
+
+
+def _get_array_type(items: dict | None) -> str:
+    """Convert JSON Schema array type to Python list type."""
+    if not items:
+        return "list[Any]"
+    item_type = _get_python_type(items.get("type", "Any"), items.get("items"))
+    return f"list[{item_type}]"
+
+
 def _get_python_type(json_type: str | list, items: dict | None = None) -> str:
     """Convert JSON Schema type to Python type annotation."""
-    type_map = {
-        "string": "str",
-        "integer": "int",
-        "number": "float",
-        "boolean": "bool",
-        "null": "None",
-        "object": "dict[str, Any]",
-    }
-
     if isinstance(json_type, list):
-        # Union type
-        types = [_get_python_type(t, items) for t in json_type if t != "null"]
-        if "null" in json_type:
-            if len(types) == 1:
-                return f"{types[0]} | None"
-            return f"({' | '.join(types)}) | None"
-        return " | ".join(types)
+        return _get_union_type(json_type, items)
 
     if json_type == "array":
-        if items:
-            item_type = _get_python_type(items.get("type", "Any"), items.get("items"))
-            return f"list[{item_type}]"
-        return "list[Any]"
+        return _get_array_type(items)
 
-    return type_map.get(json_type, "Any")
+    return _JSON_TO_PYTHON_TYPE.get(json_type, "Any")
+
+
+def _build_param_signature(prop_name: str, prop_schema: dict[str, Any], is_required: bool) -> str:
+    """Build a single parameter signature."""
+    prop_type = _get_python_type(
+        prop_schema.get("type", "Any"),
+        prop_schema.get("items"),
+    )
+    if is_required:
+        return f"{prop_name}: {prop_type}"
+    return f"{prop_name}: {prop_type} | None = None"
+
+
+def _build_function_params(
+    properties: dict[str, Any], required: set[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Build function parameters, docs, and kwargs assignment."""
+    params: list[str] = []
+    param_docs: list[str] = []
+    kwargs_assignment: list[str] = []
+
+    for prop_name, prop_schema in properties.items():
+        is_required = prop_name in required
+        params.append(_build_param_signature(prop_name, prop_schema, is_required))
+
+        prop_desc = prop_schema.get("description", "")
+        if prop_desc:
+            param_docs.append(f"        {prop_name}: {prop_desc}")
+
+        kwargs_assignment.append(f"{prop_name}={prop_name}")
+
+    return params, param_docs, kwargs_assignment
+
+
+def _build_docstring(description: str, param_docs: list[str]) -> str:
+    """Build function docstring."""
+    docstring_parts = [f'    """{description}']
+    if param_docs:
+        docstring_parts.append("")
+        docstring_parts.append("    Args:")
+        docstring_parts.extend(param_docs)
+    docstring_parts.append('    """')
+    return "\n".join(docstring_parts)
 
 
 def generate_typed_wrapper(
@@ -242,42 +297,11 @@ def generate_typed_wrapper(
     func_name = _to_snake_case(tool_name)
     class_name = f"{_to_pascal_case(tool_name)}Args"
 
-    # Parse schema properties
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
 
-    # Build function signature
-    params: list[str] = []
-    param_docs: list[str] = []
-    kwargs_assignment: list[str] = []
-
-    for prop_name, prop_schema in properties.items():
-        prop_type = _get_python_type(
-            prop_schema.get("type", "Any"),
-            prop_schema.get("items"),
-        )
-        prop_desc = prop_schema.get("description", "")
-
-        if prop_name in required:
-            params.append(f"{prop_name}: {prop_type}")
-        else:
-            params.append(f"{prop_name}: {prop_type} | None = None")
-
-        if prop_desc:
-            param_docs.append(f"        {prop_name}: {prop_desc}")
-
-        kwargs_assignment.append(f"{prop_name}={prop_name}")
-
-    # Build docstring
-    docstring_parts = [f'    """{description}']
-    if param_docs:
-        docstring_parts.append("")
-        docstring_parts.append("    Args:")
-        docstring_parts.extend(param_docs)
-    docstring_parts.append('    """')
-    docstring = "\n".join(docstring_parts)
-
-    # Build function
+    params, param_docs, kwargs_assignment = _build_function_params(properties, required)
+    docstring = _build_docstring(description, param_docs)
     params_str = ", ".join(params) if params else ""
 
     return f'''
