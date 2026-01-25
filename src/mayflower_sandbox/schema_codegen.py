@@ -83,50 +83,54 @@ def generate_model_for_tool(
         return None
 
 
-def generate_models_module(
-    tools: list[dict[str, Any]],
-) -> str:
+def _extract_class_from_model_code(model_code: str) -> tuple[str | None, set[str]]:
     """
-    Generate a complete models.py module with all tool schemas.
+    Extract class definition and imports from generated model code.
 
     Args:
-        tools: List of MCP tool definitions with 'name' and 'inputSchema'
+        model_code: Generated Python code for a Pydantic model
 
     Returns:
-        Complete Python module code string
+        Tuple of (class_definition, imports_needed)
     """
-    # Collect all generated models
-    models: list[str] = []
+    lines = model_code.split("\n")
+    class_lines: list[str] = []
     imports_needed: set[str] = set()
+    in_class = False
 
-    for tool in tools:
-        tool_name = tool.get("name", "")
-        input_schema = tool.get("inputSchema", {})
+    for line in lines:
+        if line.startswith("class "):
+            in_class = True
 
-        if not tool_name or not input_schema:
-            continue
+        if in_class:
+            class_lines.append(line)
+        elif line.startswith("from ") or line.startswith("import "):
+            imports_needed.add(line)
 
-        model_code = generate_model_for_tool(tool_name, input_schema)
-        if model_code:
-            # Extract just the class definition (skip imports)
-            lines = model_code.split("\n")
-            in_class = False
-            class_lines: list[str] = []
+    class_def = "\n".join(class_lines) if class_lines else None
+    return class_def, imports_needed
 
-            for line in lines:
-                if line.startswith("class "):
-                    in_class = True
-                if in_class:
-                    class_lines.append(line)
-                elif line.startswith("from ") or line.startswith("import "):
-                    # Track needed imports
-                    imports_needed.add(line)
 
-            if class_lines:
-                models.append("\n".join(class_lines))
+def _filter_extra_imports(imports_needed: set[str]) -> list[str]:
+    """
+    Filter imports to exclude ones already in module header.
 
-    # Build complete module
-    module_parts = [
+    Args:
+        imports_needed: Set of import statements
+
+    Returns:
+        List of extra imports not in standard header
+    """
+    extra_imports = []
+    for imp in sorted(imports_needed):
+        if "pydantic" not in imp and "typing" not in imp and "__future__" not in imp:
+            extra_imports.append(imp)
+    return extra_imports
+
+
+def _build_module_header() -> list[str]:
+    """Build standard module header."""
+    return [
         '"""',
         "Auto-generated Pydantic models from MCP tool schemas.",
         "",
@@ -141,13 +145,45 @@ def generate_models_module(
         "",
     ]
 
-    # Add any extra imports from generated code
-    for imp in sorted(imports_needed):
-        # Skip imports we already have in the header
-        if "pydantic" not in imp and "typing" not in imp and "__future__" not in imp:
-            module_parts.append(imp)
 
-    if imports_needed:
+def generate_models_module(
+    tools: list[dict[str, Any]],
+) -> str:
+    """
+    Generate a complete models.py module with all tool schemas.
+
+    Args:
+        tools: List of MCP tool definitions with 'name' and 'inputSchema'
+
+    Returns:
+        Complete Python module code string
+    """
+    models: list[str] = []
+    all_imports: set[str] = set()
+
+    for tool in tools:
+        tool_name = tool.get("name", "")
+        input_schema = tool.get("inputSchema", {})
+
+        if not tool_name or not input_schema:
+            continue
+
+        model_code = generate_model_for_tool(tool_name, input_schema)
+        if not model_code:
+            continue
+
+        class_def, imports = _extract_class_from_model_code(model_code)
+        if class_def:
+            models.append(class_def)
+        all_imports.update(imports)
+
+    # Build complete module
+    module_parts = _build_module_header()
+
+    # Add extra imports
+    extra_imports = _filter_extra_imports(all_imports)
+    if extra_imports:
+        module_parts.extend(extra_imports)
         module_parts.append("")
 
     # Add all model classes
