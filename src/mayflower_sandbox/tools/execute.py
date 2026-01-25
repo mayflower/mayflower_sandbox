@@ -31,30 +31,14 @@ def get_error_history(thread_id: str) -> list[dict]:
     return _error_history.get(thread_id, [])
 
 
-async def analyze_error_with_llm(
-    current_code: str,
-    current_error: str,
-    previous_analysis: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """
-    Use LLM to analyze current error, building on previous analysis.
+def _build_previous_context(previous_analysis: dict[str, str] | None) -> str:
+    """Build context string from previous analysis."""
+    if not previous_analysis:
+        return ""
+    if not previous_analysis.get("explanation") and not previous_analysis.get("recommendation"):
+        return ""
 
-    Returns dict with 'explanation' and 'recommendation' keys.
-    """
-    try:
-        if not os.getenv("OPENAI_API_KEY"):
-            return {}
-
-        from langchain_openai import ChatOpenAI
-
-        llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
-
-        # Build context from previous analysis
-        previous_context = ""
-        if previous_analysis and (
-            previous_analysis.get("explanation") or previous_analysis.get("recommendation")
-        ):
-            previous_context = f"""
+    return f"""
 Previous error analysis:
 - Explanation: {previous_analysis.get("explanation", "N/A")}
 - Recommendation: {previous_analysis.get("recommendation", "N/A")}
@@ -65,16 +49,19 @@ The user tried again and got another error. Analyze if this is:
 3. A new issue → provide fresh guidance
 """
 
-        analysis_prompt = f"""Analyze this Python execution error in Pyodide (WebAssembly Python).
+
+def _build_analysis_prompt(code: str, error: str, previous_context: str) -> str:
+    """Build the LLM analysis prompt."""
+    return f"""Analyze this Python execution error in Pyodide (WebAssembly Python).
 {previous_context}
 Current code:
 ```python
-{current_code}
+{code}
 ```
 
 Error:
 ```
-{current_error}
+{error}
 ```
 
 CONTEXT:
@@ -113,21 +100,45 @@ Format:
 EXPLANATION: [explanation]
 RECOMMENDATION: [recommendation]"""
 
+
+def _parse_llm_response(response_text: str) -> dict[str, str]:
+    """Parse explanation and recommendation from LLM response."""
+    explanation = ""
+    recommendation = ""
+
+    if _EXPLANATION_MARKER in response_text:
+        explanation = (
+            response_text.split(_EXPLANATION_MARKER)[1].split(_RECOMMENDATION_MARKER)[0].strip()
+        )
+    if _RECOMMENDATION_MARKER in response_text:
+        recommendation = response_text.split(_RECOMMENDATION_MARKER)[1].strip()
+
+    return {"explanation": explanation, "recommendation": recommendation}
+
+
+async def analyze_error_with_llm(
+    current_code: str,
+    current_error: str,
+    previous_analysis: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """
+    Use LLM to analyze current error, building on previous analysis.
+
+    Returns dict with 'explanation' and 'recommendation' keys.
+    """
+    if not os.getenv("OPENAI_API_KEY"):
+        return {}
+
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+
+        previous_context = _build_previous_context(previous_analysis)
+        analysis_prompt = _build_analysis_prompt(current_code, current_error, previous_context)
+
         response = await llm.ainvoke(analysis_prompt)
-        response_text = str(response.content)
-
-        # Parse
-        explanation = ""
-        recommendation = ""
-
-        if _EXPLANATION_MARKER in response_text:
-            explanation = (
-                response_text.split(_EXPLANATION_MARKER)[1].split(_RECOMMENDATION_MARKER)[0].strip()
-            )
-        if _RECOMMENDATION_MARKER in response_text:
-            recommendation = response_text.split(_RECOMMENDATION_MARKER)[1].strip()
-
-        return {"explanation": explanation, "recommendation": recommendation}
+        return _parse_llm_response(str(response.content))
 
     except Exception as e:
         logger.warning(f"Failed to analyze error with LLM: {e}")
