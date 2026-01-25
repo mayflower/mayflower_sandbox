@@ -199,7 +199,7 @@ import sys
 if 'matplotlib' not in sys.modules:
     os.environ['MPLBACKEND'] = 'Agg'
 `);
-  } catch (_e: unknown) {
+  } catch {
     // matplotlib config failed - not critical, continue anyway
   }
 }
