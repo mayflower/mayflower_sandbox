@@ -190,12 +190,20 @@ jobs:
           # Convert absolute paths to relative paths for SonarQube
           # Deno outputs: SF:/home/runner/_work/repo/repo/src/...
           # SonarQube needs: SF:src/...
+          echo "PWD is: $PWD"
           sed "s|SF:$PWD/|SF:|g" deno-coverage-raw.lcov > deno-coverage.lcov
           # Show coverage summary
-          echo "TypeScript coverage:"
+          echo "=== TypeScript coverage ==="
           deno coverage deno-coverage
-          echo "LCOV paths (first 5 SF lines):"
-          grep "^SF:" deno-coverage.lcov | head -5
+          echo ""
+          echo "=== Raw LCOV SF paths ==="
+          grep "^SF:" deno-coverage-raw.lcov
+          echo ""
+          echo "=== Converted LCOV SF paths ==="
+          grep "^SF:" deno-coverage.lcov
+          echo ""
+          echo "=== LCOV file size ==="
+          wc -l deno-coverage.lcov
 
       - name: Set up database schema
         env:
@@ -280,6 +288,18 @@ jobs:
           name: eslint-results
           path: .
         continue-on-error: true
+
+      # Debug: Verify coverage files
+      - name: Debug coverage files
+        run: |
+          echo "=== Files in current directory ==="
+          ls -la *.lcov *.xml 2>/dev/null || echo "No coverage files found"
+          echo ""
+          echo "=== LCOV file content (first 30 lines) ==="
+          head -30 deno-coverage.lcov 2>/dev/null || echo "deno-coverage.lcov not found"
+          echo ""
+          echo "=== SF paths in LCOV file ==="
+          grep "^SF:" deno-coverage.lcov 2>/dev/null || echo "No SF entries found"
 
       # Build dynamic SARIF paths (only include files that exist)
       - name: Prepare SARIF paths
