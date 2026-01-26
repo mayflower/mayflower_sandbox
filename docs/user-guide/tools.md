@@ -1,17 +1,26 @@
 # Tools Reference
 
-Mayflower Sandbox provides 8 LangChain tools that extend `BaseTool` for use with LangGraph agents.
+Mayflower Sandbox provides 12 LangChain tools that extend `BaseTool` for use with LangGraph agents.
 
 ## Creating Tools
 
 ```python
 from mayflower_sandbox.tools import create_sandbox_tools
 
-# Create all 8 tools for a specific thread
+# Create all tools for a specific thread
 tools = create_sandbox_tools(
     db_pool=db_pool,
-    thread_id="user_123",
-    allow_net=True  # Enable network access for Python execution
+    thread_id="user_123"
+)
+
+# Create context-aware tools (recommended for LangGraph)
+tools = create_sandbox_tools(db_pool=db_pool, thread_id=None)
+
+# Create only specific tools
+tools = create_sandbox_tools(
+    db_pool=db_pool,
+    thread_id=None,
+    include_tools=["python_run", "file_read", "file_write"]
 )
 
 # Use with LangGraph
@@ -320,6 +329,115 @@ Search results formatted according to output_mode:
 - `def \w+\(` - Find function definitions
 - `^import ` - Find lines starting with "import"
 - `error|warning` - Find either "error" or "warning"
+
+## RunPythonFileTool
+
+Execute existing Python files from the virtual filesystem.
+
+### Usage
+
+```python
+from mayflower_sandbox.tools import RunPythonFileTool
+
+tool = RunPythonFileTool(db_pool=pool, thread_id="user_1")
+result = await tool._arun(file_path="/tmp/script.py")
+```
+
+### Parameters
+- `file_path` (str, required): Path to the Python file in VFS
+
+### Returns
+String containing execution output (stdout).
+
+### Best For
+- Re-running previously created scripts
+- Organized multi-file projects
+- Scripts stored permanently in VFS
+
+## ExecuteCodeTool (python_run_prepared)
+
+Execute code from graph state using state-based extraction. This solves LangGraph/AG-UI tool parameter serialization issues for large code blocks.
+
+### Usage
+
+```python
+from mayflower_sandbox.tools import ExecuteCodeTool
+
+tool = ExecuteCodeTool(db_pool=pool, thread_id="user_1")
+result = await tool._arun(
+    file_path="/tmp/viz.py",
+    description="Create subplot visualization"
+)
+```
+
+### Parameters
+- `file_path` (str, required): Where to save the code in VFS
+- `description` (str, required): Description of what the code does
+
+### How It Works
+1. LLM generates Python code (stored in graph state's `pending_code` field)
+2. LLM calls `python_run_prepared` with file_path and description
+3. Tool extracts code from state, saves to VFS, and executes
+4. Code is cleared from state after successful execution
+
+### Best For
+- Complex visualizations with subplots
+- Large code blocks (20+ lines)
+- Multi-step data analysis pipelines
+- Code too large for tool parameter serialization
+
+## SkillInstallTool
+
+Install Claude Skills into the sandbox's virtual filesystem.
+
+### Usage
+
+```python
+from mayflower_sandbox.tools import SkillInstallTool
+
+tool = SkillInstallTool(db_pool=pool, thread_id="user_1")
+result = await tool._arun(source="github:anthropics/skills/algorithmic-art")
+```
+
+### Parameters
+- `source` (str, required): Skill source (e.g., `github:anthropics/skills/algorithmic-art`)
+
+### How It Works
+- Downloads `SKILL.md`, parses YAML front matter
+- Writes package under `/site-packages/skills/<skill>/`
+- Generated modules importable as `from skills.<skill_name> import instructions`
+- Metadata persisted to `sandbox_skills` table
+
+## MCPBindHttpTool
+
+Bind Streamable HTTP MCP servers to make their tools available in the sandbox.
+
+### Usage
+
+```python
+from mayflower_sandbox.tools import MCPBindHttpTool
+
+tool = MCPBindHttpTool(db_pool=pool, thread_id="user_1")
+result = await tool._arun(
+    name="my_server",
+    url="http://localhost:8000/mcp",
+    headers={"Authorization": "Bearer token"}
+)
+```
+
+### Parameters
+- `name` (str, required): Server name for imports
+- `url` (str, required): Streamable HTTP MCP endpoint URL
+- `headers` (dict, optional): HTTP headers (e.g., auth tokens)
+
+### How It Works
+- Caches connection metadata in `sandbox_mcp_servers`
+- Generates wrappers in `/site-packages/servers/<name>/`
+- Tools available via `from servers.<name> import tools`
+- Calls routed back to host via `mayflower_mcp.call`
+
+### Security
+Set `MAYFLOWER_MCP_ALLOWLIST` (comma-separated names or host suffixes) to restrict which servers can be bound.
 
 ## Thread Isolation
 

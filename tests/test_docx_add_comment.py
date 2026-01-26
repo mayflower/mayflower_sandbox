@@ -19,6 +19,9 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from mayflower_sandbox.tools import create_sandbox_tools
 
+# Mark all tests in this module as slow (LLM-based)
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 async def db_pool():

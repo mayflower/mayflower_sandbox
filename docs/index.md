@@ -88,7 +88,7 @@ result = await agent.ainvoke({
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 10 Tools
+## The 12 Tools
 
 ### Code Execution Tools
 
@@ -109,6 +109,13 @@ result = await agent.ainvoke({
 | **FileDeleteTool** | `file_delete` | Delete files (HITL required) |
 | **FileGlobTool** | `file_glob` | Find files with glob patterns |
 | **FileGrepTool** | `file_grep` | Search file contents with regex |
+
+### Skills & MCP Tools
+
+| Tool | Name | Description |
+|------|------|-------------|
+| **SkillInstallTool** | `skill_install` | Install Claude Skills into sandbox |
+| **MCPBindHttpTool** | `mcp_bind_http` | Bind Streamable HTTP MCP servers |
 
 ## Document Processing Helpers
 

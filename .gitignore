@@ -37,6 +37,16 @@ env/
 .coverage
 htmlcov/
 *.cover
+junit.xml
+coverage.xml
+deno-coverage/
+deno-coverage.lcov
+
+# Static analysis (SARIF output for SonarQube)
+ruff-results.sarif
+mypy-results.sarif
+bandit-results.json
+eslint-results.json
 
 # Type checking and linting
 .mypy_cache/
@@ -58,7 +68,7 @@ yarn-error.log*
 Thumbs.db
 
 # Claude Code
-.claude/
+.claude/settings.local.json
 CLAUDE.md
 
 # Temporary files

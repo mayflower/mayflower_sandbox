@@ -57,27 +57,34 @@ class SandboxTool(BaseTool):
         3. From instance thread_id (if set)
         4. Default fallback: "default"
         """
-        # Try to get from LangGraph config via callback manager
-        if run_manager and hasattr(run_manager, "metadata"):
-            metadata = run_manager.metadata or {}
-            if "configurable" in metadata:
-                thread_id = metadata["configurable"].get("thread_id")
-                if thread_id:
-                    return thread_id
+        return (
+            self._get_thread_id_from_metadata(run_manager)
+            or self._get_thread_id_from_tags(run_manager)
+            or self.thread_id
+            or "default"
+        )
 
-        # Try to get from tags (alternative location)
-        if run_manager and hasattr(run_manager, "tags"):
-            tags = run_manager.tags or []
-            for tag in tags:
-                if isinstance(tag, str) and tag.startswith("thread_id:"):
-                    return tag.split(":", 1)[1]
+    def _get_thread_id_from_metadata(
+        self,
+        run_manager: AsyncCallbackManagerForToolRun | None,
+    ) -> str | None:
+        """Extract thread_id from callback manager metadata."""
+        if not run_manager or not hasattr(run_manager, "metadata"):
+            return None
+        metadata = run_manager.metadata or {}
+        return metadata.get("configurable", {}).get("thread_id")
 
-        # Fallback to instance thread_id
-        if self.thread_id:
-            return self.thread_id
-
-        # Last resort default
-        return "default"
+    def _get_thread_id_from_tags(
+        self,
+        run_manager: AsyncCallbackManagerForToolRun | None,
+    ) -> str | None:
+        """Extract thread_id from callback manager tags."""
+        if not run_manager or not hasattr(run_manager, "tags"):
+            return None
+        for tag in run_manager.tags or []:
+            if isinstance(tag, str) and tag.startswith("thread_id:"):
+                return tag.split(":", 1)[1]
+        return None
 
     async def _arun(
         self,

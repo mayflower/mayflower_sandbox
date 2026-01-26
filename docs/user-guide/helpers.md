@@ -11,27 +11,24 @@ The Mayflower Sandbox supports a flexible helper module system that allows you t
 ```
 src/mayflower_sandbox/helpers/
 ├── __init__.py              # Package initialization
+├── _install.py              # micropip installation helpers
 ├── manifest.json            # Helper metadata and documentation
 ├── document/
 │   ├── __init__.py
 │   ├── docx_ooxml.py       # Pure OOXML manipulation for Word
-│   ├── docx_conversions.py # Format conversions (docx to markdown, etc.)
 │   ├── pdf_manipulation.py # PDF operations (merge, split, extract)
-│   └── excel_formulas.py   # Advanced Excel operations
+│   ├── pdf_creation.py     # PDF creation utilities
+│   ├── pptx_ooxml.py       # Pure OOXML manipulation for PowerPoint
+│   └── xlsx_helpers.py     # Excel operations with openpyxl
 ├── data/
-│   ├── __init__.py
-│   ├── csv_processing.py   # CSV analysis and transformation
-│   ├── json_utils.py        # JSON manipulation utilities
-│   └── xml_parsing.py       # XML/OOXML parsing helpers
+│   └── __init__.py         # Placeholder for future data helpers
 ├── web/
-│   ├── __init__.py
-│   ├── html_parsing.py      # HTML parsing and extraction
-│   └── markdown_utils.py    # Markdown processing
+│   └── __init__.py         # Placeholder for future web helpers
 └── utils/
-    ├── __init__.py
-    ├── file_helpers.py      # General file operations
-    └── text_processing.py   # Text manipulation utilities
+    └── __init__.py         # Placeholder for future utilities
 ```
+
+**Note:** Currently only the `document/` helpers are fully implemented. The `data/`, `web/`, and `utils/` directories are placeholders for future expansion.
 
 ### How It Works
 
@@ -509,19 +506,12 @@ description: str = """Execute Python code in a secure Pyodide sandbox.
 AVAILABLE HELPER MODULES (pre-loaded):
 
 Document Processing:
-  from document.docx_ooxml import docx_add_comment, unzip_docx_like
-  from document.docx_conversions import docx_to_markdown
-  from document.pdf_manipulation import merge_pdfs, split_pdf
+  from document.docx_ooxml import docx_add_comment, docx_extract_text
+  from document.pptx_ooxml import pptx_extract_text, pptx_replace_text
+  from document.xlsx_helpers import xlsx_read_cells, xlsx_to_dict
+  from document.pdf_manipulation import pdf_merge, pdf_split
 
-Data Processing:
-  from data.csv_processing import analyze_csv
-  from data.json_utils import deep_merge
-
-Web Utilities:
-  from web.html_parsing import extract_links
-  from web.markdown_utils import markdown_to_html
-
-See HELPERS.md for complete documentation.
+See docs/user-guide/helpers.md for complete documentation.
 """
 ```
 

@@ -402,6 +402,6 @@ print(f"Total words across all documents: {total_words}")
 ## Related Documentation
 
 - [Quick Start](../getting-started/quickstart.md) - Get started quickly
-- [Tools Reference](tools.md) - The 10 LangChain tools
+- [Tools Reference](tools.md) - The 12 LangChain tools
 - [Helpers Reference](helpers.md) - Document processing helpers
 - [Advanced Features](../advanced/stateful-execution.md) - More advanced use cases

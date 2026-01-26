@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.10+
 - PostgreSQL 14+
 - Deno (for Pyodide execution)
 
@@ -78,5 +78,5 @@ pytest tests/test_executor.py -v
 ## Next Steps
 
 - [Quick Start Guide](quickstart.md) - Get started with basic usage
-- [Tools Reference](../user-guide/tools.md) - Learn about the 10 LangChain tools
+- [Tools Reference](../user-guide/tools.md) - Learn about the 12 LangChain tools
 - [Helpers Reference](../user-guide/helpers.md) - Document processing helpers
