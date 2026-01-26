@@ -330,6 +330,18 @@ jobs:
           echo "eslint=$ESLINT_PATH" >> $GITHUB_OUTPUT
           echo "Bandit: $BANDIT_PATH, ESLint: $ESLINT_PATH"
 
+      # Debug: Show indexed files for TypeScript
+      - name: Debug TypeScript file paths
+        run: |
+          echo "=== LCOV SF paths ==="
+          grep "^SF:" deno-coverage.lcov || echo "No SF entries"
+          echo ""
+          echo "=== TypeScript files in src/ ==="
+          find src -name "*.ts" -type f | sort
+          echo ""
+          echo "=== Checking tsconfig.json ==="
+          cat tsconfig.json
+
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
@@ -341,3 +353,4 @@ jobs:
             -Dsonar.sarifReportPaths=${{ steps.sarif.outputs.paths }}
             -Dsonar.python.bandit.reportPaths=${{ steps.external.outputs.bandit }}
             -Dsonar.eslint.reportPaths=${{ steps.external.outputs.eslint }}
+            -Dsonar.verbose=true
