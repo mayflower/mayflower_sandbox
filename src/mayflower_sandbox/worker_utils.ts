@@ -9,9 +9,9 @@
 export function errorToString(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "string") return e;
-  if (typeof e === "number") return String(e);
-  if (typeof e === "boolean") return String(e);
-  if (typeof e === "bigint") return String(e);
+  if (typeof e === "number") return e.toString();
+  if (typeof e === "boolean") return e.toString();
+  if (typeof e === "bigint") return e.toString();
   if (e === null) return "null";
   if (e === undefined) return "undefined";
   // For objects and anything else, use JSON.stringify
