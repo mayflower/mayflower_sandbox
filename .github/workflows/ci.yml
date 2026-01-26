@@ -192,6 +192,43 @@ jobs:
           # SonarQube expects paths relative to project root: SF:src/mayflower_sandbox/...
           echo "PWD is: $PWD"
           sed "s|SF:$PWD/|SF:|g" deno-coverage-raw.lcov > deno-coverage.lcov
+
+          # Also convert LCOV to SonarQube generic coverage format (XML)
+          # This provides a fallback in case LCOV parsing has issues
+          python3 << 'LCOV_TO_XML'
+          import re
+
+          coverage_data = {}
+          current_file = None
+
+          with open('deno-coverage.lcov') as f:
+              for line in f:
+                  line = line.strip()
+                  if line.startswith('SF:'):
+                      current_file = line[3:]
+                      coverage_data[current_file] = {}
+                  elif line.startswith('DA:') and current_file:
+                      parts = line[3:].split(',')
+                      line_num = int(parts[0])
+                      hit_count = int(parts[1])
+                      coverage_data[current_file][line_num] = hit_count > 0
+
+          # Generate XML
+          xml = ['<coverage version="1">']
+          for filepath, lines in coverage_data.items():
+              xml.append(f'  <file path="{filepath}">')
+              for line_num in sorted(lines.keys()):
+                  covered = "true" if lines[line_num] else "false"
+                  xml.append(f'    <lineToCover lineNumber="{line_num}" covered="{covered}"/>')
+              xml.append('  </file>')
+          xml.append('</coverage>')
+
+          with open('deno-coverage.xml', 'w') as f:
+              f.write('\n'.join(xml))
+
+          print(f"Converted {len(coverage_data)} files to generic coverage XML")
+          LCOV_TO_XML
+
           # Show coverage summary
           echo "=== TypeScript coverage ==="
           deno coverage deno-coverage
@@ -202,8 +239,8 @@ jobs:
           echo "=== Converted LCOV SF paths (relative to project root) ==="
           grep "^SF:" deno-coverage.lcov
           echo ""
-          echo "=== LCOV file size ==="
-          wc -l deno-coverage.lcov
+          echo "=== Generic coverage XML (first 20 lines) ==="
+          head -20 deno-coverage.xml
 
       - name: Set up database schema
         env:
@@ -238,6 +275,7 @@ jobs:
             junit.xml
             coverage.xml
             deno-coverage.lcov
+            deno-coverage.xml
           retention-days: 7
 
   # ============================================
@@ -353,4 +391,5 @@ jobs:
             -Dsonar.sarifReportPaths=${{ steps.sarif.outputs.paths }}
             -Dsonar.python.bandit.reportPaths=${{ steps.external.outputs.bandit }}
             -Dsonar.eslint.reportPaths=${{ steps.external.outputs.eslint }}
+            -Dsonar.coverageReportPaths=deno-coverage.xml
             -Dsonar.verbose=true
