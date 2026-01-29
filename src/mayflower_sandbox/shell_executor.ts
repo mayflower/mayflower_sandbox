@@ -222,7 +222,13 @@ async function resolveBusyboxDir(explicitDir?: string): Promise<string> {
   );
 }
 
-async function loadBusyboxModule(dir: string): Promise<BusyboxModule> {
+interface OutputCapture {
+  stdout: string[];
+  stderr: string[];
+  exitCode: number;
+}
+
+async function loadBusyboxModule(dir: string, capture: OutputCapture): Promise<BusyboxModule> {
   const moduleUrl = toFileUrl(join(dir, "busybox.js"));
   const wasmPath = join(dir, "busybox.wasm");
   const mod = await import(moduleUrl.href);
@@ -234,6 +240,9 @@ async function loadBusyboxModule(dir: string): Promise<BusyboxModule> {
   const module = await factory({
     noInitialRun: true,
     noExitRuntime: true,
+    // Pass print/printErr during initialization for proper Emscripten binding
+    print: (text: string) => capture.stdout.push(text),
+    printErr: (text: string) => capture.stderr.push(text),
     locateFile(path: string) {
       if (path.endsWith(".wasm")) {
         return wasmPath;
@@ -254,19 +263,13 @@ async function loadBusyboxModule(dir: string): Promise<BusyboxModule> {
   return module;
 }
 
-function runCommand(module: BusyboxModule, command: string): { stdout: string; stderr: string; exit_code: number } {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  let exitCode = 0;
-
-  module.print = (text: string) => stdout.push(text);
-  module.printErr = (text: string) => stderr.push(text);
+function runCommand(module: BusyboxModule, command: string, capture: OutputCapture): { stdout: string; stderr: string; exit_code: number } {
   module.stdin = () => null;
   module.thisProgram = "busybox";
 
   const originalQuit = module.quit;
   module.quit = (status: number, toThrow?: unknown) => {
-    exitCode = status;
+    capture.exitCode = status;
     if (toThrow) {
       throw toThrow;
     }
@@ -286,9 +289,9 @@ function runCommand(module: BusyboxModule, command: string): { stdout: string; s
   }
 
   return {
-    stdout: stdout.join("\n"),
-    stderr: stderr.join("\n"),
-    exit_code: exitCode,
+    stdout: capture.stdout.join("\n"),
+    stderr: capture.stderr.join("\n"),
+    exit_code: capture.exitCode,
   };
 }
 
@@ -297,7 +300,9 @@ async function executeShell(options: ShellExecutionOptions): Promise<ShellExecut
 
   try {
     const busyboxDir = await resolveBusyboxDir(options.busyboxDir);
-    const module = await loadBusyboxModule(busyboxDir);
+    // Create capture object before module initialization so callbacks can be bound
+    const capture: OutputCapture = { stdout: [], stderr: [], exitCode: 0 };
+    const module = await loadBusyboxModule(busyboxDir, capture);
     const fs = module.FS;
 
     ensureBaseDirs(fs);
@@ -306,7 +311,7 @@ async function executeShell(options: ShellExecutionOptions): Promise<ShellExecut
     }
 
     const before = snapshotFs(fs, "/");
-    const { stdout, stderr, exit_code } = runCommand(module, options.command);
+    const { stdout, stderr, exit_code } = runCommand(module, options.command, capture);
     const after = snapshotFs(fs, "/");
 
     const changedPaths = findChangedFiles(before, after);
