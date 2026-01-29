@@ -39,6 +39,7 @@ class ExecutionResult:
     created_files: list[str] | None = None
     session_bytes: bytes | None = None
     session_metadata: dict | None = None
+    exit_code: int | None = None
 
 
 class SandboxExecutor:
@@ -162,6 +163,13 @@ class SandboxExecutor:
             raise RuntimeError(f"Executor not found at {executor}")
         return executor
 
+    def _get_shell_executor_path(self) -> Path:
+        """Get path to shell executor."""
+        executor = Path(__file__).parent / "shell_executor.ts"
+        if not executor.exists():
+            raise RuntimeError(f"Shell executor not found at {executor}")
+        return executor
+
     def _check_deno(self):
         """Verify Deno is installed."""
         try:
@@ -227,6 +235,22 @@ class SandboxExecutor:
         if session_metadata:
             cmd.extend(["-m", json.dumps(session_metadata)])
 
+        return cmd
+
+    def _build_shell_command(self, command: str) -> list[str]:
+        """Build Deno command for shell execution."""
+        cmd: list[str] = [
+            "deno",
+            "run",
+            "--allow-read",
+            "--allow-write",
+            str(self._get_shell_executor_path()),
+            "--command",
+            command,
+        ]
+        busybox_dir = os.environ.get("MAYFLOWER_BUSYBOX_DIR")
+        if busybox_dir:
+            cmd.extend(["--busybox-dir", busybox_dir])
         return cmd
 
     def _prepare_stdin(self, files: dict[str, bytes]) -> bytes | None:
@@ -662,3 +686,75 @@ class SandboxExecutor:
             ExecutionResult with output and created files
         """
         return await self._execute_with_pool(code, session_bytes, session_metadata)
+
+    async def execute_shell(self, command: str) -> ExecutionResult:
+        """Execute shell command using busybox-wasm stub with VFS integration."""
+        import time
+
+        start_time = time.time()
+        cmd = self._build_shell_command(command)
+
+        # Track existing VFS files for fallback detection
+        before_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
+
+        files_dict = await self.vfs.get_all_files_for_pyodide()
+        stdin_payload = self._prepare_stdin(files_dict)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await proc.communicate(stdin_payload)
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Shell execution error: {e}",
+                execution_time=time.time() - start_time,
+                exit_code=1,
+            )
+
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+        if not stdout_text:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=stderr_text or "Shell execution produced no output",
+                execution_time=time.time() - start_time,
+                exit_code=1,
+            )
+
+        try:
+            result = json.loads(stdout_text.splitlines()[-1])
+        except json.JSONDecodeError as e:
+            return ExecutionResult(
+                success=False,
+                stdout=stdout_text,
+                stderr=f"Shell executor JSON parse error: {e}\n{stderr_text}",
+                execution_time=time.time() - start_time,
+                exit_code=1,
+            )
+
+        created_files = await self._save_created_files(result)
+        created_files = await self._detect_vfs_fallback_files(
+            before_vfs_files, result, created_files
+        )
+
+        success = bool(result.get("success", False))
+        exit_code = result.get("exit_code")
+        if exit_code is None:
+            exit_code = 0 if success else 1
+
+        return ExecutionResult(
+            success=success,
+            stdout=result.get("stdout", ""),
+            stderr=result.get("stderr", ""),
+            execution_time=time.time() - start_time,
+            created_files=created_files if created_files else None,
+            exit_code=exit_code,
+        )

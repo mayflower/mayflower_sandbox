@@ -39,9 +39,12 @@ examples = [
     "langgraph>=1.0.7",
     "langchain-anthropic>=1.3.1",
 ]
+deepagents = [
+    "deepagents>=0.1.0",
+]
 
 [tool.setuptools.package-data]
-mayflower_sandbox = ["*.ts", "*.js", "helpers/**/*.py"]
+mayflower_sandbox = ["*.ts", "*.js", "*.wasm", "busybox/*", "helpers/**/*.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
