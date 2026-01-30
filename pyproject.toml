@@ -7,7 +7,7 @@ name = "mayflower-sandbox"
 version = "0.2.0"
 description = "Python sandbox with persistent virtual filesystem for LangGraph agents"
 authors = [{name = "Mayflower Team", email = "dev@mayflower.ai"}]
-requires-python = ">=3.10"
+requires-python = ">=3.11,<4.0"
 dependencies = [
     "asyncpg>=0.31.0",
     "datamodel-code-generator>=0.53.0", # JSON Schema → Pydantic

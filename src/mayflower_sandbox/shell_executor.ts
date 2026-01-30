@@ -39,6 +39,188 @@ type BusyboxModuleFactory = (options: Record<string, unknown>) => Promise<Busybo
 
 const IGNORE_PREFIXES = ["/dev", "/proc", "/sys"];
 
+// Shell command parsing types
+interface ParsedCommand {
+  argv: string[];
+  redirectOut?: string;  // > file
+  redirectAppend?: string;  // >> file
+  redirectIn?: string;  // < file
+}
+
+interface ParsedShell {
+  commands: Array<ParsedCommand & { type: "always" | "stop_on_error" | "stop_on_success" }>;
+}
+
+// Simple shell command parser - handles basic cases without full shell complexity
+function parseShellCommand(command: string): ParsedShell {
+  const result: ParsedShell = { commands: [] };
+
+  // Split on && and ; (basic splitting, doesn't handle quotes perfectly)
+  const parts = command.split(/\s*(&&|;)\s*/);
+
+  let i = 0;
+  while (i < parts.length) {
+    const cmdStr = parts[i].trim();
+    if (!cmdStr || cmdStr === "&&" || cmdStr === ";") {
+      i++;
+      continue;
+    }
+
+    const type = (i > 0 && parts[i - 1] === "&&") ? "stop_on_error" : "always";
+    const parsed = parseSingleCommand(cmdStr);
+    result.commands.push({ ...parsed, type });
+    i++;
+  }
+
+  return result;
+}
+
+function parseSingleCommand(cmdStr: string): ParsedCommand {
+  const result: ParsedCommand = { argv: [] };
+
+  // Handle output redirection
+  let remaining = cmdStr;
+
+  // >> append redirection
+  const appendMatch = remaining.match(/\s*>>\s*(\S+)\s*$/);
+  if (appendMatch) {
+    result.redirectAppend = appendMatch[1];
+    remaining = remaining.slice(0, -appendMatch[0].length);
+  }
+
+  // > output redirection
+  const outMatch = remaining.match(/\s*>\s*(\S+)\s*$/);
+  if (outMatch && !result.redirectAppend) {
+    result.redirectOut = outMatch[1];
+    remaining = remaining.slice(0, -outMatch[0].length);
+  }
+
+  // < input redirection
+  const inMatch = remaining.match(/\s*<\s*(\S+)\s*/);
+  if (inMatch) {
+    result.redirectIn = inMatch[1];
+    remaining = remaining.replace(inMatch[0], " ");
+  }
+
+  // Parse remaining as argv (simple space split, handles basic quoting)
+  result.argv = parseArgv(remaining.trim());
+
+  return result;
+}
+
+function parseArgv(str: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let inQuote: string | null = null;
+
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+
+    if (inQuote) {
+      if (c === inQuote) {
+        inQuote = null;
+      } else {
+        current += c;
+      }
+    } else if (c === '"' || c === "'") {
+      inQuote = c;
+    } else if (c === " " || c === "\t") {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+    } else {
+      current += c;
+    }
+  }
+
+  if (current) {
+    args.push(current);
+  }
+
+  return args;
+}
+
+function executeApplet(
+  module: BusyboxModule,
+  cmd: ParsedCommand,
+  output: OutputCapture,
+): number {
+  if (cmd.argv.length === 0) {
+    return 0;
+  }
+
+  let exitCode = 0;
+
+  // Set up redirection if needed
+  const hasRedirect = !!(cmd.redirectOut || cmd.redirectAppend);
+  if (hasRedirect) {
+    output.currentRedirect = cmd.redirectOut || cmd.redirectAppend;
+    output.redirectBuffer = [];
+  }
+
+  const originalQuit = module.quit;
+  module.quit = (status: number, toThrow?: unknown) => {
+    exitCode = status;
+    if (toThrow) {
+      throw toThrow;
+    }
+    throw new Error("ExitStatus");
+  };
+
+  try {
+    // Call applet directly: busybox <applet> <args...>
+    module.callMain(["busybox", ...cmd.argv]);
+  } catch (err) {
+    const name = (err && typeof err === "object") ? (err as { name?: string }).name : undefined;
+    const message = (err && typeof err === "object") ? (err as { message?: string }).message : undefined;
+    if (name != "ExitStatus" && message != "ExitStatus") {
+      throw err;
+    }
+  } finally {
+    module.quit = originalQuit;
+  }
+
+  // Handle redirections - write buffered output to file
+  if (hasRedirect && output.redirectBuffer) {
+    const content = output.redirectBuffer.join("\n") + (output.redirectBuffer.length ? "\n" : "");
+    const path = cmd.redirectOut || cmd.redirectAppend!;
+
+    try {
+      // Ensure parent directory exists
+      const dir = path.substring(0, path.lastIndexOf("/"));
+      if (dir && dir !== "/") {
+        try {
+          module.FS.mkdirTree(dir);
+        } catch {
+          // Directory may already exist
+        }
+      }
+
+      if (cmd.redirectAppend) {
+        try {
+          const existing = module.FS.readFile(path, { encoding: "utf8" }) as string;
+          module.FS.writeFile(path, existing + content);
+        } catch {
+          module.FS.writeFile(path, content);
+        }
+      } else {
+        module.FS.writeFile(path, content);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      output.stderr.push(`Cannot redirect to ${path}: ${errMsg}`);
+      exitCode = 1;
+    }
+
+    // Clear redirect state
+    output.currentRedirect = undefined;
+    output.redirectBuffer = undefined;
+  }
+
+  return exitCode;
+}
+
 async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
   const files: Record<string, Uint8Array> = {};
   const chunks: Uint8Array[] = [];
@@ -225,10 +407,12 @@ async function resolveBusyboxDir(explicitDir?: string): Promise<string> {
 interface OutputCapture {
   stdout: string[];
   stderr: string[];
-  exitCode: number;
+  // For handling per-command redirection
+  currentRedirect?: string;
+  redirectBuffer?: string[];
 }
 
-async function loadBusyboxModule(dir: string, capture: OutputCapture): Promise<BusyboxModule> {
+async function loadBusyboxModule(dir: string, output: OutputCapture): Promise<BusyboxModule> {
   const moduleUrl = toFileUrl(join(dir, "busybox.js"));
   const wasmPath = join(dir, "busybox.wasm");
   const mod = await import(moduleUrl.href);
@@ -240,9 +424,18 @@ async function loadBusyboxModule(dir: string, capture: OutputCapture): Promise<B
   const module = await factory({
     noInitialRun: true,
     noExitRuntime: true,
-    // Pass print/printErr during initialization for proper Emscripten binding
-    print: (text: string) => capture.stdout.push(text),
-    printErr: (text: string) => capture.stderr.push(text),
+    // Set thisProgram to "busybox" so applets can be invoked
+    thisProgram: "busybox",
+    // Capture stdout/stderr during module initialization
+    // Check if we're in redirect mode and buffer accordingly
+    print: (text: string) => {
+      if (output.currentRedirect) {
+        output.redirectBuffer?.push(text);
+      } else {
+        output.stdout.push(text);
+      }
+    },
+    printErr: (text: string) => output.stderr.push(text),
     locateFile(path: string) {
       if (path.endsWith(".wasm")) {
         return wasmPath;
@@ -263,13 +456,18 @@ async function loadBusyboxModule(dir: string, capture: OutputCapture): Promise<B
   return module;
 }
 
-function runCommand(module: BusyboxModule, command: string, capture: OutputCapture): { stdout: string; stderr: string; exit_code: number } {
+function runCommand(
+  module: BusyboxModule,
+  command: string,
+  output: OutputCapture,
+): { stdout: string; stderr: string; exit_code: number } {
+  let exitCode = 0;
+
   module.stdin = () => null;
-  module.thisProgram = "busybox";
 
   const originalQuit = module.quit;
   module.quit = (status: number, toThrow?: unknown) => {
-    capture.exitCode = status;
+    exitCode = status;
     if (toThrow) {
       throw toThrow;
     }
@@ -277,7 +475,14 @@ function runCommand(module: BusyboxModule, command: string, capture: OutputCaptu
   };
 
   try {
-    module.callMain(["sh", "-c", command]);
+    // Parse command and execute applets directly to avoid vfork
+    const parsed = parseShellCommand(command);
+    for (const cmd of parsed.commands) {
+      if (cmd.type === "stop_on_error" && exitCode !== 0) {
+        break;
+      }
+      exitCode = executeApplet(module, cmd, output);
+    }
   } catch (err) {
     const name = (err && typeof err === "object") ? (err as { name?: string }).name : undefined;
     const message = (err && typeof err === "object") ? (err as { message?: string }).message : undefined;
@@ -289,20 +494,19 @@ function runCommand(module: BusyboxModule, command: string, capture: OutputCaptu
   }
 
   return {
-    stdout: capture.stdout.join("\n"),
-    stderr: capture.stderr.join("\n"),
-    exit_code: capture.exitCode,
+    stdout: output.stdout.join("\n"),
+    stderr: output.stderr.join("\n"),
+    exit_code: exitCode,
   };
 }
 
 async function executeShell(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
   const start = Date.now();
+  const output: OutputCapture = { stdout: [], stderr: [] };
 
   try {
     const busyboxDir = await resolveBusyboxDir(options.busyboxDir);
-    // Create capture object before module initialization so callbacks can be bound
-    const capture: OutputCapture = { stdout: [], stderr: [], exitCode: 0 };
-    const module = await loadBusyboxModule(busyboxDir, capture);
+    const module = await loadBusyboxModule(busyboxDir, output);
     const fs = module.FS;
 
     ensureBaseDirs(fs);
@@ -311,7 +515,7 @@ async function executeShell(options: ShellExecutionOptions): Promise<ShellExecut
     }
 
     const before = snapshotFs(fs, "/");
-    const { stdout, stderr, exit_code } = runCommand(module, options.command, capture);
+    const { stdout, stderr, exit_code } = runCommand(module, options.command, output);
     const after = snapshotFs(fs, "/");
 
     const changedPaths = findChangedFiles(before, after);

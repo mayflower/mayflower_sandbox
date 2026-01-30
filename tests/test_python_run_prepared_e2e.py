@@ -179,7 +179,7 @@ print('File created')
 
     # Verify: file content is correct
     content = await vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/hello.txt")
-    assert content == b"Hello from test", f"Unexpected content: {content}"
+    assert content == b"Hello from test", f"Unexpected content: {content!r}"
 
 
 async def test_python_run_prepared_without_state_returns_error(db_pool, clean_files, tools):
@@ -242,7 +242,7 @@ async def test_file_write_creates_file_in_vfs(db_pool, clean_files, tools):
 
     # Verify: file content is correct
     vfs_content = await vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/data.csv")
-    assert vfs_content == content.encode(), f"Unexpected content: {vfs_content}"
+    assert vfs_content == content.encode(), f"Unexpected content: {vfs_content!r}"
 
 
 async def test_file_write_without_state_returns_error(db_pool, clean_files, tools):
@@ -427,7 +427,11 @@ async def test_agent_creates_file_via_tool(db_pool, clean_files):
 
             try:
                 kwargs = tool_call.get("args", {}).copy()
-                kwargs["_state"] = {"pending_content_map": pending_content_map}
+                # Include messages in state for fallback code extraction
+                kwargs["_state"] = {
+                    "pending_content_map": pending_content_map,
+                    "messages": messages,
+                }
                 kwargs["tool_call_id"] = tool_call_id
                 kwargs["_config"] = None
                 kwargs["run_manager"] = None
@@ -474,4 +478,4 @@ async def test_agent_creates_file_via_tool(db_pool, clean_files):
 
     content = await vfs_file_content(db_pool, "e2e_prepared_test", "/tmp/agent_test.txt")
     assert content is not None
-    assert b"Created by agent" in content, f"Unexpected file content: {content}"
+    assert b"Created by agent" in content, f"Unexpected file content: {content!r}"

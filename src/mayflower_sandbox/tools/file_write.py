@@ -10,6 +10,7 @@ from langchain_core.tools import InjectedToolCallId
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
+from mayflower_sandbox.history_extraction import extract_fenced_code_from_messages
 from mayflower_sandbox.tools.base import SandboxTool
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,9 @@ class FileWriteTool(SandboxTool):
     2. Custom tool node extracts content and stores in state["pending_content"]
     3. LLM calls file_write(file_path="/tmp/data.csv")
     4. Tool reads content from state, writes to VFS, clears pending_content
+
+    If pending_content_map is empty, the tool will attempt to extract the latest
+    fenced code/text block from message history.
 
     Files are stored in PostgreSQL with 20MB size limit.
     """
@@ -85,6 +89,11 @@ Returns:
         # Access content from graph state using tool_call_id
         pending_content_map = _state.get("pending_content_map", {})
         content = pending_content_map.get(tool_call_id, "")
+        if not content:
+            content = extract_fenced_code_from_messages(
+                _state.get("messages", []),
+                file_path=file_path,
+            )
 
         if not content:
             logger.error(f"file_write: No content found in state for tool_call_id={tool_call_id}")

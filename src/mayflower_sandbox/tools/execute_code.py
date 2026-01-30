@@ -18,6 +18,7 @@ from langchain_core.tools import InjectedToolCallId
 from pydantic import BaseModel, Field
 
 from mayflower_sandbox.filesystem import VirtualFilesystem
+from mayflower_sandbox.history_extraction import extract_fenced_code_from_messages
 from mayflower_sandbox.sandbox_executor import ExecutionResult, SandboxExecutor
 from mayflower_sandbox.tools.base import SandboxTool
 
@@ -236,6 +237,9 @@ class ExecuteCodeTool(SandboxTool):
     2. LLM calls execute_code(file_path, description)
     3. Tool extracts code from state, writes to VFS, executes
 
+    If no pending_content_map entry exists, the tool will attempt to extract the
+    latest fenced Python code block from message history.
+
     This avoids passing code through tool call parameters entirely.
     """
 
@@ -312,7 +316,7 @@ Returns:
             )
 
         thread_id = self._extract_thread_id(_config, run_manager)
-        code = self._get_code_from_state(_state, tool_call_id)
+        code = self._get_code_from_state(_state, tool_call_id, file_path)
 
         if not code:
             return (
@@ -363,8 +367,8 @@ Returns:
                 return thread_id
         return self._get_thread_id(run_manager)
 
-    def _get_code_from_state(self, _state: dict, tool_call_id: str) -> str:
-        """Get code from graph state's pending_content_map."""
+    def _get_code_from_state(self, _state: dict, tool_call_id: str, file_path: str) -> str:
+        """Get code from graph state or message history."""
         pending_content_map = _state.get("pending_content_map", {})
         logger.info(f"execute_code: Looking for tool_call_id={tool_call_id}")
         logger.info(f"execute_code: pending_content_map keys: {list(pending_content_map.keys())}")
@@ -372,9 +376,23 @@ Returns:
         code = pending_content_map.get(tool_call_id, "")
         if code:
             logger.info(f"execute_code: Found {len(code)} chars of code")
-        else:
-            logger.error(f"execute_code: No code found for tool_call_id={tool_call_id}")
-        return code
+            return code
+
+        messages = _state.get("messages", [])
+        fallback = extract_fenced_code_from_messages(
+            messages,
+            file_path=file_path,
+            language="python",
+        )
+        if fallback:
+            logger.info(
+                "execute_code: Extracted %d chars of code from message history",
+                len(fallback),
+            )
+            return fallback
+
+        logger.error(f"execute_code: No code found for tool_call_id={tool_call_id}")
+        return ""
 
     def _return_with_state_update(
         self,
