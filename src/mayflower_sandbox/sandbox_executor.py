@@ -147,14 +147,18 @@ class SandboxExecutor:
                     pool_size = int(os.getenv("PYODIDE_POOL_SIZE", "3"))
                     logger.info(f"Initializing Pyodide worker pool (size={pool_size})...")
 
-                    cls._pool = WorkerPool(
+                    pool = WorkerPool(
                         size=pool_size,
                         executor_path=Path(__file__).parent,
                         mcp_bridge_port=mcp_bridge_port,
                     )
-                    await cls._pool.start()
-
-                    logger.info("Pyodide worker pool ready!")
+                    try:
+                        await pool.start()
+                        cls._pool = pool  # Only set if start succeeds
+                        logger.info("Pyodide worker pool ready!")
+                    except Exception:
+                        await pool.shutdown()
+                        raise
 
     def _get_executor_path(self) -> Path:
         """Get path to TypeScript executor."""
