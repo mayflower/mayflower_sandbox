@@ -174,6 +174,11 @@ class SandboxExecutor:
             raise RuntimeError(f"Shell executor not found at {executor}")
         return executor
 
+    def _get_deno_config_path(self) -> Path | None:
+        """Get path to deno.json if present."""
+        config_path = Path(__file__).parent / "deno.json"
+        return config_path if config_path.exists() else None
+
     def _check_deno(self):
         """Verify Deno is installed."""
         try:
@@ -202,6 +207,8 @@ class SandboxExecutor:
             "--allow-read",
             "--allow-write",
         ]
+        if config_path := self._get_deno_config_path():
+            cmd.extend(["--config", str(config_path)])
 
         # Allow PyPI for micropip.install() to work
         allowed_hosts = {"cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"}
@@ -248,10 +255,20 @@ class SandboxExecutor:
             "run",
             "--allow-read",
             "--allow-write",
-            str(self._get_shell_executor_path()),
-            "--command",
-            command,
         ]
+        if config_path := self._get_deno_config_path():
+            cmd.extend(["--config", str(config_path)])
+        cmd.extend(
+            [
+                str(self._get_shell_executor_path()),
+            ]
+        )
+        cmd.extend(
+            [
+                "--command",
+                command,
+            ]
+        )
         busybox_dir = os.environ.get("MAYFLOWER_BUSYBOX_DIR")
         if busybox_dir:
             cmd.extend(["--busybox-dir", busybox_dir])
