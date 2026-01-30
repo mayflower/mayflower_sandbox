@@ -75,36 +75,38 @@ function parseShellCommand(command: string): ParsedShell {
   return result;
 }
 
+const APPEND_REDIRECT_RE = /\s*>>\s*(\S+)\s*$/;
+const OUTPUT_REDIRECT_RE = /\s*>\s*(\S+)\s*$/;
+const INPUT_REDIRECT_RE = /\s*<\s*(\S+)\s*/;
+
 function parseSingleCommand(cmdStr: string): ParsedCommand {
   const result: ParsedCommand = { argv: [] };
-
-  // Handle output redirection
   let remaining = cmdStr;
 
   // >> append redirection
-  const appendMatch = remaining.match(/\s*>>\s*(\S+)\s*$/);
+  const appendMatch = APPEND_REDIRECT_RE.exec(remaining);
   if (appendMatch) {
     result.redirectAppend = appendMatch[1];
     remaining = remaining.slice(0, -appendMatch[0].length);
   }
 
-  // > output redirection
-  const outMatch = remaining.match(/\s*>\s*(\S+)\s*$/);
-  if (outMatch && !result.redirectAppend) {
-    result.redirectOut = outMatch[1];
-    remaining = remaining.slice(0, -outMatch[0].length);
+  // > output redirection (only if no append)
+  if (!result.redirectAppend) {
+    const outMatch = OUTPUT_REDIRECT_RE.exec(remaining);
+    if (outMatch) {
+      result.redirectOut = outMatch[1];
+      remaining = remaining.slice(0, -outMatch[0].length);
+    }
   }
 
   // < input redirection
-  const inMatch = remaining.match(/\s*<\s*(\S+)\s*/);
+  const inMatch = INPUT_REDIRECT_RE.exec(remaining);
   if (inMatch) {
     result.redirectIn = inMatch[1];
     remaining = remaining.replace(inMatch[0], " ");
   }
 
-  // Parse remaining as argv (simple space split, handles basic quoting)
   result.argv = parseArgv(remaining.trim());
-
   return result;
 }
 
@@ -113,9 +115,7 @@ function parseArgv(str: string): string[] {
   let current = "";
   let inQuote: string | null = null;
 
-  for (let i = 0; i < str.length; i++) {
-    const c = str[i];
-
+  for (const c of str) {
     if (inQuote) {
       if (c === inQuote) {
         inQuote = null;
@@ -141,19 +141,71 @@ function parseArgv(str: string): string[] {
   return args;
 }
 
+function isExitStatusError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  const message = (err as { message?: string }).message;
+  return name === "ExitStatus" || message === "ExitStatus";
+}
+
+function ensureParentDir(fs: any, path: string): void {
+  const dir = path.substring(0, path.lastIndexOf("/"));
+  if (dir && dir !== "/") {
+    try {
+      fs.mkdirTree(dir);
+    } catch {
+      // Directory may already exist
+    }
+  }
+}
+
+function writeRedirectContent(fs: any, path: string, content: string, append: boolean): void {
+  if (append) {
+    try {
+      const existing = fs.readFile(path, { encoding: "utf8" }) as string;
+      fs.writeFile(path, existing + content);
+    } catch {
+      fs.writeFile(path, content);
+    }
+  } else {
+    fs.writeFile(path, content);
+  }
+}
+
+function handleRedirection(
+  module: BusyboxModule,
+  cmd: ParsedCommand,
+  output: OutputCapture,
+): number {
+  if (!output.redirectBuffer) return 0;
+
+  const content = output.redirectBuffer.join("\n") + (output.redirectBuffer.length ? "\n" : "");
+  const path = cmd.redirectOut || cmd.redirectAppend!;
+
+  try {
+    ensureParentDir(module.FS, path);
+    writeRedirectContent(module.FS, path, content, !!cmd.redirectAppend);
+    return 0;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    output.stderr.push(`Cannot redirect to ${path}: ${errMsg}`);
+    return 1;
+  } finally {
+    output.currentRedirect = undefined;
+    output.redirectBuffer = undefined;
+  }
+}
+
 function executeApplet(
   module: BusyboxModule,
   cmd: ParsedCommand,
   output: OutputCapture,
 ): number {
-  if (cmd.argv.length === 0) {
-    return 0;
-  }
+  if (cmd.argv.length === 0) return 0;
 
   let exitCode = 0;
-
-  // Set up redirection if needed
   const hasRedirect = !!(cmd.redirectOut || cmd.redirectAppend);
+
   if (hasRedirect) {
     output.currentRedirect = cmd.redirectOut || cmd.redirectAppend;
     output.redirectBuffer = [];
@@ -162,60 +214,21 @@ function executeApplet(
   const originalQuit = module.quit;
   module.quit = (status: number, toThrow?: unknown) => {
     exitCode = status;
-    if (toThrow) {
-      throw toThrow;
-    }
+    if (toThrow) throw toThrow;
     throw new Error("ExitStatus");
   };
 
   try {
-    // Call applet directly: busybox <applet> <args...>
     module.callMain(["busybox", ...cmd.argv]);
   } catch (err) {
-    const name = (err && typeof err === "object") ? (err as { name?: string }).name : undefined;
-    const message = (err && typeof err === "object") ? (err as { message?: string }).message : undefined;
-    if (name != "ExitStatus" && message != "ExitStatus") {
-      throw err;
-    }
+    if (!isExitStatusError(err)) throw err;
   } finally {
     module.quit = originalQuit;
   }
 
-  // Handle redirections - write buffered output to file
-  if (hasRedirect && output.redirectBuffer) {
-    const content = output.redirectBuffer.join("\n") + (output.redirectBuffer.length ? "\n" : "");
-    const path = cmd.redirectOut || cmd.redirectAppend!;
-
-    try {
-      // Ensure parent directory exists
-      const dir = path.substring(0, path.lastIndexOf("/"));
-      if (dir && dir !== "/") {
-        try {
-          module.FS.mkdirTree(dir);
-        } catch {
-          // Directory may already exist
-        }
-      }
-
-      if (cmd.redirectAppend) {
-        try {
-          const existing = module.FS.readFile(path, { encoding: "utf8" }) as string;
-          module.FS.writeFile(path, existing + content);
-        } catch {
-          module.FS.writeFile(path, content);
-        }
-      } else {
-        module.FS.writeFile(path, content);
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      output.stderr.push(`Cannot redirect to ${path}: ${errMsg}`);
-      exitCode = 1;
-    }
-
-    // Clear redirect state
-    output.currentRedirect = undefined;
-    output.redirectBuffer = undefined;
+  if (hasRedirect) {
+    const redirectResult = handleRedirection(module, cmd, output);
+    if (redirectResult !== 0) exitCode = redirectResult;
   }
 
   return exitCode;
@@ -315,37 +328,54 @@ function shouldIgnorePath(path: string): boolean {
   return IGNORE_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
+function isSpecialEntry(entry: string): boolean {
+  return entry === "." || entry === "..";
+}
+
+function buildEntryPath(current: string, entry: string): string {
+  return current === "/" ? `/${entry}` : `${current}/${entry}`;
+}
+
+function tryReadDir(fs: any, path: string): string[] {
+  try {
+    return fs.readdir(path) as string[];
+  } catch {
+    return [];
+  }
+}
+
+function processEntry(
+  fs: any,
+  entryPath: string,
+  snapshot: Map<string, number>,
+  stack: string[],
+): void {
+  try {
+    const stat = fs.stat(entryPath);
+    if (fs.isDir(stat.mode)) {
+      stack.push(entryPath);
+    } else if (fs.isFile(stat.mode)) {
+      snapshot.set(entryPath, statStamp(stat));
+    }
+  } catch {
+    // Ignore entries that disappear
+  }
+}
+
 function snapshotFs(fs: any, root: string): Map<string, number> {
   const snapshot = new Map<string, number>();
   const stack: string[] = [root];
 
   while (stack.length > 0) {
     const current = stack.pop();
-    if (!current) continue;
-    if (shouldIgnorePath(current)) continue;
+    if (!current || shouldIgnorePath(current)) continue;
 
-    let entries: string[] = [];
-    try {
-      entries = fs.readdir(current) as string[];
-    } catch {
-      continue;
-    }
-
+    const entries = tryReadDir(fs, current);
     for (const entry of entries) {
-      if (entry === "." || entry === "..") continue;
-      const entryPath = current === "/" ? `/${entry}` : `${current}/${entry}`;
+      if (isSpecialEntry(entry)) continue;
+      const entryPath = buildEntryPath(current, entry);
       if (shouldIgnorePath(entryPath)) continue;
-
-      try {
-        const stat = fs.stat(entryPath);
-        if (fs.isDir(stat.mode)) {
-          stack.push(entryPath);
-        } else if (fs.isFile(stat.mode)) {
-          snapshot.set(entryPath, statStamp(stat));
-        }
-      } catch {
-        // Ignore entries that disappear
-      }
+      processEntry(fs, entryPath, snapshot, stack);
     }
   }
 

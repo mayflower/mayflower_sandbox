@@ -16,7 +16,9 @@ try:
     from deepagents.backends.protocol import (
         EditResult,
         ExecuteResponse,
+        FileDownloadResponse,
         FileInfo,
+        FileUploadResponse,
         GrepMatch,
         SandboxBackendProtocol,
         WriteResult,
@@ -221,6 +223,28 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             path=_normalize_path(file_path), files_update=None, occurrences=occurrences
         )
 
+    def _grep_file_matches(
+        self,
+        file_row: dict[str, Any],
+        regex: re.Pattern[str],
+    ) -> list[GrepMatch]:
+        """Extract matching lines from a file."""
+        file_path = file_row.get("file_path", "")
+        content_bytes = file_row.get("content", b"") or b""
+        content = content_bytes.decode("utf-8", errors="replace")
+        return [
+            {"path": file_path, "line": idx, "text": line}
+            for idx, line in enumerate(content.splitlines(), start=1)
+            if regex.search(line)
+        ]
+
+    def _matches_glob_filter(self, file_path: str, base: str, glob_pattern: str | None) -> bool:
+        """Check if file matches the glob filter."""
+        if not glob_pattern:
+            return True
+        rel = file_path[len(base) :] if base != "/" else file_path.lstrip("/")
+        return fnmatch.fnmatch(rel, glob_pattern)
+
     def grep_raw(
         self,
         pattern: str,
@@ -245,15 +269,9 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             file_path = file_row.get("file_path", "")
             if not file_path.startswith(base):
                 continue
-            rel = file_path[len(base) :] if base != "/" else file_path.lstrip("/")
-            if glob and not fnmatch.fnmatch(rel, glob):
+            if not self._matches_glob_filter(file_path, base, glob):
                 continue
-
-            content_bytes = file_row.get("content", b"") or b""
-            content = content_bytes.decode("utf-8", errors="replace")
-            for idx, line in enumerate(content.splitlines(), start=1):
-                if regex.search(line):
-                    matches.append({"path": file_path, "line": idx, "text": line})
+            matches.extend(self._grep_file_matches(file_row, regex))
 
         return matches
 
@@ -284,6 +302,44 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         infos.sort(key=lambda item: item.get("path", ""))
         return infos
 
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        responses: list[FileUploadResponse] = []
+        for path, content in files:
+            try:
+                normalized = self._vfs.validate_path(path)
+            except InvalidPathError:
+                responses.append(FileUploadResponse(path=path, error="invalid_path"))
+                continue
+            try:
+                _run_async(self._vfs.write_file(normalized, content, None))
+            except InvalidPathError:
+                responses.append(FileUploadResponse(path=path, error="invalid_path"))
+            except Exception:
+                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+            else:
+                responses.append(FileUploadResponse(path=normalized, error=None))
+        return responses
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        responses: list[FileDownloadResponse] = []
+        for path in paths:
+            try:
+                record = _run_async(self._vfs.read_file(path))
+            except FileNotFoundError:
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="file_not_found")
+                )
+                continue
+            except InvalidPathError:
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="invalid_path")
+                )
+                continue
+
+            content_bytes = record.get("content", b"") or b""
+            responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+        return responses
+
     def _execute_shell(self, command: str) -> ExecuteResponse:
         """Stub for shell execution (busybox patch will implement)."""
         result = _run_async(self._executor.execute_shell(command))
@@ -296,4 +352,12 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
     def execute(self, command: str) -> ExecuteResponse:
+        if command.startswith("__PYTHON__"):
+            code = command[len("__PYTHON__") :].lstrip("\n")
+            result = _run_async(self._executor.execute(code))
+            output = result.stdout or ""
+            if result.stderr:
+                output = f"{output}\n{result.stderr}" if output else result.stderr
+            exit_code = 0 if result.success else 1
+            return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
         return self._execute_shell(command)

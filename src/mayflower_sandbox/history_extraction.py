@@ -10,20 +10,27 @@ from typing import Any
 _CODE_FENCE_RE = re.compile(r"```(?P<info>[^\n`]*)\n(?P<code>.*?)(?:\n```|```)", re.S)
 
 
+def _extract_text_from_item(item: Any) -> str | None:
+    """Extract text from a single content item."""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        text = item.get("text") or item.get("content")
+        return str(text) if text else None
+    return None
+
+
+def _normalize_list_content(content: list[Any]) -> str:
+    """Normalize a list of content items to a single string."""
+    parts = [text for item in content if (text := _extract_text_from_item(item))]
+    return "\n".join(parts)
+
+
 def _normalize_message_content(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            if isinstance(item, dict):
-                text = item.get("text") or item.get("content")
-                if text:
-                    parts.append(str(text))
-        return "\n".join(parts)
+        return _normalize_list_content(content)
     if content is None:
         return ""
     return str(content)
