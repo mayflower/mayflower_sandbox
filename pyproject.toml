@@ -44,7 +44,15 @@ deepagents = [
 ]
 
 [tool.setuptools.package-data]
-mayflower_sandbox = ["*.ts", "*.js", "*.wasm", "busybox/*", "helpers/**/*.py"]
+mayflower_sandbox = [
+    "*.ts",
+    "*.js",
+    "*.wasm",
+    "deno.json",
+    "deno.lock",
+    "busybox/*",
+    "helpers/**/*.py",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
