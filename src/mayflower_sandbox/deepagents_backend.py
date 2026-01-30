@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import re
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -58,18 +59,6 @@ def _format_timestamp(value: Any) -> str:
     return str(value)
 
 
-def _run_async(coro: Any) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    # Running in event loop: execute in a fresh loop in a worker thread.
-    import concurrent.futures
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(asyncio.run, coro).result()
-
-
 class MayflowerSandboxBackend(SandboxBackendProtocol):
     """DeepAgents backend adapter for Mayflower Sandbox."""
 
@@ -91,12 +80,47 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             stateful=stateful,
             timeout_seconds=timeout_seconds,
         )
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread_id: int | None = None
+        try:
+            self._loop = asyncio.get_running_loop()
+            self._loop_thread_id = threading.get_ident()
+        except RuntimeError:
+            pass
+
+    def _run_async(self, coro: Any) -> Any:
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is None:
+            return asyncio.run(coro)
+
+        if self._loop is None:
+            self._loop = running_loop
+            self._loop_thread_id = threading.get_ident()
+
+        if self._loop is None or not self._loop.is_running():
+            return asyncio.run(coro)
+
+        if threading.get_ident() == self._loop_thread_id:
+            raise RuntimeError(
+                "Synchronous sandbox backend method called from the event loop; "
+                "use the async backend methods instead."
+            )
+
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
 
     @property
     def id(self) -> str:
         return f"mayflower:{self._thread_id}"
 
     def ls_info(self, path: str) -> list[FileInfo]:
+        return self._run_async(self.als_info(path))
+
+    async def als_info(self, path: str) -> list[FileInfo]:
         try:
             normalized = self._vfs.validate_path(path)
         except InvalidPathError:
@@ -106,7 +130,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         if prefix != "/" and not prefix.endswith("/"):
             prefix += "/"
 
-        files = _run_async(self._vfs.list_files())
+        files = await self._vfs.list_files()
 
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
@@ -145,8 +169,11 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return infos
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+        return self._run_async(self.aread(file_path, offset=offset, limit=limit))
+
+    async def aread(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
         try:
-            record = _run_async(self._vfs.read_file(file_path))
+            record = await self._vfs.read_file(file_path)
         except (FileNotFoundError, InvalidPathError):
             return f"Error: File '{file_path}' not found"
 
@@ -166,12 +193,15 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return _format_line_numbers(selected, start_line=start_idx + 1)
 
     def write(self, file_path: str, content: str) -> WriteResult:
+        return self._run_async(self.awrite(file_path, content))
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
         try:
             normalized = self._vfs.validate_path(file_path)
         except InvalidPathError as exc:
             return WriteResult(error=str(exc))
 
-        exists = _run_async(self._vfs.file_exists(normalized))
+        exists = await self._vfs.file_exists(normalized)
         if exists:
             return WriteResult(
                 error=(
@@ -181,7 +211,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             )
 
         try:
-            _run_async(self._vfs.write_file(normalized, content.encode("utf-8"), "text/plain"))
+            await self._vfs.write_file(normalized, content.encode("utf-8"), "text/plain")
         except InvalidPathError as exc:
             return WriteResult(error=str(exc))
 
@@ -194,8 +224,19 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
+        return self._run_async(
+            self.aedit(file_path, old_string, new_string, replace_all=replace_all)
+        )
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
         try:
-            record = _run_async(self._vfs.read_file(file_path))
+            record = await self._vfs.read_file(file_path)
         except (FileNotFoundError, InvalidPathError):
             return EditResult(error=f"Error: File '{file_path}' not found")
 
@@ -215,7 +256,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
 
         new_content = content.replace(old_string, new_string)
         try:
-            _run_async(self._vfs.write_file(file_path, new_content.encode("utf-8"), "text/plain"))
+            await self._vfs.write_file(file_path, new_content.encode("utf-8"), "text/plain")
         except InvalidPathError as exc:
             return EditResult(error=str(exc))
 
@@ -251,6 +292,14 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
+        return self._run_async(self.agrep_raw(pattern, path=path, glob=glob))
+
+    async def agrep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list[GrepMatch] | str:
         try:
             regex = re.compile(pattern)
         except re.error as exc:
@@ -260,7 +309,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         if base != "/" and not base.endswith("/"):
             base += "/"
 
-        files = _run_async(self._vfs.list_files())
+        files = await self._vfs.list_files()
         if base != "/" and not any(f.get("file_path", "").startswith(base) for f in files):
             return f"Error: Path '{path}' not found"
 
@@ -276,11 +325,14 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return matches
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        return self._run_async(self.aglob_info(pattern, path=path))
+
+    async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         base = _normalize_path(path)
         if base != "/" and not base.endswith("/"):
             base += "/"
 
-        files = _run_async(self._vfs.list_files())
+        files = await self._vfs.list_files()
         infos: list[FileInfo] = []
 
         for file_row in files:
@@ -303,6 +355,9 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return infos
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return self._run_async(self.aupload_files(files))
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         responses: list[FileUploadResponse] = []
         for path, content in files:
             try:
@@ -311,7 +366,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
                 continue
             try:
-                _run_async(self._vfs.write_file(normalized, content, None))
+                await self._vfs.write_file(normalized, content, None)
             except InvalidPathError:
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
             except Exception:
@@ -321,10 +376,13 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        return self._run_async(self.adownload_files(paths))
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         responses: list[FileDownloadResponse] = []
         for path in paths:
             try:
-                record = _run_async(self._vfs.read_file(path))
+                record = await self._vfs.read_file(path)
             except FileNotFoundError:
                 responses.append(
                     FileDownloadResponse(path=path, content=None, error="file_not_found")
@@ -342,11 +400,11 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
 
     def _execute_shell(self, command: str) -> ExecuteResponse:
         """Stub for shell execution (busybox patch will implement)."""
-        result = _run_async(self._executor.execute_shell(command))
+        result = self._run_async(self._executor.execute_shell(command))
         output = result.stdout or ""
         if result.stderr:
             output = f"{output}\n{result.stderr}" if output else result.stderr
-        exit_code = result.exit_code
+        exit_code: int | None = result.exit_code
         if exit_code is None:
             exit_code = 0 if result.success else 1
         return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
@@ -354,10 +412,29 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
     def execute(self, command: str) -> ExecuteResponse:
         if command.startswith("__PYTHON__"):
             code = command[len("__PYTHON__") :].lstrip("\n")
-            result = _run_async(self._executor.execute(code))
+            result = self._run_async(self._executor.execute(code))
             output = result.stdout or ""
             if result.stderr:
                 output = f"{output}\n{result.stderr}" if output else result.stderr
-            exit_code = 0 if result.success else 1
-            return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+            py_exit_code = 0 if result.success else 1
+            return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
         return self._execute_shell(command)
+
+    async def aexecute(self, command: str) -> ExecuteResponse:
+        if command.startswith("__PYTHON__"):
+            code = command[len("__PYTHON__") :].lstrip("\n")
+            result = await self._executor.execute(code)
+            output = result.stdout or ""
+            if result.stderr:
+                output = f"{output}\n{result.stderr}" if output else result.stderr
+            py_exit_code = 0 if result.success else 1
+            return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
+
+        result = await self._executor.execute_shell(command)
+        output = result.stdout or ""
+        if result.stderr:
+            output = f"{output}\n{result.stderr}" if output else result.stderr
+        exit_code: int | None = result.exit_code
+        if exit_code is None:
+            exit_code = 0 if result.success else 1
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
