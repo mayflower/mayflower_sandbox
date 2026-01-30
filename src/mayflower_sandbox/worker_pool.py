@@ -103,16 +103,26 @@ class PyodideWorker:
             raise RuntimeError(f"Worker {self.worker_id} failed to initialize")
 
     async def _wait_ready(self) -> None:
-        """Wait for worker to print 'Ready' to stderr."""
+        """Wait for worker to print 'Ready' to stderr.
+
+        Uses chunked read() instead of readline() to avoid pipe buffering issues
+        that can cause readline() to block indefinitely.
+        """
         if not self.process or not self.process.stderr:
             raise RuntimeError("Process not started")
 
+        buffer = b""
         while True:
-            line = await self.process.stderr.readline()
-            if not line:
+            # Use read() with small chunks - readline() can block on pipes due to buffering
+            chunk = await self.process.stderr.read(1024)
+            if not chunk:
                 raise RuntimeError("Worker process terminated during initialization")
-            if b"Ready" in line:
-                logger.debug(f"[Worker {self.worker_id}] {line.decode().strip()}")
+            buffer += chunk
+            if b"Ready" in buffer:
+                # Log the ready message
+                for line in buffer.decode(errors="replace").splitlines():
+                    if "Ready" in line:
+                        logger.debug(f"[Worker {self.worker_id}] {line.strip()}")
                 return
 
     async def execute(
