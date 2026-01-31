@@ -2,11 +2,14 @@
  * Mayflower Sandbox - Busybox Shell Executor (WASM + VFS)
  *
  * This script loads VFS files from stdin, materializes them in BusyBox MEMFS,
- * executes the command via `sh -c`, and returns changed files back to Python.
+ * executes shell commands, and returns changed files back to Python.
  *
- * Supports two execution modes:
- * 1. Simple mode: Direct applet invocation for commands without pipes
- * 2. Pipeline mode: Worker-based isolation for pipe commands (echo | cat)
+ * Pipeline commands (with |) use Worker-based isolation where each stage
+ * runs in a separate Deno Worker connected via SharedArrayBuffer pipes.
+ * This is necessary because BusyBox WASM has global state that prevents
+ * running multiple commands in the same process.
+ *
+ * Non-pipe commands use direct applet invocation as an optimization.
  */
 
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
@@ -1064,19 +1067,19 @@ async function executeShellSimple(options: ShellExecutionOptions): Promise<Shell
 }
 
 /**
- * Execute shell command, automatically choosing the best execution mode.
- * - Pipeline mode: Worker-based isolation for pipe commands (echo | cat)
- * - Simple mode: Direct applet invocation for basic commands
+ * Execute shell command.
+ * Pipeline commands use Worker-based isolation (each stage in separate Worker).
+ * Non-pipe commands use direct invocation as an optimization.
  */
 async function executeShell(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
-  // Check for pipes first - use Worker-based pipeline execution
+  // Pipe commands require Worker-based isolation
   if (hasPipes(options.command)) {
     return executePipeline(options);
   }
 
   // Check if command needs full shell support (variables, subshells, etc.)
   if (needsFullShell(options.command)) {
-    // Complex shell features like variables/subshells fall back to simple mode
+    // TODO: Variables/subshells not yet supported via pipeline
     console.error("Warning: Complex shell features not fully supported, attempting simple execution");
     return executeShellSimple(options);
   }

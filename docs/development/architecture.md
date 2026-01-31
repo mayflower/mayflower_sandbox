@@ -100,10 +100,9 @@ BusyBox WASM-based shell execution for the DeepAgents backend:
 - **SharedArrayBuffer**: Ring buffer pipes with Atomics for synchronization
 - **Command Chaining**: Supports `&&`, `||`, and `;` operators
 
-#### Execution Modes
+#### Pipeline Architecture
 
-1. **Simple Mode**: Direct applet invocation for basic commands
-2. **Pipeline Mode**: Worker-based isolation for pipe commands
+Each pipeline stage runs in a separate Deno Worker, connected via SharedArrayBuffer ring buffers:
 
 ```
 echo hello | cat | grep hello
@@ -112,6 +111,8 @@ echo hello | cat | grep hello
        ↘    SharedArrayBuffer    ↙
               Ring Buffer Pipes
 ```
+
+This Worker-based isolation is necessary because BusyBox WASM has global state that prevents running multiple commands in the same process. Each Worker gets its own BusyBox instance with VFS files mounted.
 
 ## Database Schema
 
