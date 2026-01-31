@@ -15,11 +15,13 @@ Mayflower Sandbox provides secure, isolated Python code execution with persisten
 ## Key Features
 
 - ✅ **Secure Python Execution** - Pyodide WebAssembly sandbox with configurable network access
+- ✅ **Shell Execution** - BusyBox WASM sandbox with pipe support (`echo | cat | grep`)
 - ✅ **Persistent Virtual Filesystem** - PostgreSQL-backed storage (20MB file limit per file)
 - ✅ **Document Processing Helpers** - Built-in helpers for Word, Excel, PowerPoint, and PDF
 - ✅ **Stateful Execution** - Variables and state persist across executions and restarts
 - ✅ **Thread Isolation** - Complete isolation between users/sessions via `thread_id`
 - ✅ **LangChain Integration** - All tools extend `BaseTool` for seamless LangGraph integration
+- ✅ **DeepAgents Integration** - `SandboxBackendProtocol` adapter for DeepAgents framework
 - ✅ **HITL Support** - Human-in-the-Loop approval for destructive operations (CopilotKit integration)
 - ✅ **HTTP File Server** - Download files via REST API
 - ✅ **Automatic Cleanup** - Configurable session expiration (180 days default)
@@ -93,22 +95,23 @@ See [Quick Start Guide](docs/getting-started/quickstart.md) for a complete tutor
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ LangGraph Agent                                     │
-│ ├─ ExecutePythonTool (direct code execution)       │
-│ ├─ RunPythonFileTool (run existing .py files)      │
-│ ├─ ExecuteCodeTool (state-based for large code)    │
-│ ├─ FileReadTool                                     │
-│ ├─ FileWriteTool                                    │
-│ ├─ FileEditTool (str_replace)                       │
-│ ├─ FileListTool                                     │
-│ ├─ FileDeleteTool                                   │
-│ ├─ FileGlobTool (glob_files)                        │
-│ └─ FileGrepTool (grep_files)                        │
+│ LangGraph Agent              OR      DeepAgents     │
+│ ├─ ExecutePythonTool                 Framework      │
+│ ├─ RunPythonFileTool          ┌──────────────────┐  │
+│ ├─ ExecuteCodeTool            │ MayflowerSandbox │  │
+│ ├─ FileReadTool               │ Backend          │  │
+│ ├─ FileWriteTool              │ (implements      │  │
+│ ├─ FileEditTool               │  SandboxBackend  │  │
+│ ├─ FileListTool               │  Protocol)       │  │
+│ ├─ FileDeleteTool             └──────────────────┘  │
+│ ├─ FileGlobTool                                     │
+│ └─ FileGrepTool                                     │
 └──────────────────┬──────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────┐
 │ Mayflower Sandbox                                   │
 │ ├─ SandboxExecutor (VFS + Pyodide integration)     │
+│ ├─ ShellExecutor (BusyBox WASM + pipes)            │
 │ ├─ VirtualFilesystem (PostgreSQL storage)          │
 │ ├─ Helper Modules (auto-loaded into VFS)           │
 │ ├─ SandboxManager (Session lifecycle)              │
@@ -118,7 +121,8 @@ See [Quick Start Guide](docs/getting-started/quickstart.md) for a complete tutor
 ┌──────────────────▼──────────────────────────────────┐
 │ Infrastructure                                      │
 │ ├─ PostgreSQL (Persistent storage)                 │
-│ └─ Deno + Pyodide (Python execution)               │
+│ ├─ Deno + Pyodide (Python execution)               │
+│ └─ Deno + BusyBox WASM (Shell execution)           │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -200,6 +204,62 @@ How it works:
 4. Code is cleared from state after successful execution
 
 This pattern enables complex visualizations and large-scale data processing without serialization limits.
+
+## DeepAgents Backend
+
+Mayflower Sandbox provides a `SandboxBackendProtocol` adapter for the [DeepAgents](https://github.com/mayflower/deepagents) framework, enabling secure Python and shell execution in DeepAgents-powered applications.
+
+### Usage
+
+```python
+import asyncpg
+from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
+
+# Create database pool
+db_pool = await asyncpg.create_pool(
+    host="localhost",
+    database="mayflower_test",
+    user="postgres",
+    password="postgres"
+)
+
+# Create backend for a specific thread/user
+backend = MayflowerSandboxBackend(
+    db_pool,
+    thread_id="user_123",
+    allow_net=False,      # Enable network access for pip installs
+    stateful=True,        # Preserve Python state across executions
+    timeout_seconds=60.0  # Execution timeout
+)
+
+# Use with DeepAgents
+# backend implements SandboxBackendProtocol with:
+# - execute(command) - Run shell or Python (__PYTHON__ prefix)
+# - read/write/edit - File operations
+# - ls_info/glob_info/grep_raw - File search
+# - upload_files/download_files - Batch file operations
+```
+
+### Shell Execution
+
+The backend supports shell command execution via BusyBox WASM:
+
+```python
+# Shell commands
+result = await backend.aexecute("echo hello > /tmp/test.txt")
+result = await backend.aexecute("cat /tmp/test.txt | grep hello")
+
+# Python code (use __PYTHON__ prefix)
+result = await backend.aexecute("__PYTHON__\nprint('Hello from Python')")
+```
+
+**Supported shell features:**
+- Basic commands: `echo`, `cat`, `grep`, `wc`, `ls`, `mkdir`, `rm`, etc.
+- Pipes: `echo hello | cat | grep hello`
+- Command chaining: `cmd1 && cmd2`, `cmd1 ; cmd2`
+- Redirections: `>`, `>>`, `<`
+
+**Pipeline architecture:** Each pipe stage runs in a separate Deno Worker connected via SharedArrayBuffer ring buffers with Atomics synchronization.
 
 ## Document Processing Helpers
 
@@ -444,10 +504,11 @@ When worker pool is disabled (`PYODIDE_USE_POOL=false`):
 
 ## Security
 
-- ✅ WebAssembly sandboxing (Pyodide)
+- ✅ WebAssembly sandboxing (Pyodide for Python, BusyBox WASM for shell)
+- ✅ Worker-based isolation (each shell pipeline stage in separate Deno Worker)
 - ✅ Path validation (prevents directory traversal)
 - ✅ Size limits (20MB per file)
-- ✅ Thread isolation (complete separation)
+- ✅ Thread isolation (complete separation via PostgreSQL)
 - ✅ Configurable network access
 - ✅ Automatic session expiration
 - ✅ HITL approval for destructive operations (file deletion, overwrites)
@@ -479,6 +540,8 @@ MIT
 
 ## Related Projects
 
+- [DeepAgents](https://github.com/mayflower/deepagents) - Advanced agent framework with sandbox support
 - [LangChain](https://github.com/langchain-ai/langchain) - Framework for LLM applications
 - [LangGraph](https://github.com/langchain-ai/langgraph) - Build stateful agents
 - [Pyodide](https://pyodide.org/) - Python in WebAssembly
+- [BusyBox](https://busybox.net/) - Unix utilities in a single executable
