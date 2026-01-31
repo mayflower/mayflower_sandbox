@@ -207,23 +207,47 @@ This pattern enables complex visualizations and large-scale data processing with
 
 ## DeepAgents Backend
 
-Mayflower Sandbox provides a `SandboxBackendProtocol` adapter for the [DeepAgents](https://github.com/mayflower/deepagents) framework, enabling secure Python and shell execution in DeepAgents-powered applications.
+Mayflower Sandbox provides a `SandboxBackendProtocol` adapter for the [DeepAgents](https://github.com/mayflower/deepagents) framework.
+
+### LangChain Tools vs DeepAgents Backend
+
+Mayflower Sandbox offers two integration options:
+
+| Feature | LangChain Tools (12 tools) | DeepAgents Backend |
+|---------|---------------------------|-------------------|
+| Execute Python code | `python_run` | `execute("__PYTHON__\n...")` |
+| Run .py files from VFS | `python_run_file` | ❌ (read file, then execute) |
+| State-based execution | `python_run_prepared` | ❌ |
+| Execute shell commands | ❌ | `execute("shell cmd")` |
+| Read files | `file_read` | `read()` |
+| Write files | `file_write` | `write()` |
+| Edit files | `file_edit` | `edit()` |
+| List files | `file_list` | `ls_info()` |
+| Delete files | `file_delete` | ❌ |
+| Glob search | `file_glob` | `glob_info()` |
+| Grep search | `file_grep` | `grep_raw()` |
+| Batch upload | ❌ | `upload_files()` |
+| Batch download | ❌ | `download_files()` |
+| Install Skills | `skill_install` | ❌ |
+| Bind MCP servers | `mcp_bind_http` | ❌ |
+
+**Use LangChain Tools** for LangGraph agents with full features (skills, MCP, state-based execution).
+
+**Use DeepAgents Backend** when integrating with DeepAgents framework (shell execution, batch operations).
 
 ### SandboxBackendProtocol Methods
 
-The `MayflowerSandboxBackend` class implements all methods required by DeepAgents:
-
 | Method | Async Version | Description |
 |--------|---------------|-------------|
-| `execute(command)` | `aexecute()` | Run shell commands or Python (with `__PYTHON__` prefix) |
-| `read(path, offset, limit)` | `aread()` | Read file content with line numbers |
+| `execute(command)` | `aexecute()` | Run shell or Python (`__PYTHON__` prefix) |
+| `read(path, offset, limit)` | `aread()` | Read file with line numbers |
 | `write(path, content)` | `awrite()` | Create new file (fails if exists) |
-| `edit(path, old, new, replace_all)` | `aedit()` | Replace string in existing file |
-| `ls_info(path)` | `als_info()` | List directory contents |
-| `glob_info(pattern, path)` | `aglob_info()` | Find files matching glob pattern |
-| `grep_raw(pattern, path, glob)` | `agrep_raw()` | Search file contents with regex |
-| `upload_files(files)` | `aupload_files()` | Batch upload files |
-| `download_files(paths)` | `adownload_files()` | Batch download files |
+| `edit(path, old, new)` | `aedit()` | Replace string in file |
+| `ls_info(path)` | `als_info()` | List directory |
+| `glob_info(pattern, path)` | `aglob_info()` | Find files by pattern |
+| `grep_raw(pattern, path)` | `agrep_raw()` | Search file contents |
+| `upload_files(files)` | `aupload_files()` | Batch upload |
+| `download_files(paths)` | `adownload_files()` | Batch download |
 
 ### Usage
 
@@ -231,50 +255,39 @@ The `MayflowerSandboxBackend` class implements all methods required by DeepAgent
 import asyncpg
 from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
 
-# Create database pool
-db_pool = await asyncpg.create_pool(
-    host="localhost",
-    database="mayflower_test",
-    user="postgres",
-    password="postgres"
-)
+db_pool = await asyncpg.create_pool(...)
 
-# Create backend for a specific thread/user
 backend = MayflowerSandboxBackend(
     db_pool,
     thread_id="user_123",
-    allow_net=False,      # Enable network access for pip installs
-    stateful=True,        # Preserve Python state across executions
-    timeout_seconds=60.0  # Execution timeout
+    allow_net=False,      # Network access for pip
+    stateful=True,        # Preserve Python state
+    timeout_seconds=60.0
 )
 
-# Execute shell commands
-result = await backend.aexecute("echo hello > /tmp/test.txt")
-result = await backend.aexecute("cat /tmp/test.txt | grep hello")
+# Shell commands (default)
+result = await backend.aexecute("echo hello | grep hello")
+result = await backend.aexecute("cat /tmp/file.txt > /tmp/copy.txt")
 
-# Execute Python code (use __PYTHON__ prefix)
-result = await backend.aexecute("__PYTHON__\nprint('Hello from Python')")
+# Python code (prefix with __PYTHON__)
+result = await backend.aexecute("__PYTHON__\nimport math\nprint(math.pi)")
 
-# File operations
-content = await backend.aread("/tmp/test.txt")
-await backend.awrite("/tmp/new.txt", "content")
-await backend.aedit("/tmp/test.txt", "hello", "world")
-
-# Search operations
-files = await backend.aglob_info("*.txt", "/tmp")
-matches = await backend.agrep_raw("hello", path="/tmp")
+# To run a .py file from VFS, read then execute:
+content = await backend.aread("/tmp/script.py")
+# Extract code from content (strip line numbers), then:
+result = await backend.aexecute(f"__PYTHON__\n{code}")
 ```
 
-### Shell Execution Features
+### Shell Features
 
-The backend supports shell command execution via BusyBox WASM:
+BusyBox WASM provides Unix shell execution:
 
-- **Basic commands:** `echo`, `cat`, `grep`, `wc`, `ls`, `mkdir`, `rm`, etc.
+- **Commands:** `echo`, `cat`, `grep`, `wc`, `ls`, `mkdir`, `rm`, `sed`, `awk`, etc.
 - **Pipes:** `echo hello | cat | grep hello`
-- **Command chaining:** `cmd1 && cmd2`, `cmd1 ; cmd2`
+- **Chaining:** `cmd1 && cmd2`, `cmd1 ; cmd2`
 - **Redirections:** `>`, `>>`, `<`
 
-**Pipeline architecture:** Each pipe stage runs in a separate Deno Worker connected via SharedArrayBuffer ring buffers with Atomics synchronization.
+Each pipe stage runs in a separate Deno Worker with SharedArrayBuffer ring buffers.
 
 ## Document Processing Helpers
 
