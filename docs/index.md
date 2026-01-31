@@ -9,6 +9,7 @@ Mayflower Sandbox provides secure, isolated Python code execution with persisten
 ## Key Features
 
 - **Secure Python Execution** - Pyodide WebAssembly sandbox with configurable network access
+- **Shell Execution** - BusyBox WASM sandbox with pipe support (`echo | cat | grep`)
 - **Persistent Virtual Filesystem** - PostgreSQL-backed storage (20MB file limit per file)
 - **Document Processing Helpers** - Built-in helpers for Word, Excel, PowerPoint, and PDF
 - **Stateful Execution** - Variables and state persist across executions and restarts

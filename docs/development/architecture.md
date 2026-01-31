@@ -91,6 +91,28 @@ Optional performance optimization:
 - **Health monitoring** and auto-recovery
 - **70-95% faster** than one-shot execution
 
+### Shell Executor
+
+BusyBox WASM-based shell execution for the DeepAgents backend:
+- **BusyBox WASM**: Compiled BusyBox running in WebAssembly
+- **VFS Integration**: Files from PostgreSQL mounted into MEMFS
+- **Pipe Support**: Full pipe support via Worker-based isolation (`echo | cat | grep`)
+- **SharedArrayBuffer**: Ring buffer pipes with Atomics for synchronization
+- **Command Chaining**: Supports `&&`, `||`, and `;` operators
+
+#### Execution Modes
+
+1. **Simple Mode**: Direct applet invocation for basic commands
+2. **Pipeline Mode**: Worker-based isolation for pipe commands
+
+```
+echo hello | cat | grep hello
+     ↓         ↓         ↓
+  Worker 1 → Worker 2 → Worker 3
+       ↘    SharedArrayBuffer    ↙
+              Ring Buffer Pipes
+```
+
 ## Database Schema
 
 ### sandbox_sessions
