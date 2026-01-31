@@ -397,6 +397,15 @@ if 'matplotlib' not in sys.modules:
           );
         } catch (error) {
           console.error(`[Worker] Error processing request:`, error);
+          // Send JSON-RPC error response for malformed requests
+          const errorResponse = {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32700, message: `Parse error: ${error}` }
+          };
+          await Deno.stdout.write(
+            new TextEncoder().encode(JSON.stringify(errorResponse) + "\n"),
+          );
         }
       }
     }

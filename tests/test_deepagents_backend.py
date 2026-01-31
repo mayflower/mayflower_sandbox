@@ -604,7 +604,7 @@ class TestErrorPaths:
         """Test upload when write_file raises unexpected exception."""
         mock_vfs.write_file = AsyncMock(side_effect=Exception("Database error"))
         result = await backend.aupload_files([("/file.txt", b"content")])
-        assert result[0].get("error") == "permission_denied"
+        assert result[0].get("error") == "write_error"
 
     @pytest.mark.asyncio
     async def test_aupload_files_write_invalid_path(self, backend, mock_vfs):

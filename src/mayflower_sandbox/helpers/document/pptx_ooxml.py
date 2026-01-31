@@ -180,7 +180,7 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
 
     try:
         pres = ET.fromstring(parts[_PRESENTATION_XML])
-        slide_id_list = pres.find(".//p:slide_id_list", NS)
+        slide_id_list = pres.find(".//p:sldIdLst", NS)
 
         if slide_id_list is None:
             return pptx_bytes

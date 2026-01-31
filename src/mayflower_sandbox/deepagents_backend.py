@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import logging
 import re
 import threading
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     from deepagents.backends.protocol import (
@@ -27,8 +30,8 @@ try:
 except Exception as exc:  # pragma: no cover - optional dependency
     raise ImportError("deepagents is required to use MayflowerSandboxBackend") from exc
 
-from .filesystem import FileNotFoundError, InvalidPathError, VirtualFilesystem
-from .sandbox_executor import SandboxExecutor
+from .filesystem import FileNotFoundError, InvalidPathError, VirtualFilesystem  # noqa: E402
+from .sandbox_executor import SandboxExecutor  # noqa: E402
 
 
 def _format_line_numbers(lines: list[str], start_line: int) -> str:
@@ -86,7 +89,9 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             self._loop = asyncio.get_running_loop()
             self._loop_thread_id = threading.get_ident()
         except RuntimeError:
-            pass
+            # Expected when called outside async context - no running event loop
+            self._loop = None
+            self._loop_thread_id = None
 
     def _run_async(self, coro: Any) -> Any:
         try:
@@ -111,7 +116,9 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             )
 
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()
+        # Use configured timeout plus buffer for cross-thread communication
+        timeout = self._executor.timeout_seconds + 10.0
+        return future.result(timeout=timeout)
 
     @property
     def id(self) -> str:
@@ -124,6 +131,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         try:
             normalized = self._vfs.validate_path(path)
         except InvalidPathError:
+            logger.debug(f"als_info: invalid path '{path}'")
             return []
 
         prefix = normalized
@@ -369,8 +377,11 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
                 await self._vfs.write_file(normalized, content, None)
             except InvalidPathError:
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
-            except Exception:
+            except PermissionError:
                 responses.append(FileUploadResponse(path=path, error="permission_denied"))
+            except Exception as e:
+                logger.error(f"Unexpected error uploading file {path}: {e}", exc_info=True)
+                responses.append(FileUploadResponse(path=path, error="write_error"))
             else:
                 responses.append(FileUploadResponse(path=normalized, error=None))
         return responses

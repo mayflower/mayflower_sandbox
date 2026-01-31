@@ -5,13 +5,12 @@
  * executes the command via `sh -c`, and returns changed files back to Python.
  *
  * Supports two execution modes:
- * 1. Simple mode: Direct applet invocation for commands without pipes/variables
- * 2. Full shell mode: ProcessManager-based execution for complex shell features
+ * 1. Simple mode: Direct applet invocation for commands without pipes
+ * 2. Pipeline mode: Worker-based isolation for pipe commands (echo | cat)
  */
 
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
 import { fromFileUrl, join, resolve, toFileUrl } from "@std/path";
-import { ProcessManager } from "./shell_process_manager.ts";
 
 interface ShellExecutionOptions {
   command: string;
@@ -660,6 +659,9 @@ function readAllFromPipeBuffer(pipe: PipeBuffer): string {
   const data = new Uint8Array(pipe.buffer, PIPE_HEADER_SIZE);
   const chunks: Uint8Array[] = [];
 
+  const MAX_WAIT_MS = 30000; // 30 second timeout
+  let totalWaited = 0;
+
   while (true) {
     const readPtr = Atomics.load(pipe.control, 0);
     const writePtr = Atomics.load(pipe.control, 1);
@@ -669,9 +671,14 @@ function readAllFromPipeBuffer(pipe: PipeBuffer): string {
 
     if (available === 0) {
       if (closed !== 0) break;
+      if (totalWaited >= MAX_WAIT_MS) {
+        throw new Error("Pipe read timeout: writer did not close pipe within 30 seconds");
+      }
       Atomics.wait(pipe.control, 1, writePtr, 100);
+      totalWaited += 100;
       continue;
     }
+    totalWaited = 0; // Reset timeout when data is available
 
     const chunk = new Uint8Array(available);
     for (let i = 0; i < available; i++) {
@@ -819,14 +826,18 @@ self.onmessage = async (e) => {
         if (dir && dir !== "/") {
           try {
             FS.mkdirTree(dir);
-          } catch (e) {}
+          } catch (e) {
+            stderrBuffer.push(\`Warning: Failed to create directory \${dir}: \${e}\`);
+          }
         }
         try {
           const data = typeof content === "string"
             ? new TextEncoder().encode(content)
             : new Uint8Array(content);
           FS.writeFile(filePath, data);
-        } catch (e) {}
+        } catch (e) {
+          stderrBuffer.push(\`Warning: Failed to write file \${filePath}: \${e}\`);
+        }
       }
 
       self.postMessage({ type: "ready" });
@@ -1000,52 +1011,6 @@ async function executePipeline(
 }
 
 /**
- * Execute shell command using ProcessManager (full shell support).
- * Supports pipes, variables, subshells, and other shell features.
- */
-async function executeShellWithProcessManager(
-  options: ShellExecutionOptions
-): Promise<ShellExecutionResult> {
-  const start = Date.now();
-  const stdoutLines: string[] = [];
-  const stderrLines: string[] = [];
-
-  const manager = new ProcessManager({
-    busyboxDir: options.busyboxDir,
-    initialFiles: options.files,
-    onStdout: (text) => stdoutLines.push(text),
-    onStderr: (text) => stderrLines.push(text),
-  });
-
-  try {
-    const pid = await manager.spawnShell(options.command);
-    const result = await manager.waitForProcess(pid);
-
-    return {
-      success: result.exitCode === 0,
-      stdout: stdoutLines.join("\n"),
-      stderr: stderrLines.join("\n"),
-      exit_code: result.exitCode,
-      execution_time_ms: Date.now() - start,
-      created_files: result.changedFiles.map((f) => ({
-        path: f.path,
-        content: Array.from(f.content),
-      })),
-    };
-  } catch (err) {
-    return {
-      success: false,
-      stdout: stdoutLines.join("\n"),
-      stderr: err instanceof Error ? err.message : String(err),
-      exit_code: 1,
-      execution_time_ms: Date.now() - start,
-    };
-  } finally {
-    manager.cleanup();
-  }
-}
-
-/**
  * Execute shell command using simple applet invocation.
  * Faster but limited to basic commands without pipes/variables.
  */
@@ -1100,9 +1065,8 @@ async function executeShellSimple(options: ShellExecutionOptions): Promise<Shell
 
 /**
  * Execute shell command, automatically choosing the best execution mode.
- * - Pipeline mode: Worker-based isolation for pipe commands
+ * - Pipeline mode: Worker-based isolation for pipe commands (echo | cat)
  * - Simple mode: Direct applet invocation for basic commands
- * - Full mode: ProcessManager for variables, subshells (TODO)
  */
 async function executeShell(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
   // Check for pipes first - use Worker-based pipeline execution
@@ -1112,8 +1076,7 @@ async function executeShell(options: ShellExecutionOptions): Promise<ShellExecut
 
   // Check if command needs full shell support (variables, subshells, etc.)
   if (needsFullShell(options.command)) {
-    // TODO: ProcessManager doesn't fully work yet for these cases
-    // For now, fall back to simple execution with a warning
+    // Complex shell features like variables/subshells fall back to simple mode
     console.error("Warning: Complex shell features not fully supported, attempting simple execution");
     return executeShellSimple(options);
   }
