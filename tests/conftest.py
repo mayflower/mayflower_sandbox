@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 
 import pytest
@@ -9,6 +10,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Tests assume the Dockerized database is exposed on localhost:5433.
 # Allow overrides via env, but default to the container mapping.
 os.environ.setdefault("POSTGRES_PORT", "5433")
+
+# Check if Deno is available
+DENO_AVAILABLE = shutil.which("deno") is not None
+
+# Marker for tests that require Deno
+requires_deno = pytest.mark.skipif(
+    not DENO_AVAILABLE,
+    reason="Deno is not installed (required for Pyodide sandbox execution)",
+)
 
 
 @pytest.fixture(scope="function", autouse=True)

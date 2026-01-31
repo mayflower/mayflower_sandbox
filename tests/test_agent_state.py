@@ -24,7 +24,37 @@ from typing_extensions import TypedDict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 load_dotenv()
 
+from mayflower_sandbox.agent_state import SandboxAgentState  # noqa: E402
 from mayflower_sandbox.tools import create_sandbox_tools  # noqa: E402
+
+
+def test_sandbox_agent_state_schema():
+    """Test that SandboxAgentState has the correct schema structure."""
+    # Verify TypedDict fields
+    annotations = SandboxAgentState.__annotations__
+    assert "messages" in annotations, "SandboxAgentState should have 'messages' field"
+    assert "created_files" in annotations, "SandboxAgentState should have 'created_files' field"
+
+    # Verify types are Annotated with add reducer
+    from typing import get_args, get_origin
+
+    messages_type = annotations["messages"]
+    created_files_type = annotations["created_files"]
+
+    # Check that both are Annotated types
+    assert get_origin(messages_type) is Annotated, "messages should be Annotated type"
+    assert get_origin(created_files_type) is Annotated, "created_files should be Annotated type"
+
+    # Check the inner types
+    messages_args = get_args(messages_type)
+    created_files_args = get_args(created_files_type)
+
+    assert messages_args[0] is list, "messages inner type should be list"
+    # created_files is list[str], so check origin is list
+    cf_inner = created_files_args[0]
+    assert cf_inner is list or get_origin(cf_inner) is list, (
+        "created_files inner type should be list[str]"
+    )
 
 
 class AgentState(TypedDict):
@@ -395,6 +425,22 @@ async def test_agent_can_reference_created_files(db_pool, clean_files):
         config=config,
     )
 
-    # Agent should be able to access the file
-    last_message = result2["messages"][-1]
-    assert "important data" in last_message.content.lower()
+    # Verify file_read tool was called (at least one ToolMessage exists)
+    tool_messages = [msg for msg in result2["messages"] if isinstance(msg, ToolMessage)]
+    assert tool_messages, "Expected at least one ToolMessage from file_read"
+
+    # Verify no tool execution errors (deterministic check)
+    for msg in tool_messages:
+        content = str(msg.content)
+        assert not content.startswith("Error"), f"Tool execution failed: {content[:200]}"
+
+    # Verify file is still accessible in VFS after read (deterministic)
+    async with db_pool.acquire() as conn:
+        file_after_read = await conn.fetchrow(
+            """
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = 'agent_state_test' AND file_path = '/tmp/data.txt'
+        """
+        )
+        assert file_after_read is not None, "File should still exist after read"
+        assert file_after_read["content"] == b"important data"

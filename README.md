@@ -1,5 +1,11 @@
 # Mayflower Sandbox
 
+[![CI](https://github.com/mayflower/mayflower_sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/mayflower/mayflower_sandbox/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![mypy](https://img.shields.io/badge/type--checked-mypy-blue.svg)](https://mypy-lang.org/)
+
 Production-ready Python sandbox with PostgreSQL-backed virtual filesystem and document processing helpers for LangGraph agents.
 
 ## Overview
@@ -9,11 +15,13 @@ Mayflower Sandbox provides secure, isolated Python code execution with persisten
 ## Key Features
 
 - ✅ **Secure Python Execution** - Pyodide WebAssembly sandbox with configurable network access
+- ✅ **Shell Execution** - BusyBox WASM sandbox with pipe support (`echo | cat | grep`)
 - ✅ **Persistent Virtual Filesystem** - PostgreSQL-backed storage (20MB file limit per file)
 - ✅ **Document Processing Helpers** - Built-in helpers for Word, Excel, PowerPoint, and PDF
 - ✅ **Stateful Execution** - Variables and state persist across executions and restarts
 - ✅ **Thread Isolation** - Complete isolation between users/sessions via `thread_id`
 - ✅ **LangChain Integration** - All tools extend `BaseTool` for seamless LangGraph integration
+- ✅ **DeepAgents Integration** - `SandboxBackendProtocol` adapter for DeepAgents framework
 - ✅ **HITL Support** - Human-in-the-Loop approval for destructive operations (CopilotKit integration)
 - ✅ **HTTP File Server** - Download files via REST API
 - ✅ **Automatic Cleanup** - Configurable session expiration (180 days default)
@@ -34,7 +42,7 @@ createdb mayflower_test
 psql -d mayflower_test -f migrations/001_sandbox_schema.sql
 ```
 
-See [Installation Guide](docs/installation.md) for detailed setup instructions.
+See [Installation Guide](docs/getting-started/installation.md) for detailed setup instructions.
 
 ### Basic Usage
 
@@ -65,42 +73,45 @@ result = await agent.ainvoke({
 })
 ```
 
-See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
+See [Quick Start Guide](docs/getting-started/quickstart.md) for a complete tutorial.
 
 ## Documentation
 
 ### Getting Started
-- **[Installation Guide](docs/installation.md)** - Install and configure Mayflower Sandbox
-- **[Quick Start](docs/quickstart.md)** - Get started in 5 minutes
-- **[Examples](docs/examples.md)** - Complete working examples
+- **[Installation Guide](docs/getting-started/installation.md)** - Install and configure Mayflower Sandbox
+- **[Quick Start](docs/getting-started/quickstart.md)** - Get started in 5 minutes
+- **[Examples](docs/user-guide/examples.md)** - Complete working examples
 
 ### Reference
-- **[Tools Reference](docs/tools.md)** - Documentation for the 10 LangChain tools
-- **[Helpers Reference](docs/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
+- **[Tools Reference](docs/user-guide/tools.md)** - Documentation for the 12 LangChain tools
+- **[Helpers Reference](docs/user-guide/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
 - **[HITL Guide](#human-in-the-loop-hitl-approval)** - Human-in-the-Loop approval for destructive operations
-- **[Advanced Features](docs/advanced.md)** - Stateful execution, file server, cleanup
-- **[API Reference](docs/api.md)** - Low-level API documentation
+- **[Advanced Features](docs/advanced/stateful-execution.md)** - Stateful execution, file server, cleanup
+- **[Worker Pool](docs/advanced/worker-pool.md)** - Performance optimization with worker pool
+- **[MCP Integration](docs/advanced/mcp.md)** - Model Context Protocol support
+- **[API Reference](docs/reference/api.md)** - Low-level API documentation
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ LangGraph Agent                                     │
-│ ├─ ExecutePythonTool (direct code execution)       │
-│ ├─ RunPythonFileTool (run existing .py files)      │
-│ ├─ ExecuteCodeTool (state-based for large code)    │
-│ ├─ FileReadTool                                     │
-│ ├─ FileWriteTool                                    │
-│ ├─ FileEditTool (str_replace)                       │
-│ ├─ FileListTool                                     │
-│ ├─ FileDeleteTool                                   │
-│ ├─ FileGlobTool (glob_files)                        │
-│ └─ FileGrepTool (grep_files)                        │
+│ LangGraph Agent              OR      DeepAgents     │
+│ ├─ ExecutePythonTool                 Framework      │
+│ ├─ RunPythonFileTool          ┌──────────────────┐  │
+│ ├─ ExecuteCodeTool            │ MayflowerSandbox │  │
+│ ├─ FileReadTool               │ Backend          │  │
+│ ├─ FileWriteTool              │ (implements      │  │
+│ ├─ FileEditTool               │  SandboxBackend  │  │
+│ ├─ FileListTool               │  Protocol)       │  │
+│ ├─ FileDeleteTool             └──────────────────┘  │
+│ ├─ FileGlobTool                                     │
+│ └─ FileGrepTool                                     │
 └──────────────────┬──────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────┐
 │ Mayflower Sandbox                                   │
 │ ├─ SandboxExecutor (VFS + Pyodide integration)     │
+│ ├─ ShellExecutor (BusyBox WASM + pipes)            │
 │ ├─ VirtualFilesystem (PostgreSQL storage)          │
 │ ├─ Helper Modules (auto-loaded into VFS)           │
 │ ├─ SandboxManager (Session lifecycle)              │
@@ -110,13 +121,14 @@ See [Quick Start Guide](docs/quickstart.md) for a complete tutorial.
 ┌──────────────────▼──────────────────────────────────┐
 │ Infrastructure                                      │
 │ ├─ PostgreSQL (Persistent storage)                 │
-│ └─ Deno + Pyodide (Python execution)               │
+│ ├─ Deno + Pyodide (Python execution)               │
+│ └─ Deno + BusyBox WASM (Shell execution)           │
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 10 Tools
+## The 12 Tools
 
-Mayflower Sandbox provides 10 LangChain tools:
+Mayflower Sandbox provides 12 LangChain tools:
 
 ### Code Execution Tools
 
@@ -147,7 +159,20 @@ Mayflower Sandbox provides 10 LangChain tools:
 9. **FileGlobTool** (`file_glob`) - Find files matching glob patterns
 10. **FileGrepTool** (`file_grep`) - Search file contents with regex
 
-See [Tools Reference](docs/tools.md) for detailed documentation.
+### Skills & MCP Tools (Code Mode)
+
+11. **SkillInstallTool** (`skill_install`) - Install Claude Skills into sandbox
+12. **MCPBindHttpTool** (`mcp_bind_http`) - Bind Streamable HTTP MCP servers
+
+**Code Mode Pattern:** MCP tools are converted to **typed local Python code** rather than tool-call tokens. This follows [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/) approach—LLMs write Python code that calls typed functions with IDE-style autocompletion, improving batching and context efficiency.
+
+```python
+# After binding an MCP server, LLM writes code like:
+from servers.deepwiki import read_wiki_structure
+result = await read_wiki_structure(repoName="langchain-ai/langchain")
+```
+
+See [MCP Integration Guide](docs/advanced/mcp.md) for detailed documentation.
 
 ### When to Use Which Execution Tool?
 
@@ -179,6 +204,90 @@ How it works:
 4. Code is cleared from state after successful execution
 
 This pattern enables complex visualizations and large-scale data processing without serialization limits.
+
+## DeepAgents Backend
+
+Mayflower Sandbox provides a `SandboxBackendProtocol` adapter for the [DeepAgents](https://github.com/mayflower/deepagents) framework.
+
+### LangChain Tools vs DeepAgents Backend
+
+Mayflower Sandbox offers two integration options:
+
+| Feature | LangChain Tools (12 tools) | DeepAgents Backend |
+|---------|---------------------------|-------------------|
+| Execute Python code | `python_run` | `execute("__PYTHON__\n...")` |
+| Run .py files from VFS | `python_run_file` | ❌ (read file, then execute) |
+| State-based execution | `python_run_prepared` | ❌ |
+| Execute shell commands | ❌ | `execute("shell cmd")` |
+| Read files | `file_read` | `read()` |
+| Write files | `file_write` | `write()` |
+| Edit files | `file_edit` | `edit()` |
+| List files | `file_list` | `ls_info()` |
+| Delete files | `file_delete` | ❌ |
+| Glob search | `file_glob` | `glob_info()` |
+| Grep search | `file_grep` | `grep_raw()` |
+| Batch upload | ❌ | `upload_files()` |
+| Batch download | ❌ | `download_files()` |
+| Install Skills | `skill_install` | ❌ |
+| Bind MCP servers | `mcp_bind_http` | ❌ |
+
+**Use LangChain Tools** for LangGraph agents with full features (skills, MCP, state-based execution).
+
+**Use DeepAgents Backend** when integrating with DeepAgents framework (shell execution, batch operations).
+
+### SandboxBackendProtocol Methods
+
+| Method | Async Version | Description |
+|--------|---------------|-------------|
+| `execute(command)` | `aexecute()` | Run shell or Python (`__PYTHON__` prefix) |
+| `read(path, offset, limit)` | `aread()` | Read file with line numbers |
+| `write(path, content)` | `awrite()` | Create new file (fails if exists) |
+| `edit(path, old, new)` | `aedit()` | Replace string in file |
+| `ls_info(path)` | `als_info()` | List directory |
+| `glob_info(pattern, path)` | `aglob_info()` | Find files by pattern |
+| `grep_raw(pattern, path)` | `agrep_raw()` | Search file contents |
+| `upload_files(files)` | `aupload_files()` | Batch upload |
+| `download_files(paths)` | `adownload_files()` | Batch download |
+
+### Usage
+
+```python
+import asyncpg
+from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
+
+db_pool = await asyncpg.create_pool(...)
+
+backend = MayflowerSandboxBackend(
+    db_pool,
+    thread_id="user_123",
+    allow_net=False,      # Network access for pip
+    stateful=True,        # Preserve Python state
+    timeout_seconds=60.0
+)
+
+# Shell commands (default)
+result = await backend.aexecute("echo hello | grep hello")
+result = await backend.aexecute("cat /tmp/file.txt > /tmp/copy.txt")
+
+# Python code (prefix with __PYTHON__)
+result = await backend.aexecute("__PYTHON__\nimport math\nprint(math.pi)")
+
+# To run a .py file from VFS, read then execute:
+content = await backend.aread("/tmp/script.py")
+# Extract code from content (strip line numbers), then:
+result = await backend.aexecute(f"__PYTHON__\n{code}")
+```
+
+### Shell Features
+
+BusyBox WASM provides Unix shell execution:
+
+- **Commands:** `echo`, `cat`, `grep`, `wc`, `ls`, `mkdir`, `rm`, `sed`, `awk`, etc.
+- **Pipes:** `echo hello | cat | grep hello`
+- **Chaining:** `cmd1 && cmd2`, `cmd1 ; cmd2`
+- **Redirections:** `>`, `>>`, `<`
+
+Each pipe stage runs in a separate Deno Worker with SharedArrayBuffer ring buffers.
 
 ## Document Processing Helpers
 
@@ -423,10 +532,11 @@ When worker pool is disabled (`PYODIDE_USE_POOL=false`):
 
 ## Security
 
-- ✅ WebAssembly sandboxing (Pyodide)
+- ✅ WebAssembly sandboxing (Pyodide for Python, BusyBox WASM for shell)
+- ✅ Worker-based isolation (each shell pipeline stage in separate Deno Worker)
 - ✅ Path validation (prevents directory traversal)
 - ✅ Size limits (20MB per file)
-- ✅ Thread isolation (complete separation)
+- ✅ Thread isolation (complete separation via PostgreSQL)
 - ✅ Configurable network access
 - ✅ Automatic session expiration
 - ✅ HITL approval for destructive operations (file deletion, overwrites)
@@ -458,6 +568,8 @@ MIT
 
 ## Related Projects
 
+- [DeepAgents](https://github.com/mayflower/deepagents) - Advanced agent framework with sandbox support
 - [LangChain](https://github.com/langchain-ai/langchain) - Framework for LLM applications
 - [LangGraph](https://github.com/langchain-ai/langgraph) - Build stateful agents
 - [Pyodide](https://pyodide.org/) - Python in WebAssembly
+- [BusyBox](https://busybox.net/) - Unix utilities in a single executable

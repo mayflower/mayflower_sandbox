@@ -16,6 +16,9 @@ NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
 
+# File paths within pptx archive
+_PRESENTATION_XML = "ppt/presentation.xml"
+
 
 def unzip_pptx_like(pptx_bytes: bytes) -> dict[str, bytes]:
     """Extract all files from a pptx (zip archive)."""
@@ -172,14 +175,14 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
     """
     parts = unzip_pptx_like(pptx_bytes)
 
-    if "ppt/presentation.xml" not in parts:
+    if _PRESENTATION_XML not in parts:
         return pptx_bytes
 
     try:
-        pres = ET.fromstring(parts["ppt/presentation.xml"])
-        sldIdLst = pres.find(".//p:sldIdLst", NS)
+        pres = ET.fromstring(parts[_PRESENTATION_XML])
+        slide_id_list = pres.find(".//p:sldIdLst", NS)
 
-        if sldIdLst is None:
+        if slide_id_list is None:
             return pptx_bytes
 
         # Load relationships to map rId -> slide file
@@ -193,7 +196,7 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
             relmap[rel.get("Id")] = rel
 
         # Get current slide IDs
-        ids = sldIdLst.findall("./p:sldId", NS)
+        ids = slide_id_list.findall("./p:sldId", NS)
         if len(ids) != len(new_order):
             return pptx_bytes
 
@@ -218,7 +221,7 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
             if new_slide_num in slide_to_rid:
                 sld.set(f"{{{NS['r']}}}id", slide_to_rid[new_slide_num])
 
-        parts["ppt/presentation.xml"] = ET.tostring(pres, encoding="utf-8", xml_declaration=True)
+        parts[_PRESENTATION_XML] = ET.tostring(pres, encoding="utf-8", xml_declaration=True)
         parts[rels_path] = ET.tostring(rels, encoding="utf-8", xml_declaration=True)
     except (ET.ParseError, KeyError, ValueError):
         return pptx_bytes

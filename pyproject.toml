@@ -7,39 +7,52 @@ name = "mayflower-sandbox"
 version = "0.2.0"
 description = "Python sandbox with persistent virtual filesystem for LangGraph agents"
 authors = [{name = "Mayflower Team", email = "dev@mayflower.ai"}]
-requires-python = ">=3.10"
+requires-python = ">=3.11,<4.0"
 dependencies = [
-    "asyncpg>=0.29.0",
-    "datamodel-code-generator>=0.25.0",  # JSON Schema → Pydantic
-    "httpx>=0.27",
-    "jsonschema>=4.0.0",  # Runtime validation
-    "langchain-core>=0.3.0",
-    "mcp>=1.9.4",
-    "pydantic>=2.7",
-    "PyYAML>=6.0",
+    "asyncpg>=0.31.0",
+    "datamodel-code-generator>=0.53.0", # JSON Schema → Pydantic
+    "httpx>=0.28.1",
+    "jsonschema>=4.26.0", # Runtime validation
+    "langchain-core>=1.2.7",
+    "mcp>=1.26.0",
+    "pydantic>=2.12.5",
+    "PyYAML>=6.0.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "mypy>=1.5.0",
-    "ruff>=0.1.0",
-    "asyncpg-stubs>=0.30.0",
-    "python-dotenv>=1.0.0",
-    "aiohttp>=3.9.0",
-    "langchain>=0.3.0",
-    "langchain-openai>=0.3.0",
-    "langgraph>=0.2.0",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.1.0",
+    "pytest-cov>=7.0.0",
+    "mypy>=1.19.1",
+    "ruff>=0.14.14",
+    "bandit>=1.9.3",
+    "pre-commit>=4.5.1",
+    "asyncpg-stubs>=0.31.1",
+    "python-dotenv>=1.2.1",
+    "aiohttp>=3.13.3",
+    "langchain>=1.2.7",
+    "langchain-openai>=1.1.7",
+    "langgraph>=1.0.7",
 ]
 examples = [
-    "langgraph>=0.2.0",
-    "langchain-anthropic>=0.3.0",
+    "langgraph>=1.0.7",
+    "langchain-anthropic>=1.3.1",
+]
+deepagents = [
+    "deepagents>=0.1.0",
 ]
 
 [tool.setuptools.package-data]
-mayflower_sandbox = ["*.ts", "*.js", "helpers/**/*.py"]
+mayflower_sandbox = [
+    "*.ts",
+    "*.js",
+    "*.wasm",
+    "deno.json",
+    "deno.lock",
+    "busybox/*",
+    "helpers/**/*.py",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -47,6 +60,27 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+# SonarQube-compatible output (junit.xml and coverage.xml)
+# Usage: pytest --junitxml=junit.xml --cov=src --cov-report=xml
+addopts = "--junitxml=junit.xml"
+markers = [
+    "external: marks tests that require network access to external services",
+    "slow: marks tests that may take several seconds due to network latency",
+]
+
+[tool.coverage.run]
+# Use relative paths in coverage.xml for SonarQube compatibility
+relative_files = true
+source = ["src"]
+# Exclude modules that run inside Pyodide sandbox (coverage not trackable)
+omit = [
+    "src/mayflower_sandbox/helpers/document/*",
+    "src/mayflower_sandbox/helpers/_install.py",
+    "src/mayflower_sandbox/helpers/__init__.py",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"
 
 [tool.ruff]
 line-length = 100
@@ -64,6 +98,7 @@ select = [
     "C4",   # flake8-comprehensions
     "SIM",  # flake8-simplify
     "TCH",  # flake8-type-checking
+    "S",    # flake8-bandit (security) - for SARIF/SonarQube
 ]
 
 ignore = [
@@ -81,6 +116,32 @@ ignore = [
     "N802",   # function name should be lowercase
     "N803",   # argument name should be lowercase
     "E402",   # module level import not at top of file (needed for load_dotenv)
+    "S101",   # assert in tests is expected
+    "S108",   # /tmp paths in tests refer to sandbox VFS, not host filesystem
+    "S311",   # pseudo-random generator ok in tests
+]
+"**/test_*.py" = [
+    "S101",   # assert in tests is expected
+    "S102",   # exec usage in tests for dynamic module creation
+    "S108",   # /tmp paths in tests refer to sandbox VFS, not host filesystem
+    "S311",   # pseudo-random generator ok in tests
+]
+# Document helpers run in Pyodide sandbox - /tmp paths are VFS, not host filesystem
+"**/helpers/document/*.py" = [
+    "S108",   # /tmp paths are sandbox VFS paths, not host filesystem
+    "S314",   # XML parsing is intentional for Office document manipulation
+]
+# Server binds to 0.0.0.0 for container deployment
+"**/server.py" = [
+    "S104",   # Binding to all interfaces is intentional for Docker/K8s
+]
+# Sandbox executor runs Deno subprocess by design
+"**/sandbox_executor.py" = [
+    "S607",   # Partial path 'deno' is intentional - installed in PATH
+]
+# Execute code tool uses /tmp as default VFS path
+"**/tools/execute_code.py" = [
+    "S108",   # /tmp paths are sandbox VFS paths, not host filesystem
 ]
 
 [tool.mypy]

@@ -69,7 +69,8 @@ class MCPBridgeServer:
             The port number the server is listening on
         """
         if self.is_running:
-            assert self._port is not None
+            if self._port is None:
+                raise RuntimeError("MCP bridge is running but port is not set")
             return self._port
 
         # Load MCP server configs from database
@@ -83,7 +84,8 @@ class MCPBridgeServer:
         )
 
         sock = self._server.sockets[0]
-        assert sock is not None
+        if sock is None:
+            raise RuntimeError("Server socket not available")
         self._port = sock.getsockname()[1]
 
         logger.info(
@@ -172,6 +174,37 @@ class MCPBridgeServer:
             return value
         return str(value)
 
+    async def _execute_mcp_call(
+        self, server_name: str, tool_name: str, args: dict
+    ) -> tuple[str, bytes]:
+        """Execute an MCP call and return (status, body)."""
+        if server_name not in self._servers_cache:
+            raise RuntimeError(f"MCP server '{server_name}' is not registered for this thread.")
+
+        validation_errors = self._validator.validate(server_name, tool_name, args)
+        if validation_errors:
+            error_list = "; ".join(validation_errors)
+            return (
+                "400 Bad Request",
+                json.dumps(
+                    {"error": f"Validation failed for {server_name}.{tool_name}: {error_list}"}
+                ).encode("utf-8"),
+            )
+
+        config = self._servers_cache[server_name]
+        result = await self._mcp_manager.call(
+            self.thread_id,
+            server_name,
+            tool_name,
+            args,
+            url=config["url"],
+            headers=config.get("headers"),
+        )
+        return (
+            "200 OK",
+            json.dumps({"result": result}, default=self._json_default).encode("utf-8"),
+        )
+
     async def _handle_request(
         self,
         reader: asyncio.StreamReader,
@@ -208,40 +241,11 @@ class MCPBridgeServer:
                 status = "404 Not Found"
                 body = json.dumps({"error": "Endpoint not found"}).encode("utf-8")
             else:
-                # Parse JSON payload
+                # Parse JSON payload and execute MCP call
                 data = json.loads(payload.decode("utf-8"))
-                server_name = data.get("server")
-                tool_name = data.get("tool")
-                args = data.get("args") or {}
-
-                # Validate server is registered
-                if server_name not in self._servers_cache:
-                    raise RuntimeError(
-                        f"MCP server '{server_name}' is not registered for this thread."
-                    )
-
-                # Validate args against schema (security enforcement)
-                validation_errors = self._validator.validate(server_name, tool_name, args)
-                if validation_errors:
-                    status = "400 Bad Request"
-                    error_list = "; ".join(validation_errors)
-                    body = json.dumps(
-                        {"error": f"Validation failed for {server_name}.{tool_name}: {error_list}"}
-                    ).encode("utf-8")
-                else:
-                    # Execute MCP call
-                    config = self._servers_cache[server_name]
-                    result = await self._mcp_manager.call(
-                        self.thread_id,
-                        server_name,
-                        tool_name,
-                        args,
-                        url=config["url"],
-                        headers=config.get("headers"),
-                    )
-                    body = json.dumps({"result": result}, default=self._json_default).encode(
-                        "utf-8"
-                    )
+                status, body = await self._execute_mcp_call(
+                    data.get("server"), data.get("tool"), data.get("args") or {}
+                )
 
         except Exception as exc:  # noqa: BLE001 - return error payload to sandbox
             status = "500 Internal Server Error"

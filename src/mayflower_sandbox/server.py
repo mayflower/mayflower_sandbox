@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class FileServer:
     """HTTP server for serving sandbox files."""
 
-    def __init__(self, db_pool: asyncpg.Pool, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(self, db_pool: asyncpg.Pool, host: str = "0.0.0.0", port: int = 8080):  # nosec B104 - intentional for container deployment
         """Initialize file server.
 
         Args:
@@ -38,8 +38,20 @@ class FileServer:
         self.app.router.add_get("/files/{thread_id}", self.list_files)
 
     async def health_check(self, request: web.Request) -> web.Response:
-        """Health check endpoint."""
-        return web.json_response({"status": "healthy", "service": "mayflower-sandbox"})
+        """Health check endpoint with database connectivity verification."""
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            return web.json_response({"status": "healthy", "service": "mayflower-sandbox"})
+        except Exception:
+            return web.json_response(
+                {
+                    "status": "unhealthy",
+                    "service": "mayflower-sandbox",
+                    "error": "database unavailable",
+                },
+                status=503,
+            )
 
     async def serve_file(self, request: web.Request) -> web.Response:
         """Serve a file from VFS.
@@ -127,8 +139,10 @@ class FileServer:
         web.run_app(self.app, host=self.host, port=self.port)
 
 
-async def create_file_server(
-    db_pool: asyncpg.Pool, host: str = "0.0.0.0", port: int = 8080
+def create_file_server(
+    db_pool: asyncpg.Pool,
+    host: str = "0.0.0.0",  # nosec B104 - intentional for container deployment
+    port: int = 8080,
 ) -> FileServer:
     """Create and configure file server.
 

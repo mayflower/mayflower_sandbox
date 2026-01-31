@@ -95,6 +95,43 @@ Charlie,35,Seattle"""
     assert "Charlie,35,Seattle" in content
 
 
+async def test_file_write_from_history_fallback(db_pool, clean_files):
+    """Test that file_write extracts content from message history when state is empty."""
+    tool = FileWriteTool(db_pool=db_pool, thread_id="test_file_write")
+
+    tool_call_id = "history_write_001"
+    state = {
+        "pending_content_map": {},
+        "messages": [
+            {
+                "content": "Create file:\n```text file=/tmp/history.txt\nHello from history\n```\n",
+            }
+        ],
+    }
+
+    result = await tool._arun(
+        file_path="/tmp/history.txt",
+        description="History write test",
+        _state=state,
+        tool_call_id=tool_call_id,
+    )
+
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
+    assert "Successfully wrote" in result_str
+    assert "Error" not in result_str
+
+    vfs = VirtualFilesystem(db_pool, "test_file_write")
+    file_info = await vfs.read_file("/tmp/history.txt")
+    content = file_info["content"].decode("utf-8")
+    assert "Hello from history" in content
+
+
 async def test_file_write_clears_pending_content(db_pool, clean_files):
     """Test that file_write returns Command to clear pending_content_map entry."""
     tool = FileWriteTool(db_pool=db_pool, thread_id="test_file_write")
@@ -126,7 +163,7 @@ async def test_file_write_no_content_error(db_pool, clean_files):
     tool = FileWriteTool(db_pool=db_pool, thread_id="test_file_write")
 
     # Empty state - no pending_content
-    state = {}
+    state: dict[str, str] = {}
 
     result = await tool._arun(
         file_path="/tmp/empty.txt",

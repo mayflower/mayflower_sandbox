@@ -95,7 +95,7 @@ async def test_write_bootstrap_files_creates_maistack_tools(db_pool, clean_files
     """Test that write_bootstrap_files creates maistack_tools.py in VFS."""
     vfs = VirtualFilesystem(db_pool, "test_maistack_tools")
 
-    await write_bootstrap_files(vfs, thread_id="test_maistack_tools")
+    await write_bootstrap_files(vfs)
 
     # Verify maistack_tools.py was created
     entry = await vfs.read_file("/site-packages/maistack_tools.py")
@@ -110,7 +110,7 @@ async def test_write_bootstrap_files_creates_both_modules(db_pool, clean_files):
     """Test that write_bootstrap_files creates both mayflower_mcp and maistack_tools."""
     vfs = VirtualFilesystem(db_pool, "test_maistack_tools")
 
-    await write_bootstrap_files(vfs, thread_id="test_maistack_tools")
+    await write_bootstrap_files(vfs)
 
     # Both files should exist
     mcp_entry = await vfs.read_file("/site-packages/mayflower_mcp.py")

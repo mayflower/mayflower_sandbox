@@ -9,6 +9,7 @@ Mayflower Sandbox provides secure, isolated Python code execution with persisten
 ## Key Features
 
 - **Secure Python Execution** - Pyodide WebAssembly sandbox with configurable network access
+- **Shell Execution** - BusyBox WASM sandbox with pipe support (`echo | cat | grep`)
 - **Persistent Virtual Filesystem** - PostgreSQL-backed storage (20MB file limit per file)
 - **Document Processing Helpers** - Built-in helpers for Word, Excel, PowerPoint, and PDF
 - **Stateful Execution** - Variables and state persist across executions and restarts
@@ -88,7 +89,7 @@ result = await agent.ainvoke({
 └─────────────────────────────────────────────────────┘
 ```
 
-## The 10 Tools
+## The 12 Tools
 
 ### Code Execution Tools
 
@@ -109,6 +110,13 @@ result = await agent.ainvoke({
 | **FileDeleteTool** | `file_delete` | Delete files (HITL required) |
 | **FileGlobTool** | `file_glob` | Find files with glob patterns |
 | **FileGrepTool** | `file_grep` | Search file contents with regex |
+
+### Skills & MCP Tools
+
+| Tool | Name | Description |
+|------|------|-------------|
+| **SkillInstallTool** | `skill_install` | Install Claude Skills into sandbox |
+| **MCPBindHttpTool** | `mcp_bind_http` | Bind Streamable HTTP MCP servers |
 
 ## Document Processing Helpers
 

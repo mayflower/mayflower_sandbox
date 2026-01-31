@@ -6,6 +6,7 @@ Provides 70-95% performance improvement over one-shot processes.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -102,16 +103,26 @@ class PyodideWorker:
             raise RuntimeError(f"Worker {self.worker_id} failed to initialize")
 
     async def _wait_ready(self) -> None:
-        """Wait for worker to print 'Ready' to stderr."""
+        """Wait for worker to print 'Ready' to stderr.
+
+        Uses chunked read() instead of readline() to avoid pipe buffering issues
+        that can cause readline() to block indefinitely.
+        """
         if not self.process or not self.process.stderr:
             raise RuntimeError("Process not started")
 
+        buffer = b""
         while True:
-            line = await self.process.stderr.readline()
-            if not line:
+            # Use read() with small chunks - readline() can block on pipes due to buffering
+            chunk = await self.process.stderr.read(1024)
+            if not chunk:
                 raise RuntimeError("Worker process terminated during initialization")
-            if b"Ready" in line:
-                logger.debug(f"[Worker {self.worker_id}] {line.decode().strip()}")
+            buffer += chunk
+            if b"Ready" in buffer:
+                # Log the ready message
+                for line in buffer.decode(errors="replace").splitlines():
+                    if "Ready" in line:
+                        logger.debug(f"[Worker {self.worker_id}] {line.strip()}")
                 return
 
     async def execute(
@@ -276,6 +287,7 @@ class WorkerPool:
         self.started = False
         self._health_task: asyncio.Task[None] | None = None
         self._allowed_hosts: set[str] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         """Start all workers in the pool."""
@@ -344,8 +356,10 @@ class WorkerPool:
                     )
                 except Exception as e:
                     logger.error(f"Worker {worker.worker_id} execution failed: {e}")
-                    # Try to restart worker
-                    asyncio.create_task(self._restart_worker(worker))
+                    # Try to restart worker (store reference to prevent GC)
+                    task = asyncio.create_task(self._restart_worker(worker))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                     # Continue to next worker
 
         # All busy or failed, use next in rotation anyway
@@ -425,10 +439,8 @@ class WorkerPool:
         # Cancel health monitoring
         if self._health_task:
             self._health_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._health_task
-            except asyncio.CancelledError:
-                pass
 
         # Shutdown all workers
         await asyncio.gather(*[w.shutdown() for w in self.workers], return_exceptions=True)

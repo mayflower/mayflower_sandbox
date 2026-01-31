@@ -305,20 +305,37 @@ from mayflower_sandbox.tools import create_sandbox_tools
 
 tools = create_sandbox_tools(
     db_pool: asyncpg.Pool,
-    thread_id: str,
-    allow_net: bool = True,
-    timeout_seconds: float = 120.0
-) -> list[BaseTool]
+    thread_id: str | None = None,
+    include_tools: list[str] | None = None
+) -> list[SandboxTool]
 ```
 
-Create all 5 LangChain tools.
+Create sandbox tools for LangGraph integration.
 
-Returns list of:
-- `ExecutePythonTool`
-- `FileReadTool`
-- `FileWriteTool`
-- `FileListTool`
-- `FileDeleteTool`
+**Parameters:**
+- `db_pool` (asyncpg.Pool): PostgreSQL connection pool
+- `thread_id` (str | None): Thread ID for session isolation. If None, tools will read thread_id from callback context at runtime (recommended for LangGraph).
+- `include_tools` (list[str] | None): List of tool names to include (default: all tools)
+
+**Available tool names:**
+- `python_run`, `python_run_file`, `python_run_prepared`
+- `file_read`, `file_write`, `file_list`, `file_delete`, `file_edit`
+- `file_glob`, `file_grep`
+- `skill_install`, `mcp_bind_http`
+
+**Returns list of (12 tools by default):**
+- `ExecutePythonTool` - Execute Python code directly
+- `RunPythonFileTool` - Execute .py files from VFS
+- `ExecuteCodeTool` - State-based execution for large code
+- `FileReadTool` - Read files from VFS
+- `FileWriteTool` - Write files to VFS
+- `FileEditTool` - Edit files by string replacement
+- `FileListTool` - List files with prefix filtering
+- `FileDeleteTool` - Delete files from VFS
+- `FileGlobTool` - Find files with glob patterns
+- `FileGrepTool` - Search file contents with regex
+- `SkillInstallTool` - Install Claude Skills
+- `MCPBindHttpTool` - Bind MCP servers
 
 ## Database Schema
 
@@ -383,6 +400,7 @@ All operations can raise:
 
 ## Related Documentation
 
-- [Tools Reference](../user-guide/tools.md) - The 10 LangChain tools
+- [Tools Reference](../user-guide/tools.md) - The 12 LangChain tools
 - [Advanced Features](../advanced/stateful-execution.md) - Stateful execution, file server, cleanup
+- [MCP Integration](../advanced/mcp.md) - Skills and MCP server binding
 - [Examples](../user-guide/examples.md) - Complete working examples

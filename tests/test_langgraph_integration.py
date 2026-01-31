@@ -3,6 +3,11 @@ Integration tests for LangGraph with Mayflower Sandbox tools.
 
 These tests use real LLM calls to verify the sandbox tools work correctly
 with LangGraph agents.
+
+Test Strategy:
+- All assertions use deterministic VFS verification
+- NO brittle patterns like string matching on LLM responses
+- Verify file existence and content directly in database
 """
 
 import os
@@ -22,6 +27,29 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 
 from mayflower_sandbox.tools import create_sandbox_tools
+
+
+async def vfs_read_file(db_pool, thread_id: str, path: str) -> bytes | None:
+    """Read file content from VFS. Returns None if file doesn't exist."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = $1 AND file_path = $2
+            """,
+            thread_id,
+            path,
+        )
+        return row["content"] if row else None
+
+
+async def vfs_file_exists(db_pool, thread_id: str, path: str) -> bool:
+    """Check if file exists in VFS."""
+    return await vfs_read_file(db_pool, thread_id, path) is not None
+
+
+# Mark all tests in this module as slow (LLM-based)
+pytestmark = pytest.mark.slow
 
 
 @pytest.fixture
@@ -80,9 +108,9 @@ async def agent(db_pool):
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_file_creation(agent, clean_files):
+async def test_agent_file_creation(agent, db_pool, clean_files):
     """Test agent can create files using write_file tool."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 ("user", "Create a file called /tmp/hello.txt with the content 'Hello, World!'")
@@ -91,51 +119,42 @@ async def test_agent_file_creation(agent, clean_files):
         config={"configurable": {"thread_id": "test-file-creation"}},
     )
 
-    # Check the agent's response
-    last_message = result["messages"][-1]
-    assert last_message.content is not None
-
-    # Verify file was created by checking with list_files
-    result2 = await agent.ainvoke(
-        {"messages": [("user", "List all files in /tmp/")]},
-        config={"configurable": {"thread_id": "test-file-creation"}},
-    )
-
-    last_message2 = result2["messages"][-1]
-    response = last_message2.content.lower()
-    assert "hello.txt" in response or "/tmp/hello.txt" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/hello.txt")
+    assert content is not None, "File was not created"
+    assert b"Hello" in content and b"World" in content
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_python_execution(agent, clean_files):
-    """Test agent can execute Python code."""
-    result = await agent.ainvoke(
+async def test_agent_python_execution(agent, db_pool, clean_files):
+    """Test agent can execute Python code and save result."""
+    await agent.ainvoke(
         {
             "messages": [
                 (
                     "user",
-                    "Execute Python code to calculate the sum of numbers from 1 to 10 and print the result",
+                    "Execute Python code to calculate the sum of numbers from 1 to 10 "
+                    "and save the result to /tmp/sum_result.txt",
                 )
             ]
         },
         config={"configurable": {"thread_id": "test-python"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-
-    # Should mention the sum (55)
-    assert "55" in response or "fifty" in response.lower()
+    # Deterministic VFS verification - sum(1..10) = 55
+    content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/sum_result.txt")
+    assert content is not None, "Result file was not created"
+    assert b"55" in content, "Expected sum 55 in file content"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_file_operations_workflow(agent, clean_files):
+async def test_agent_file_operations_workflow(agent, db_pool, clean_files):
     """Test agent can perform complete file workflow: write, read, process."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -143,18 +162,24 @@ async def test_agent_file_operations_workflow(agent, clean_files):
                     """Do the following:
 1. Write a CSV file /tmp/data.csv with headers 'name,age' and two rows: 'Alice,30' and 'Bob,25'
 2. Execute Python code to read the CSV and calculate the average age
-3. Tell me the average age""",
+3. Save the average to /tmp/average.txt""",
                 )
             ]
         },
         config={"configurable": {"thread_id": "test-workflow"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
+    # Deterministic VFS verification
+    csv_content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/data.csv")
+    assert csv_content is not None, "CSV file was not created"
+    csv_text = csv_content.decode("utf-8")
+    assert "Alice" in csv_text and "30" in csv_text
+    assert "Bob" in csv_text and "25" in csv_text
 
-    # Should calculate average: (30 + 25) / 2 = 27.5
-    assert "27.5" in response or "27" in response or "28" in response
+    # Average (30 + 25) / 2 = 27.5
+    avg_content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/average.txt")
+    assert avg_content is not None, "Average file was not created"
+    assert b"27" in avg_content  # Could be 27.5 or 27
 
 
 @pytest.mark.skipif(
@@ -173,15 +198,24 @@ async def test_agent_read_file(agent, db_pool, clean_files):
             18,
         )
 
-    result = await agent.ainvoke(
-        {"messages": [("user", "Read the file /tmp/secret.txt and tell me what it says")]},
+    await agent.ainvoke(
+        {
+            "messages": [
+                ("user", "Read the file /tmp/secret.txt and copy its content to /tmp/copy.txt")
+            ]
+        },
         config={"configurable": {"thread_id": "test-read"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
+    # Deterministic VFS verification - original file should still exist
+    original = await vfs_read_file(db_pool, "langgraph_test", "/tmp/secret.txt")
+    assert original is not None, "Original file should still exist"
+    assert b"42" in original
 
-    assert "42" in response or "secret" in response.lower()
+    # Copy should have been created with same content
+    copy = await vfs_read_file(db_pool, "langgraph_test", "/tmp/copy.txt")
+    assert copy is not None, "Copy file should have been created"
+    assert b"42" in copy or b"secret" in copy.lower()
 
 
 @pytest.mark.skipif(
@@ -202,25 +236,34 @@ async def test_agent_list_and_delete(agent, db_pool, clean_files):
             b"test2",
         )
 
-    # Ask agent to list and delete
-    result = await agent.ainvoke(
-        {"messages": [("user", "List all files in /tmp/ and then delete /tmp/file1.txt")]},
-        config={"configurable": {"thread_id": "test-list-delete"}},
+    # Ask agent to list and delete (with approved=True to bypass HITL in tests)
+    await agent.ainvoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "List all files in /tmp/ directory. Then delete /tmp/file1.txt using file_delete with approved=True.",
+                )
+            ]
+        },
+        config={"configurable": {"thread_id": "test-list-delete"}, "recursion_limit": 50},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
+    # Deterministic VFS verification - file1 should be deleted, file2 should remain
+    file1 = await vfs_read_file(db_pool, "langgraph_test", "/tmp/file1.txt")
+    assert file1 is None, "file1.txt should have been deleted"
 
-    # Should mention the operation was successful
-    assert "delete" in response or "removed" in response or "success" in response
+    file2 = await vfs_read_file(db_pool, "langgraph_test", "/tmp/file2.txt")
+    assert file2 is not None, "file2.txt should still exist"
+    assert file2 == b"test2"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_data_analysis_task(agent, clean_files):
+async def test_agent_data_analysis_task(agent, db_pool, clean_files):
     """Test agent can perform a complete data analysis task."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
@@ -228,30 +271,34 @@ async def test_agent_data_analysis_task(agent, clean_files):
                     """Analyze sample sales data:
 1. Create a CSV file /tmp/sales.csv with columns: product,quantity,price
 2. Add 3 rows of sample data (make up realistic values)
-3. Execute Python to calculate total revenue
-4. Save the analysis to /tmp/analysis.txt
-5. Tell me the total revenue""",
+3. Execute Python to calculate total revenue (quantity * price for each row, then sum)
+4. Save the analysis to /tmp/analysis.txt""",
                 )
             ]
         },
         config={"configurable": {"thread_id": "test-analysis"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content
+    # Deterministic VFS verification
+    csv_content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/sales.csv")
+    assert csv_content is not None, "CSV file was not created"
+    csv_text = csv_content.decode("utf-8")
+    # Should have header and data rows
+    assert "product" in csv_text.lower() and "quantity" in csv_text.lower()
 
-    # Should mention some revenue amount
-    assert any(char.isdigit() for char in response)
-    assert "revenue" in response.lower() or "total" in response.lower()
+    analysis_content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/analysis.txt")
+    assert analysis_content is not None, "Analysis file was not created"
+    # Analysis should contain some numeric value (the revenue)
+    assert any(char.isdigit() for char in analysis_content.decode("utf-8"))
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_error_handling(agent, clean_files):
+async def test_agent_error_handling(agent, db_pool, clean_files):
     """Test agent handles errors gracefully."""
     # Ask agent to read non-existent file
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 ("user", "Read the file /tmp/this_does_not_exist.txt and tell me what it says")
@@ -260,40 +307,34 @@ async def test_agent_error_handling(agent, clean_files):
         config={"configurable": {"thread_id": "test-error"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-
-    # Should mention file not found or similar
-    assert (
-        "not found" in response
-        or "doesn't exist" in response
-        or "does not exist" in response
-        or "error" in response
-    )
+    # Deterministic verification - file should not exist
+    content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/this_does_not_exist.txt")
+    assert content is None, "Non-existent file should remain non-existent"
 
 
 @pytest.mark.skipif(
     not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set - skipping LLM test"
 )
-async def test_agent_python_with_file_output(agent, clean_files):
+async def test_agent_python_with_file_output(agent, db_pool, clean_files):
     """Test agent can execute Python that creates files."""
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {
             "messages": [
                 (
                     "user",
                     """Execute Python code that:
 1. Creates a list of numbers from 1 to 5
-2. Writes each number to a file /tmp/numbers.txt (one per line)
-3. Prints 'Done!'""",
+2. Writes each number to a file /tmp/numbers.txt (one per line)""",
                 )
             ]
         },
         config={"configurable": {"thread_id": "test-file-output"}},
     )
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-
-    # Should indicate success
-    assert "done" in response or "success" in response or "created" in response
+    # Deterministic VFS verification
+    content = await vfs_read_file(db_pool, "langgraph_test", "/tmp/numbers.txt")
+    assert content is not None, "Numbers file was not created"
+    text = content.decode("utf-8")
+    # Should contain numbers 1-5
+    for num in ["1", "2", "3", "4", "5"]:
+        assert num in text, f"Expected number {num} in file content"

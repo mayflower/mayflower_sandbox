@@ -1,490 +1,256 @@
-# Instruction: Make Mayflower Tools Context-Aware (Dynamic thread_id)
+# Architecture
 
-## Problem
+## Overview
 
-Currently, mayflower tools require `thread_id` at initialization, but in LangGraph it should come from runtime context (`RunnableConfig`). This causes:
-- Tools bound to LLM at graph creation with dummy `thread_id="default"`
-- Need to recreate tools for every request (performance overhead)
-- Architectural mismatch with LangGraph patterns
+Mayflower Sandbox is a production-ready Python sandbox with PostgreSQL-backed virtual filesystem, designed for LangGraph agents. It provides secure, isolated Python code execution with persistent file storage.
 
-## Solution
+## System Architecture
 
-Make mayflower tools read `thread_id` dynamically from LangChain's callback context at execution time.
-
----
-
-## Changes to Mayflower Sandbox
-
-### 1. Update `SandboxTool` Base Class
-
-**File:** `/home/johann/src/ml/mayflower-sandbox/src/mayflower_sandbox/tools/base.py`
-
-**Change `thread_id` from required to optional:**
-
-```python
-class SandboxTool(BaseTool):
-    """
-    Base class for all sandbox tools.
-
-    Provides connection to PostgreSQL and thread isolation.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    db_pool: asyncpg.Pool
-    thread_id: str | None = None  # Make optional, will be read from context
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      LangGraph Agent                             │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                    LangChain Tools (12)                      ││
+│  │  ┌────────────┐ ┌────────────┐ ┌────────────────────────┐   ││
+│  │  │ Execution  │ │    File    │ │    Skills & MCP        │   ││
+│  │  │ python_run │ │ file_read  │ │ skill_install          │   ││
+│  │  │ python_run_│ │ file_write │ │ mcp_bind_http          │   ││
+│  │  │ file       │ │ file_edit  │ │                        │   ││
+│  │  │ python_run_│ │ file_list  │ └────────────────────────┘   ││
+│  │  │ prepared   │ │ file_delete│                               ││
+│  │  └────────────┘ │ file_glob  │                               ││
+│  │                 │ file_grep  │                               ││
+│  │                 └────────────┘                               ││
+│  └─────────────────────────────────────────────────────────────┘│
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────────────┐
+│                    Mayflower Sandbox Core                        │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────────┐ │
+│  │SandboxExecutor │  │ VirtualFile-   │  │  SandboxManager    │ │
+│  │ • VFS sync     │  │ system (VFS)   │  │  • Session life-   │ │
+│  │ • Pyodide exec │  │ • PostgreSQL   │  │    cycle           │ │
+│  │ • Helper load  │  │   storage      │  │  • Expiration      │ │
+│  └────────┬───────┘  │ • 20MB limit   │  │  • Cleanup         │ │
+│           │          │ • Thread iso-  │  └────────────────────┘ │
+│           │          │   lation       │                         │
+│           │          └───────┬────────┘                         │
+│  ┌────────▼───────┐          │                                  │
+│  │  Worker Pool   │          │                                  │
+│  │ • 3 Deno procs │          │                                  │
+│  │ • Pyodide pre- │          │                                  │
+│  │   loaded       │          │                                  │
+│  │ • Round-robin  │          │                                  │
+│  └────────────────┘          │                                  │
+└────────────────────────────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────────────┐
+│                      Infrastructure                              │
+│  ┌────────────────────────┐  ┌────────────────────────────────┐ │
+│  │      PostgreSQL        │  │      Deno + Pyodide            │ │
+│  │ • sandbox_sessions     │  │ • WebAssembly sandbox          │ │
+│  │ • sandbox_filesystem   │  │ • Python 3.12 runtime          │ │
+│  │ • sandbox_session_bytes│  │ • micropip for packages        │ │
+│  │ • sandbox_skills       │  │                                │ │
+│  │ • sandbox_mcp_servers  │  │                                │ │
+│  └────────────────────────┘  └────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Add method to get thread_id from context:**
+## Core Components
 
-```python
-def _get_thread_id(self, run_manager: AsyncCallbackManagerForToolRun | None = None) -> str:
-    """Get thread_id from callback context or use instance default.
+### SandboxExecutor
 
-    Priority order:
-    1. From LangGraph config via callback metadata
-    2. From instance thread_id (if set)
-    3. Default fallback: "default"
-    """
-    # Try to get from LangGraph config via callback manager
-    if run_manager and hasattr(run_manager, 'metadata'):
-        metadata = run_manager.metadata or {}
-        if 'configurable' in metadata:
-            thread_id = metadata['configurable'].get('thread_id')
-            if thread_id:
-                return thread_id
+The main execution engine that coordinates:
+- **VFS Synchronization**: Files are loaded from PostgreSQL before execution and saved after
+- **Pyodide Integration**: Manages Deno subprocess running Pyodide WebAssembly
+- **Helper Loading**: Automatically loads helper modules into VFS at `/home/pyodide/`
+- **Worker Pool**: Optionally uses persistent Deno workers for 70-95% performance improvement
 
-    # Try to get from tags (alternative location)
-    if run_manager and hasattr(run_manager, 'tags'):
-        tags = run_manager.tags or []
-        for tag in tags:
-            if tag.startswith('thread_id:'):
-                return tag.split(':', 1)[1]
+### VirtualFilesystem (VFS)
 
-    # Fallback to instance thread_id
-    if self.thread_id:
-        return self.thread_id
+PostgreSQL-backed file storage providing:
+- **Persistence**: Files survive application restarts
+- **Thread Isolation**: Complete separation via `thread_id`
+- **Size Limits**: 20MB per file, enforced at database level
+- **Path Validation**: Prevents directory traversal attacks
 
-    # Last resort default
-    return "default"
+### SandboxManager
+
+Session lifecycle management:
+- **Session Creation**: Auto-created on first use
+- **Expiration**: 180-day default TTL
+- **Cleanup**: Automatic cleanup of expired sessions and files
+
+### Worker Pool
+
+Optional performance optimization:
+- **3 persistent Deno workers** (configurable)
+- **Pyodide pre-loaded** in each worker
+- **Round-robin** load balancing
+- **Health monitoring** and auto-recovery
+- **70-95% faster** than one-shot execution
+
+### Shell Executor
+
+BusyBox WASM-based shell execution for the DeepAgents backend:
+- **BusyBox WASM**: Compiled BusyBox running in WebAssembly
+- **VFS Integration**: Files from PostgreSQL mounted into MEMFS
+- **Pipe Support**: Full pipe support via Worker-based isolation (`echo | cat | grep`)
+- **SharedArrayBuffer**: Ring buffer pipes with Atomics for synchronization
+- **Command Chaining**: Supports `&&`, `||`, and `;` operators
+
+#### Pipeline Architecture
+
+Each pipeline stage runs in a separate Deno Worker, connected via SharedArrayBuffer ring buffers:
+
+```
+echo hello | cat | grep hello
+     ↓         ↓         ↓
+  Worker 1 → Worker 2 → Worker 3
+       ↘    SharedArrayBuffer    ↙
+              Ring Buffer Pipes
 ```
 
-### 2. Update All Tool Implementations
+This Worker-based isolation is necessary because BusyBox WASM has global state that prevents running multiple commands in the same process. Each Worker gets its own BusyBox instance with VFS files mounted.
 
-**Files to update:**
-- `execute.py` - ExecutePythonTool
-- `file_read.py` - FileReadTool
-- `file_write.py` - FileWriteTool
-- `file_edit.py` - FileEditTool
-- `file_list.py` - FileListTool
-- `file_delete.py` - FileDeleteTool
-- `file_glob.py` - FileGlobTool
-- `file_grep.py` - FileGrepTool
+## Database Schema
 
-**Pattern to apply - Replace `self.thread_id` with `self._get_thread_id(run_manager)`:**
+### sandbox_sessions
+Tracks active sessions with expiration.
 
-#### Example 1: `execute.py` (ExecutePythonTool)
-
-**Before:**
-```python
-async def _arun(
-    self,
-    code: str,
-    run_manager: AsyncCallbackManagerForToolRun | None = None,
-) -> str:
-    """Execute Python code in sandbox."""
-
-    # Get error history
-    error_history = get_error_history(self.thread_id)
-
-    # Create executor
-    executor = SandboxExecutor(
-        self.db_pool, self.thread_id, allow_net=True, timeout_seconds=60.0
-    )
-    # ...
-    if not result.success and result.stderr:
-        add_error_to_history(self.thread_id, code_snippet, result.stderr)
+```sql
+CREATE TABLE sandbox_sessions (
+    thread_id TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '180 days'
+);
 ```
 
-**After:**
-```python
-async def _arun(
-    self,
-    code: str,
-    run_manager: AsyncCallbackManagerForToolRun | None = None,
-) -> str:
-    """Execute Python code in sandbox."""
+### sandbox_filesystem
+Stores files with 20MB limit per file.
 
-    # Get thread_id from context
-    thread_id = self._get_thread_id(run_manager)
-
-    # Get error history
-    error_history = get_error_history(thread_id)
-
-    # Create executor
-    executor = SandboxExecutor(
-        self.db_pool, thread_id, allow_net=True, timeout_seconds=60.0
-    )
-    # ...
-    if not result.success and result.stderr:
-        add_error_to_history(thread_id, code_snippet, result.stderr)
+```sql
+CREATE TABLE sandbox_filesystem (
+    thread_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    content BYTEA NOT NULL CHECK (octet_length(content) <= 20971520),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (thread_id, file_path),
+    FOREIGN KEY (thread_id) REFERENCES sandbox_sessions(thread_id) ON DELETE CASCADE
+);
 ```
 
-#### Example 2: `file_read.py` (FileReadTool)
+### sandbox_session_bytes
+Stores Pyodide session state for stateful execution.
 
-**Before:**
-```python
-async def _arun(
-    self,
-    file_path: str,
-    run_manager: AsyncCallbackManagerForToolRun | None = None,
-) -> str:
-    conn = await self.db_pool.acquire()
-    try:
-        row = await conn.fetchrow(
-            "SELECT content, content_type FROM sandbox_filesystem WHERE thread_id = $1 AND file_path = $2",
-            self.thread_id,
-            normalized_path,
-        )
+```sql
+CREATE TABLE sandbox_session_bytes (
+    thread_id TEXT PRIMARY KEY,
+    session_bytes BYTEA NOT NULL,
+    session_metadata JSONB,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    FOREIGN KEY (thread_id) REFERENCES sandbox_sessions(thread_id) ON DELETE CASCADE
+);
 ```
 
-**After:**
-```python
-async def _arun(
-    self,
-    file_path: str,
-    run_manager: AsyncCallbackManagerForToolRun | None = None,
-) -> str:
-    # Get thread_id from context
-    thread_id = self._get_thread_id(run_manager)
+### sandbox_skills
+Tracks installed Claude Skills.
 
-    conn = await self.db_pool.acquire()
-    try:
-        row = await conn.fetchrow(
-            "SELECT content, content_type FROM sandbox_filesystem WHERE thread_id = $1 AND file_path = $2",
-            thread_id,
-            normalized_path,
-        )
+### sandbox_mcp_servers
+Stores MCP server bindings.
+
+## Execution Flow
+
+### Code Execution
+
+```
+1. Tool receives code from LLM
+2. SandboxExecutor.execute() called
+3. VFS files loaded from PostgreSQL
+4. Files serialized to JSON
+5. Deno subprocess spawned (or worker pool used)
+6. Pyodide loads Python runtime
+7. Files mounted in Pyodide VFS
+8. Python code executed
+9. Modified files extracted
+10. Files saved back to PostgreSQL
+11. Result returned to tool
 ```
 
-#### Example 3: `file_write.py` (FileWriteTool)
+### File Operations
 
-**Before:**
-```python
-async def _arun(
-    self,
-    file_path: str,
-    content: str,
-    run_manager: AsyncCallbackManagerForToolRun | None = None,
-) -> str:
-    await conn.execute(
-        """INSERT INTO sandbox_filesystem (thread_id, file_path, content, size, content_type, created_at, modified_at)
-           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())""",
-        self.thread_id,
-        normalized_path,
-        content_bytes,
-        len(content_bytes),
-        content_type,
-    )
+```
+1. Tool receives file operation
+2. VirtualFilesystem method called
+3. Path validated (no traversal)
+4. PostgreSQL query executed
+5. Result returned
 ```
 
-**After:**
-```python
-async def _arun(
-    self,
-    file_path: str,
-    content: str,
-    run_manager: AsyncCallbackManagerForToolRun | None = None,
-) -> str:
-    # Get thread_id from context
-    thread_id = self._get_thread_id(run_manager)
+## Security Model
 
-    await conn.execute(
-        """INSERT INTO sandbox_filesystem (thread_id, file_path, content, size, content_type, created_at, modified_at)
-           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())""",
-        thread_id,
-        normalized_path,
-        content_bytes,
-        len(content_bytes),
-        content_type,
-    )
+### Sandboxing Layers
+
+1. **WebAssembly**: Pyodide runs in WebAssembly sandbox
+2. **Deno Permissions**: Network access controlled via `--allow-net`
+3. **Thread Isolation**: Each thread_id has isolated filesystem
+4. **Path Validation**: All paths validated before use
+5. **Size Limits**: 20MB per file prevents abuse
+6. **HITL Approval**: Destructive operations require user consent
+
+### Network Access Control
+
+- Default: Network disabled
+- `allow_net=True`: Enables network for micropip
+- CDN traffic allowed for package installation
+- MCP bridge communication via localhost only
+
+## Helper Module System
+
+### Loading
+
+1. Helpers discovered in `src/mayflower_sandbox/helpers/`
+2. Recursively scan for `.py` files
+3. Load into VFS at `/home/pyodide/<path>`
+4. Available for import in Pyodide code
+
+### Available Categories
+
+- **document/**: Word, Excel, PowerPoint, PDF processing
+- **data/**: CSV, JSON processing (placeholder)
+- **web/**: HTML/markdown utilities (placeholder)
+- **utils/**: General utilities (placeholder)
+
+## Thread Isolation
+
+All operations use `thread_id` for isolation:
+
+```
+Thread A (user_123)          Thread B (user_456)
+├── /tmp/data.csv            ├── /tmp/data.csv
+├── /tmp/script.py           ├── /tmp/report.pdf
+└── session state            └── session state
+
+(Completely separate - no cross-access possible)
 ```
 
-**Apply same pattern to all 8 tools:**
-1. Add `thread_id = self._get_thread_id(run_manager)` at start of `_arun()`
-2. Replace all `self.thread_id` references with local `thread_id` variable
-
-### 3. Update Factory
-
-**File:** `/home/johann/src/ml/mayflower-sandbox/src/mayflower_sandbox/tools/factory.py`
-
-**Make thread_id optional with default:**
-
-**Before:**
-```python
-def create_sandbox_tools(
-    db_pool: asyncpg.Pool,
-    thread_id: str,
-    include_tools: list[str] | None = None,
-) -> list[SandboxTool]:
-    """
-    Create a set of sandbox tools for LangGraph.
-
-    Args:
-        db_pool: PostgreSQL connection pool
-        thread_id: Thread ID for session isolation
-        include_tools: List of tool names to include (default: all tools)
-```
-
-**After:**
-```python
-def create_sandbox_tools(
-    db_pool: asyncpg.Pool,
-    thread_id: str | None = None,
-    include_tools: list[str] | None = None,
-) -> list[SandboxTool]:
-    """
-    Create a set of sandbox tools for LangGraph.
-
-    Args:
-        db_pool: PostgreSQL connection pool
-        thread_id: Thread ID for session isolation. If None, will be read from
-                  callback context at runtime (recommended for LangGraph).
-        include_tools: List of tool names to include (default: all tools)
-```
-
-### 4. Update Tests
-
-**File:** `/home/johann/src/ml/mayflower-sandbox/tests/test_tools.py`
-
-Update tests to verify context-aware behavior:
-
-```python
-async def test_thread_id_from_context():
-    """Test that tools read thread_id from callback context."""
-    from langchain_core.callbacks import AsyncCallbackManagerForToolRun
-
-    # Create tool without thread_id
-    tool = ExecutePythonTool(db_pool=db_pool, thread_id=None)
-
-    # Create mock callback manager with metadata
-    run_manager = AsyncCallbackManagerForToolRun(
-        run_id=uuid.uuid4(),
-        metadata={"configurable": {"thread_id": "test-thread-123"}}
-    )
-
-    # Tool should use thread_id from context
-    thread_id = tool._get_thread_id(run_manager)
-    assert thread_id == "test-thread-123"
-```
-
----
-
-## Changes to Maistack
-
-### 1. Update Tool Creation in Agent
-
-**File:** `/data/src/ml/maistack/services/langserve/app/agent.py`
-
-**Create tools WITHOUT thread_id (will use context):**
-
-**Before:**
-```python
-if db_pool:
-    from mayflower_sandbox.tools import create_sandbox_tools
-
-    # Create tools with default thread_id for tool binding
-    # Actual instances will be recreated per-request with correct thread_id
-    default_sandbox_tools = create_sandbox_tools(db_pool=db_pool, thread_id="default")
-    tools = tools + default_sandbox_tools
-    logger.info(f"Added {len(default_sandbox_tools)} mayflower sandbox tools")
-```
-
-**After:**
-```python
-if db_pool:
-    from mayflower_sandbox.tools import create_sandbox_tools
-
-    # Create tools without thread_id - they'll read from callback context
-    sandbox_tools = create_sandbox_tools(db_pool=db_pool, thread_id=None)
-    tools = tools + sandbox_tools
-    logger.info(f"Added {len(sandbox_tools)} mayflower sandbox tools (context-aware)")
-```
-
-### 2. Remove Lazy Recreation Logic
-
-**File:** `/data/src/ml/maistack/services/langserve/app/agent.py`
-
-**DELETE THIS ENTIRE BLOCK from `custom_tool_node` (around lines 283-301):**
-
-```python
-# DELETE THIS:
-# Create mayflower sandbox tools if not already in tools_by_name
-# They need thread_id from config, so we create them per-request
-thread_id = config.get("configurable", {}).get("thread_id", "default")
-
-# Mayflower tool names
-mayflower_tool_names = {
-    "execute_python",
-    "read_file",
-    "write_file",
-    "str_replace",
-    "list_files",
-    "delete_file",
-    "glob_files",
-    "grep_files",
-}
-
-# Check if any mayflower tool is missing from tools_by_name
-if mayflower_tool_names.intersection(
-    set(tc["name"] for tc in state["messages"][-1].tool_calls)
-):
-    if db_pool and not any(name in tools_by_name for name in mayflower_tool_names):
-        from mayflower_sandbox.tools import create_sandbox_tools
-
-        sandbox_tools = create_sandbox_tools(db_pool=db_pool, thread_id=thread_id)
-        for tool in sandbox_tools:
-            tools_by_name[tool.name] = tool
-        logger.info(
-            f"Created {len(sandbox_tools)} mayflower sandbox tools for thread {thread_id}"
-        )
-```
-
-**Tools are now created once at graph initialization and reused for all requests.**
-
-### 3. Verify Config Propagation
-
-**Ensure LangGraph passes config through callbacks:**
-
-LangGraph/LangChain should automatically propagate `config` through the callback chain. The `run_manager` should have access to metadata containing the thread_id.
-
-**If config propagation doesn't work automatically**, add explicit config passing in tool invocation (check LangGraph ToolNode implementation).
-
----
-
-## Alternative Implementation: Use contextvars
-
-If callback metadata approach doesn't work reliably, use Python's `contextvars`:
-
-### In Maistack (`agent.py`):
-
-```python
-from contextvars import ContextVar
-
-# Module-level contextvar
-_thread_id_context: ContextVar[str] = ContextVar('thread_id', default='default')
-
-async def custom_tool_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
-    # Set thread_id in contextvar before executing tools
-    thread_id = config.get("configurable", {}).get("thread_id", "default")
-    _thread_id_context.set(thread_id)
-
-    # Execute tools (they'll read from contextvar)
-    # ...
-```
-
-### In Mayflower Sandbox (`base.py`):
-
-```python
-from contextvars import ContextVar
-
-# Module-level contextvar (shared)
-_thread_id_context: ContextVar[str] = ContextVar('thread_id', default='default')
-
-class SandboxTool(BaseTool):
-    def _get_thread_id(self, run_manager: AsyncCallbackManagerForToolRun | None = None) -> str:
-        # Try contextvar first
-        try:
-            return _thread_id_context.get()
-        except LookupError:
-            pass
-
-        # Fallback to instance thread_id or default
-        return self.thread_id or "default"
-```
-
-**Pros of contextvars:**
-- Guaranteed to work (Python built-in)
-- No dependency on LangChain callback internals
-- Works across async call boundaries
-
-**Cons:**
-- Requires manual context management
-- More coupling between maistack and mayflower
-
----
-
-## Testing Strategy
-
-### Unit Tests
-
-Test context-aware behavior:
-
-```python
-async def test_tool_reads_thread_id_from_callback():
-    """Verify tools read thread_id from callback metadata."""
-    # Test with metadata
-    # Test with None
-    # Test fallback to instance thread_id
-```
-
-### Integration Tests
-
-Run existing integration tests:
-
-```bash
-# Should all pass with context-aware tools
-docker exec maistack-langserve pytest /app/tests/integration/ -v
-```
-
-### Thread Isolation Test
-
-Verify different thread_ids see different files:
-
-```python
-async def test_thread_isolation():
-    """Test that different threads see isolated filesystems."""
-    # Create file with thread_id="user1"
-    # Try to read with thread_id="user2" (should not see it)
-    # Read with thread_id="user1" (should see it)
-```
-
----
-
-## Benefits
-
-✅ **No tool recreation overhead** - Tools created once at graph initialization
-✅ **Proper thread isolation** - Each request uses correct thread_id from context
-✅ **Cleaner architecture** - Context-aware tools match LangGraph patterns
-✅ **Better performance** - No per-request tool instantiation
-✅ **Compatible with LangGraph** - Standard callback-based approach
-
----
-
-## Migration Checklist
-
-### Mayflower Sandbox:
-- [ ] Update `SandboxTool` base class (add `_get_thread_id()`, make `thread_id` optional)
-- [ ] Update `ExecutePythonTool` (file: `execute.py`)
-- [ ] Update `FileReadTool` (file: `file_read.py`)
-- [ ] Update `FileWriteTool` (file: `file_write.py`)
-- [ ] Update `FileEditTool` (file: `file_edit.py`)
-- [ ] Update `FileListTool` (file: `file_list.py`)
-- [ ] Update `FileDeleteTool` (file: `file_delete.py`)
-- [ ] Update `FileGlobTool` (file: `file_glob.py`)
-- [ ] Update `FileGrepTool` (file: `file_grep.py`)
-- [ ] Update `create_sandbox_tools()` factory
-- [ ] Add tests for context-aware behavior
-- [ ] Update README/documentation
-
-### Maistack:
-- [ ] Update `create_agent_graph()` to create tools without thread_id
-- [ ] Remove lazy recreation logic from `custom_tool_node`
-- [ ] Test with Docker setup
-- [ ] Run all integration tests
-- [ ] Verify thread isolation works
-
-### Final:
-- [ ] Commit mayflower-sandbox changes
-- [ ] Commit maistack changes
-- [ ] Update deployment documentation
+## Performance Characteristics
+
+### Without Worker Pool (Legacy)
+- Cold start: ~4-5 seconds (Pyodide loading)
+- File operations: < 50ms
+- Helper loading: < 100ms
+
+### With Worker Pool (Recommended)
+- First request: ~5 seconds (pool initialization)
+- Subsequent requests: 0.2-2 seconds
+- 70-95% improvement
+
+## Related Documentation
+
+- [Tools Reference](../user-guide/tools.md) - The 12 LangChain tools
+- [API Reference](../reference/api.md) - Low-level API documentation
+- [Worker Pool](../advanced/worker-pool.md) - Performance optimization
+- [MCP Integration](../advanced/mcp.md) - Skills and MCP servers

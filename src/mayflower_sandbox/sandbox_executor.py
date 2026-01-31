@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
+import subprocess  # nosec B404 - required for worker pool management
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,6 +39,7 @@ class ExecutionResult:
     created_files: list[str] | None = None
     session_bytes: bytes | None = None
     session_metadata: dict | None = None
+    exit_code: int | None = None
 
 
 class SandboxExecutor:
@@ -146,14 +147,18 @@ class SandboxExecutor:
                     pool_size = int(os.getenv("PYODIDE_POOL_SIZE", "3"))
                     logger.info(f"Initializing Pyodide worker pool (size={pool_size})...")
 
-                    cls._pool = WorkerPool(
+                    pool = WorkerPool(
                         size=pool_size,
                         executor_path=Path(__file__).parent,
                         mcp_bridge_port=mcp_bridge_port,
                     )
-                    await cls._pool.start()
-
-                    logger.info("Pyodide worker pool ready!")
+                    try:
+                        await pool.start()
+                        cls._pool = pool  # Only set if start succeeds
+                        logger.info("Pyodide worker pool ready!")
+                    except Exception:
+                        await pool.shutdown()
+                        raise
 
     def _get_executor_path(self) -> Path:
         """Get path to TypeScript executor."""
@@ -162,10 +167,22 @@ class SandboxExecutor:
             raise RuntimeError(f"Executor not found at {executor}")
         return executor
 
+    def _get_shell_executor_path(self) -> Path:
+        """Get path to shell executor."""
+        executor = Path(__file__).parent / "shell_executor.ts"
+        if not executor.exists():
+            raise RuntimeError(f"Shell executor not found at {executor}")
+        return executor
+
+    def _get_deno_config_path(self) -> Path | None:
+        """Get path to deno.json if present."""
+        config_path = Path(__file__).parent / "deno.json"
+        return config_path if config_path.exists() else None
+
     def _check_deno(self):
         """Verify Deno is installed."""
         try:
-            subprocess.run(
+            subprocess.run(  # nosec B603 B607 - hardcoded safe command
                 ["deno", "--version"],
                 check=True,
                 capture_output=True,
@@ -190,6 +207,8 @@ class SandboxExecutor:
             "--allow-read",
             "--allow-write",
         ]
+        if config_path := self._get_deno_config_path():
+            cmd.extend(["--config", str(config_path)])
 
         # Allow PyPI for micropip.install() to work
         allowed_hosts = {"cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"}
@@ -227,6 +246,32 @@ class SandboxExecutor:
         if session_metadata:
             cmd.extend(["-m", json.dumps(session_metadata)])
 
+        return cmd
+
+    def _build_shell_command(self, command: str) -> list[str]:
+        """Build Deno command for shell execution."""
+        cmd: list[str] = [
+            "deno",
+            "run",
+            "--allow-read",
+            "--allow-write",
+        ]
+        if config_path := self._get_deno_config_path():
+            cmd.extend(["--config", str(config_path)])
+        cmd.extend(
+            [
+                str(self._get_shell_executor_path()),
+            ]
+        )
+        cmd.extend(
+            [
+                "--command",
+                command,
+            ]
+        )
+        busybox_dir = os.environ.get("MAYFLOWER_BUSYBOX_DIR")
+        if busybox_dir:
+            cmd.extend(["--busybox-dir", busybox_dir])
         return cmd
 
     def _prepare_stdin(self, files: dict[str, bytes]) -> bytes | None:
@@ -426,7 +471,8 @@ class SandboxExecutor:
         )
 
         sock = server.sockets[0]
-        assert sock is not None
+        if sock is None:
+            raise RuntimeError("Server socket not available")
         port = sock.getsockname()[1]
         return server, port
 
@@ -493,7 +539,36 @@ class SandboxExecutor:
 
     async def _bootstrap_site_packages(self) -> None:
         """Ensure mayflower MCP shim and sitecustomize are present in VFS."""
-        await write_bootstrap_files(self.vfs, thread_id=self.thread_id)
+        await write_bootstrap_files(self.vfs)
+
+    async def _save_created_files(self, result: dict) -> list[str]:
+        """Save created files from execution result to VFS."""
+        created_files = []
+        if result.get("created_files") and result.get("success"):
+            for file_info in result["created_files"]:
+                file_path = file_info["path"]
+                file_content = bytes(file_info["content"])
+                await self.vfs.write_file(file_path, file_content)
+                created_files.append(file_path)
+            logger.debug(f"Created {len(created_files)} files via pool")
+        return created_files
+
+    async def _detect_vfs_fallback_files(
+        self, before_files: set[str], result: dict, created_files: list[str]
+    ) -> list[str]:
+        """Detect files created by compiled libraries not visible to Pyodide snapshot."""
+        if created_files or not result.get("success"):
+            return created_files
+
+        after_files = {f["file_path"] for f in await self.vfs.list_files()}
+        vfs_created = list(after_files - before_files)
+        if vfs_created:
+            logger.info(
+                f"VFS fallback detected {len(vfs_created)} files from compiled libraries "
+                f"for thread {self.thread_id}: {vfs_created}"
+            )
+            return vfs_created
+        return created_files
 
     async def _execute_with_pool(
         self,
@@ -573,30 +648,11 @@ class SandboxExecutor:
                 timeout_ms=int(self.timeout_seconds * 1000),
             )
 
-            # Save created files to VFS
-            created_files = []
-            if result.get("created_files") and result.get("success"):
-                # Save files to PostgreSQL VFS
-                for file_info in result["created_files"]:
-                    file_path = file_info["path"]
-                    file_content = bytes(file_info["content"])
-                    await self.vfs.write_file(file_path, file_content)
-                    created_files.append(file_path)
-                logger.debug(f"Created {len(created_files)} files via pool")
-
-            # VFS Fallback - detect files missed by TypeScript/Pyodide snapshot
-            # This handles files created by compiled libraries (matplotlib, openpyxl, xlsxwriter)
-            # that may not be immediately visible to Pyodide's FS snapshot mechanism
-            if not created_files and result.get("success"):
-                after_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
-                vfs_created = list(after_vfs_files - before_vfs_files)
-
-                if vfs_created:
-                    created_files = vfs_created
-                    logger.info(
-                        f"VFS fallback detected {len(vfs_created)} files from compiled libraries "
-                        f"for thread {self.thread_id}: {vfs_created}"
-                    )
+            # Save created files and detect VFS fallback files
+            created_files = await self._save_created_files(result)
+            created_files = await self._detect_vfs_fallback_files(
+                before_vfs_files, result, created_files
+            )
 
             execution_time = time.time() - start_time
             logger.info(
@@ -651,3 +707,75 @@ class SandboxExecutor:
             ExecutionResult with output and created files
         """
         return await self._execute_with_pool(code, session_bytes, session_metadata)
+
+    async def execute_shell(self, command: str) -> ExecutionResult:
+        """Execute shell command using busybox-wasm stub with VFS integration."""
+        import time
+
+        start_time = time.time()
+        cmd = self._build_shell_command(command)
+
+        # Track existing VFS files for fallback detection
+        before_vfs_files = {f["file_path"] for f in await self.vfs.list_files()}
+
+        files_dict = await self.vfs.get_all_files_for_pyodide()
+        stdin_payload = self._prepare_stdin(files_dict)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await proc.communicate(stdin_payload)
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Shell execution error: {e}",
+                execution_time=time.time() - start_time,
+                exit_code=1,
+            )
+
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+        if not stdout_text:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=stderr_text or "Shell execution produced no output",
+                execution_time=time.time() - start_time,
+                exit_code=1,
+            )
+
+        try:
+            result = json.loads(stdout_text.splitlines()[-1])
+        except json.JSONDecodeError as e:
+            return ExecutionResult(
+                success=False,
+                stdout=stdout_text,
+                stderr=f"Shell executor JSON parse error: {e}\n{stderr_text}",
+                execution_time=time.time() - start_time,
+                exit_code=1,
+            )
+
+        created_files = await self._save_created_files(result)
+        created_files = await self._detect_vfs_fallback_files(
+            before_vfs_files, result, created_files
+        )
+
+        success = bool(result.get("success", False))
+        exit_code = result.get("exit_code")
+        if exit_code is None:
+            exit_code = 0 if success else 1
+
+        return ExecutionResult(
+            success=success,
+            stdout=result.get("stdout", ""),
+            stderr=result.get("stderr", ""),
+            execution_time=time.time() - start_time,
+            created_files=created_files if created_files else None,
+            exit_code=exit_code,
+        )

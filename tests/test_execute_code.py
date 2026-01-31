@@ -93,6 +93,38 @@ print("Code executed successfully!")
     assert "Error" not in result_str
 
 
+async def test_execute_code_from_history_fallback(db_pool, clean_files):
+    """Test that python_run_prepared extracts code from message history when state is empty."""
+    tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
+
+    tool_call_id = "test_history_001"
+    state = {
+        "pending_content_map": {},
+        "messages": [
+            {
+                "content": "Run this code:\n```python\nprint('history ok')\n```\n",
+            }
+        ],
+    }
+
+    result = await tool._arun(
+        file_path="/tmp/history_code.py",
+        description="History extraction test",
+        _state=state,
+        tool_call_id=tool_call_id,
+    )
+
+    from langgraph.types import Command
+
+    if isinstance(result, Command):
+        result_str = result.resume
+    else:
+        result_str = result
+
+    assert "history ok" in result_str
+    assert "Error" not in result_str
+
+
 async def test_execute_code_with_file_creation(db_pool, clean_files):
     """Test that python_run_prepared can create files and they persist."""
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
@@ -184,7 +216,7 @@ async def test_execute_code_no_code_in_state(db_pool, clean_files):
     tool = ExecuteCodeTool(db_pool=db_pool, thread_id="test_execute_code")
 
     # Empty state - no pending_content
-    state = {}
+    state: dict[str, str] = {}
 
     result = await tool._arun(
         file_path="/tmp/empty.py",

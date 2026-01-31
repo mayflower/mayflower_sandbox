@@ -8,7 +8,7 @@ No external dependencies required.
 import io
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Namespace mappings for OOXML
 NS = {
@@ -17,6 +17,13 @@ NS = {
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
     "ct": "http://schemas.openxmlformats.org/package/2006/content-types",
 }
+
+# File paths within docx archive
+_DOCUMENT_XML = "word/document.xml"
+_COMMENTS_XML = "word/comments.xml"
+
+# XPath expressions
+_XPATH_TEXT = ".//w:t"
 
 # Register namespaces for cleaner XML output
 for prefix, uri in NS.items():
@@ -48,7 +55,7 @@ def docx_add_comment(
     text: str,
     author: str = "Pyodide Tool",
     initials: str = "PT",
-    date_iso: str = None,
+    date_iso: str | None = None,
 ) -> bytes:
     """
     Add a comment to the n-th paragraph in a Word document.
@@ -75,18 +82,18 @@ def docx_add_comment(
     parts = unzip_docx_like(docx_bytes)
 
     # Load document.xml
-    doc = ET.fromstring(parts["word/document.xml"])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
     paras = doc.findall(".//w:body/w:p", NS)
     if paragraph_index < 0 or paragraph_index >= len(paras):
         raise IndexError(f"paragraph_index {paragraph_index} out of range (0-{len(paras) - 1})")
     p = paras[paragraph_index]
 
     # Ensure comments.xml exists
-    if "word/comments.xml" not in parts:
+    if _COMMENTS_XML not in parts:
         comments = ET.Element(f"{{{NS['w']}}}comments")
-        parts["word/comments.xml"] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
+        parts[_COMMENTS_XML] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
     else:
-        comments = ET.fromstring(parts["word/comments.xml"])
+        comments = ET.fromstring(parts[_COMMENTS_XML])
 
     # Ensure relationship to comments.xml
     rels_path = "word/_rels/document.xml.rels"
@@ -125,7 +132,9 @@ def docx_add_comment(
         int(c.get(f"{{{NS['w']}}}id", "0")) for c in comments.findall(".//w:comment", NS)
     ]
     cid = (max(existing_ids) + 1) if existing_ids else 0
-    date_iso = date_iso or datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    date_iso = date_iso or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
 
     # Create comment in comments.xml
     cmt = ET.SubElement(
@@ -168,9 +177,9 @@ def docx_add_comment(
     p.insert(run_index + 3, rr)
 
     # Save modified parts
-    parts["word/comments.xml"] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
+    parts[_COMMENTS_XML] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
     parts[rels_path] = ET.tostring(rels, encoding="utf-8", xml_declaration=True)
-    parts["word/document.xml"] = ET.tostring(doc, encoding="utf-8", xml_declaration=True)
+    parts[_DOCUMENT_XML] = ET.tostring(doc, encoding="utf-8", xml_declaration=True)
 
     return zip_docx_like(parts)
 
@@ -194,13 +203,13 @@ def docx_extract_text(docx_bytes: bytes) -> str:
     """
     parts = unzip_docx_like(docx_bytes)
 
-    if "word/document.xml" not in parts:
+    if _DOCUMENT_XML not in parts:
         return ""
 
-    doc = ET.fromstring(parts["word/document.xml"])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     # Extract all text nodes
-    texts = [t.text or "" for t in doc.findall(".//w:t", NS) if t.text]
+    texts = [t.text or "" for t in doc.findall(_XPATH_TEXT, NS) if t.text]
 
     return "\n".join(texts)
 
@@ -222,15 +231,15 @@ def docx_extract_paragraphs(docx_bytes: bytes) -> list[str]:
     """
     parts = unzip_docx_like(docx_bytes)
 
-    if "word/document.xml" not in parts:
+    if _DOCUMENT_XML not in parts:
         return []
 
-    doc = ET.fromstring(parts["word/document.xml"])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     paragraphs = []
     for para in doc.findall(".//w:p", NS):
         # Get all text runs in this paragraph
-        texts = [t.text or "" for t in para.findall(".//w:t", NS)]
+        texts = [t.text or "" for t in para.findall(_XPATH_TEXT, NS)]
         para_text = "".join(texts)
         if para_text:  # Only include non-empty paragraphs
             paragraphs.append(para_text)
@@ -258,10 +267,10 @@ def docx_read_tables(docx_bytes: bytes) -> list[list[list[str]]]:
     """
     parts = unzip_docx_like(docx_bytes)
 
-    if "word/document.xml" not in parts:
+    if _DOCUMENT_XML not in parts:
         return []
 
-    doc = ET.fromstring(parts["word/document.xml"])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     tables = []
     for table in doc.findall(".//w:tbl", NS):
@@ -270,7 +279,7 @@ def docx_read_tables(docx_bytes: bytes) -> list[list[list[str]]]:
             row_data = []
             for cell in row.findall(".//w:tc", NS):
                 # Get all text in cell
-                cell_texts = [t.text or "" for t in cell.findall(".//w:t", NS)]
+                cell_texts = [t.text or "" for t in cell.findall(_XPATH_TEXT, NS)]
                 row_data.append("".join(cell_texts))
             table_data.append(row_data)
         tables.append(table_data)
@@ -301,17 +310,17 @@ def docx_find_replace(docx_bytes: bytes, replacements: dict[str, str]) -> bytes:
     """
     parts = unzip_docx_like(docx_bytes)
 
-    if "word/document.xml" not in parts:
+    if _DOCUMENT_XML not in parts:
         return docx_bytes
 
-    doc = ET.fromstring(parts["word/document.xml"])
+    doc = ET.fromstring(parts[_DOCUMENT_XML])
 
     # Replace in all text nodes
-    for text_node in doc.findall(".//w:t", NS):
+    for text_node in doc.findall(_XPATH_TEXT, NS):
         if text_node.text in replacements:
             text_node.text = replacements[text_node.text]
 
-    parts["word/document.xml"] = ET.tostring(doc, encoding="utf-8", xml_declaration=True)
+    parts[_DOCUMENT_XML] = ET.tostring(doc, encoding="utf-8", xml_declaration=True)
 
     return zip_docx_like(parts)
 
