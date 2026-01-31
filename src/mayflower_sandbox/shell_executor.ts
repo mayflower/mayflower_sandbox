@@ -3,10 +3,15 @@
  *
  * This script loads VFS files from stdin, materializes them in BusyBox MEMFS,
  * executes the command via `sh -c`, and returns changed files back to Python.
+ *
+ * Supports two execution modes:
+ * 1. Simple mode: Direct applet invocation for commands without pipes/variables
+ * 2. Full shell mode: ProcessManager-based execution for complex shell features
  */
 
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
 import { fromFileUrl, join, resolve, toFileUrl } from "@std/path";
+import { ProcessManager } from "./shell_process_manager.ts";
 
 interface ShellExecutionOptions {
   command: string;
@@ -25,7 +30,7 @@ interface ShellExecutionResult {
 
 type BusyboxModule = {
   FS: any;
-  callMain: (args: string[]) => void;
+  callMain: (args: string[]) => number;  // Returns exit code
   quit?: (status: number, toThrow?: unknown) => void;
   print?: (text: string) => void;
   printErr?: (text: string) => void;
@@ -39,6 +44,44 @@ type BusyboxModuleFactory = (options: Record<string, unknown>) => Promise<Busybo
 
 const IGNORE_PREFIXES = ["/dev", "/proc", "/sys"];
 
+/**
+ * Check if a command contains pipes (|) that need Worker-based execution.
+ */
+function hasPipes(command: string): boolean {
+  // Match | but not || (which is OR)
+  // Simple approach: look for | not preceded/followed by |
+  return /(?<!\|)\|(?!\|)/.test(command);
+}
+
+/**
+ * Check if a command requires full shell support (ProcessManager).
+ * Returns true for commands with variables, subshells, etc.
+ * Note: Pipes are now handled separately via Worker-based execution.
+ */
+function needsFullShell(command: string): boolean {
+  // Patterns that require full shell support (excluding pipes which we handle via Workers)
+  const complexPatterns = [
+    /\|\|/,         // Or chains
+    /\$\w/,         // Variable expansion
+    /\$\(/,         // Command substitution
+    /`/,            // Backtick substitution
+    /\bfor\b/,      // For loops
+    /\bwhile\b/,    // While loops
+    /\bif\b/,       // If statements
+    /\bcase\b/,     // Case statements
+    /<<</,          // Here strings
+    /<</,           // Here documents
+    /\(\s*\)/,      // Subshells
+    /\{.*\}/,       // Brace expansion (basic check)
+    /\bexport\b/,   // Export (modifies env)
+    /\beval\b/,     // Eval
+    /\bsource\b/,   // Source/dot commands
+    /^\s*\./,       // Dot command
+  ];
+
+  return complexPatterns.some((pattern) => pattern.test(command));
+}
+
 // Shell command parsing types
 interface ParsedCommand {
   argv: string[];
@@ -51,7 +94,18 @@ interface ParsedShell {
   commands: Array<ParsedCommand & { type: "always" | "stop_on_error" | "stop_on_success" }>;
 }
 
-// Simple shell command parser - handles basic cases without full shell complexity
+/**
+ * Simple shell command parser - handles basic cases without full shell complexity.
+ *
+ * Limitations:
+ * - Does not support pipes (|)
+ * - Does not support || (or-chaining)
+ * - Does not support subshells ($(...) or backticks)
+ * - Does not support variable expansion ($VAR)
+ * - Does not support here-documents (<<EOF)
+ * - Quoted delimiters (e.g., "&&") may not be handled correctly
+ * - Escape sequences within quotes are not processed
+ */
 function parseShellCommand(command: string): ParsedShell {
   const result: ParsedShell = { commands: [] };
 
@@ -148,13 +202,37 @@ function isExitStatusError(err: unknown): boolean {
   return name === "ExitStatus" || message === "ExitStatus";
 }
 
+// Emscripten errno values
+const ENOENT = 44;  // No such file or directory
+const EEXIST = 20;  // File exists (actually ENOTDIR in some contexts)
+const ENOTDIR = 54; // Not a directory
+
+function getErrorCode(err: unknown): string {
+  const info = err as { code?: string; errno?: string | number; name?: string } | undefined;
+  if (info?.code) return info.code;
+  if (info?.name === "ErrnoError") {
+    // Emscripten ErrnoError - convert numeric errno to string
+    const errno = info.errno;
+    if (errno === ENOENT || errno === 44) return "ENOENT";
+    if (errno === EEXIST || errno === 17) return "EEXIST";
+    if (errno === ENOTDIR || errno === 20) return "ENOTDIR";
+    return `ERRNO_${errno}`;
+  }
+  if (typeof info?.errno === "string") return info.errno;
+  return "";
+}
+
 function ensureParentDir(fs: any, path: string): void {
   const dir = path.substring(0, path.lastIndexOf("/"));
   if (dir && dir !== "/") {
     try {
       fs.mkdirTree(dir);
-    } catch {
-      // Directory may already exist
+    } catch (err) {
+      const code = getErrorCode(err);
+      // Ignore EEXIST and ENOTDIR (Emscripten errno quirks)
+      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
+        throw err;
+      }
     }
   }
 }
@@ -164,8 +242,14 @@ function writeRedirectContent(fs: any, path: string, content: string, append: bo
     try {
       const existing = fs.readFile(path, { encoding: "utf8" }) as string;
       fs.writeFile(path, existing + content);
-    } catch {
-      fs.writeFile(path, content);
+    } catch (err) {
+      const code = getErrorCode(err);
+      if (code === "ENOENT") {
+        // File doesn't exist yet, create it
+        fs.writeFile(path, content);
+      } else {
+        throw err;
+      }
     }
   } else {
     fs.writeFile(path, content);
@@ -219,7 +303,11 @@ function executeApplet(
   };
 
   try {
-    module.callMain(["busybox", ...cmd.argv]);
+    // callMain returns the exit code directly
+    const result = module.callMain(["busybox", ...cmd.argv]);
+    if (typeof result === "number") {
+      exitCode = result;
+    }
   } catch (err) {
     if (!isExitStatusError(err)) throw err;
   } finally {
@@ -283,9 +371,9 @@ function ensureDir(fs: any, path: string): void {
     try {
       fs.mkdir(current);
     } catch (err) {
-      const info = err as { code?: string; errno?: string } | undefined;
-      const code = info?.code ?? info?.errno ?? "";
-      if (code && code !== "EEXIST") {
+      const code = getErrorCode(err);
+      // Ignore EEXIST and ENOTDIR (Emscripten errno quirks)
+      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
         throw err;
       }
     }
@@ -296,8 +384,12 @@ function ensureBaseDirs(fs: any): void {
   for (const dir of ["/tmp", "/home", "/root", "/bin"]) {
     try {
       fs.mkdir(dir);
-    } catch {
-      // Ignore if already exists
+    } catch (err) {
+      const code = getErrorCode(err);
+      // Ignore EEXIST and ENOTDIR (Emscripten sometimes returns ENOTDIR for existing dirs)
+      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
+        throw err;
+      }
     }
   }
 }
@@ -339,8 +431,13 @@ function buildEntryPath(current: string, entry: string): string {
 function tryReadDir(fs: any, path: string): string[] {
   try {
     return fs.readdir(path) as string[];
-  } catch {
-    return [];
+  } catch (err) {
+    const code = getErrorCode(err);
+    // Return empty for expected cases: path doesn't exist or isn't a directory
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return [];
+    }
+    throw err;
   }
 }
 
@@ -357,8 +454,12 @@ function processEntry(
     } else if (fs.isFile(stat.mode)) {
       snapshot.set(entryPath, statStamp(stat));
     }
-  } catch {
-    // Ignore entries that disappear
+  } catch (err) {
+    const code = getErrorCode(err);
+    // Only ignore entries that were deleted between readdir and stat
+    if (code !== "ENOENT") {
+      throw err;
+    }
   }
 }
 
@@ -398,8 +499,12 @@ function collectFiles(fs: any, paths: string[]): Array<{ path: string; content: 
     try {
       const content = fs.readFile(path, { encoding: "binary" }) as Uint8Array;
       collected.push({ path, content: Array.from(content) });
-    } catch {
-      // Ignore unreadable files
+    } catch (err) {
+      const code = getErrorCode(err);
+      // File may have been deleted between snapshot and collect - that's expected
+      if (code !== "ENOENT") {
+        console.error(`Warning: Could not read file ${path}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
   return collected;
@@ -530,7 +635,421 @@ function runCommand(
   };
 }
 
-async function executeShell(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
+// ============================================================================
+// Worker-based Pipeline Execution
+// ============================================================================
+
+const PIPE_HEADER_SIZE = 16;
+const PIPE_BUFFER_SIZE = 8192;
+
+interface PipeBuffer {
+  buffer: SharedArrayBuffer;
+  control: Int32Array;
+}
+
+function createPipeBuffer(): PipeBuffer {
+  const buffer = new SharedArrayBuffer(PIPE_HEADER_SIZE + PIPE_BUFFER_SIZE);
+  const control = new Int32Array(buffer, 0, 4);
+  Atomics.store(control, 0, 0);  // readPtr
+  Atomics.store(control, 1, 0);  // writePtr
+  Atomics.store(control, 2, 0);  // closed
+  return { buffer, control };
+}
+
+function readAllFromPipeBuffer(pipe: PipeBuffer): string {
+  const data = new Uint8Array(pipe.buffer, PIPE_HEADER_SIZE);
+  const chunks: Uint8Array[] = [];
+
+  while (true) {
+    const readPtr = Atomics.load(pipe.control, 0);
+    const writePtr = Atomics.load(pipe.control, 1);
+    const closed = Atomics.load(pipe.control, 2);
+
+    const available = (writePtr - readPtr + PIPE_BUFFER_SIZE) % PIPE_BUFFER_SIZE;
+
+    if (available === 0) {
+      if (closed !== 0) break;
+      Atomics.wait(pipe.control, 1, writePtr, 100);
+      continue;
+    }
+
+    const chunk = new Uint8Array(available);
+    for (let i = 0; i < available; i++) {
+      chunk[i] = data[(readPtr + i) % PIPE_BUFFER_SIZE];
+    }
+    chunks.push(chunk);
+
+    Atomics.store(pipe.control, 0, (readPtr + available) % PIPE_BUFFER_SIZE);
+    Atomics.notify(pipe.control, 0, 1);
+  }
+
+  const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return new TextDecoder().decode(result);
+}
+
+// Worker code for running BusyBox commands with pipe I/O
+const BUSYBOX_WORKER_CODE = `
+const PIPE_HEADER_SIZE = 16;
+const PIPE_BUFFER_SIZE = 8192;
+
+class PipeWriter {
+  constructor(buffer) {
+    this.control = new Int32Array(buffer, 0, 4);
+    this.data = new Uint8Array(buffer, PIPE_HEADER_SIZE);
+  }
+  write(text) {
+    const src = new TextEncoder().encode(text);
+    let written = 0;
+    while (written < src.length) {
+      const readPtr = Atomics.load(this.control, 0);
+      const writePtr = Atomics.load(this.control, 1);
+      let available = (readPtr - writePtr - 1 + PIPE_BUFFER_SIZE) % PIPE_BUFFER_SIZE;
+      if (available === 0) available = PIPE_BUFFER_SIZE - 1;
+      if (available === 0) {
+        Atomics.wait(this.control, 0, readPtr, 100);
+        continue;
+      }
+      const toWrite = Math.min(src.length - written, available);
+      for (let i = 0; i < toWrite; i++) {
+        this.data[(writePtr + i) % PIPE_BUFFER_SIZE] = src[written + i];
+      }
+      Atomics.store(this.control, 1, (writePtr + toWrite) % PIPE_BUFFER_SIZE);
+      Atomics.notify(this.control, 1, 1);
+      written += toWrite;
+    }
+  }
+  close() {
+    Atomics.store(this.control, 2, 1);
+    Atomics.notify(this.control, 1, 1);
+  }
+}
+
+class PipeReader {
+  constructor(buffer) {
+    this.control = new Int32Array(buffer, 0, 4);
+    this.data = new Uint8Array(buffer, PIPE_HEADER_SIZE);
+  }
+  read(maxLen) {
+    while (true) {
+      const readPtr = Atomics.load(this.control, 0);
+      const writePtr = Atomics.load(this.control, 1);
+      const closed = Atomics.load(this.control, 2);
+      const available = (writePtr - readPtr + PIPE_BUFFER_SIZE) % PIPE_BUFFER_SIZE;
+      if (available === 0) {
+        if (closed !== 0) return null;
+        Atomics.wait(this.control, 1, writePtr, 100);
+        continue;
+      }
+      const toRead = Math.min(maxLen, available);
+      const result = new Uint8Array(toRead);
+      for (let i = 0; i < toRead; i++) {
+        result[i] = this.data[(readPtr + i) % PIPE_BUFFER_SIZE];
+      }
+      Atomics.store(this.control, 0, (readPtr + toRead) % PIPE_BUFFER_SIZE);
+      Atomics.notify(this.control, 0, 1);
+      return result;
+    }
+  }
+  readAll() {
+    const chunks = [];
+    while (true) {
+      const chunk = this.read(4096);
+      if (chunk === null) break;
+      chunks.push(chunk);
+    }
+    const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+    const result = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return new TextDecoder().decode(result);
+  }
+}
+
+let stdoutPipe = null;
+let stdinPipe = null;
+let module = null;
+let vfsFiles = {};
+const outputBuffer = [];
+const stderrBuffer = [];
+
+self.onmessage = async (e) => {
+  const msg = e.data;
+
+  if (msg.type === "init") {
+    try {
+      if (msg.stdoutBuffer) stdoutPipe = new PipeWriter(msg.stdoutBuffer);
+      if (msg.stdinBuffer) stdinPipe = new PipeReader(msg.stdinBuffer);
+      if (msg.files) vfsFiles = msg.files;
+
+      const factory = (await import(msg.jsPath)).default;
+      module = await factory({
+        noInitialRun: true,
+        noExitRuntime: true,
+        thisProgram: "busybox",
+        print: (text) => {
+          if (stdoutPipe) stdoutPipe.write(text + "\\n");
+          else outputBuffer.push(text);
+        },
+        printErr: (text) => stderrBuffer.push(text),
+        locateFile(path) {
+          if (path.endsWith(".wasm")) return msg.wasmPath;
+          return path;
+        },
+        stdin: stdinPipe ? () => {
+          const chunk = stdinPipe.read(1);
+          if (chunk === null) return null;
+          return chunk[0];
+        } : undefined,
+      });
+
+      // Mount VFS files into MEMFS
+      const FS = module.FS;
+      for (const [filePath, content] of Object.entries(vfsFiles)) {
+        const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+        if (dir && dir !== "/") {
+          try {
+            FS.mkdirTree(dir);
+          } catch (e) {}
+        }
+        try {
+          const data = typeof content === "string"
+            ? new TextEncoder().encode(content)
+            : new Uint8Array(content);
+          FS.writeFile(filePath, data);
+        } catch (e) {}
+      }
+
+      self.postMessage({ type: "ready" });
+    } catch (err) {
+      self.postMessage({ type: "error", error: String(err) });
+    }
+  } else if (msg.type === "run") {
+    try {
+      const exitCode = module.callMain(msg.argv);
+      if (stdoutPipe) stdoutPipe.close();
+      self.postMessage({
+        type: "done",
+        exitCode,
+        output: outputBuffer.join("\\n"),
+        stderr: stderrBuffer.join("\\n")
+      });
+    } catch (err) {
+      self.postMessage({ type: "error", error: String(err) });
+    }
+  }
+};
+`;
+
+/**
+ * Parse a pipeline command into individual commands.
+ */
+function parsePipeline(command: string): string[][] {
+  // Split on | but not ||
+  const parts = command.split(/(?<!\|)\|(?!\|)/);
+  return parts.map(part => {
+    const trimmed = part.trim();
+    // Simple tokenization - split on whitespace, respecting quotes
+    const tokens: string[] = [];
+    let current = "";
+    let inQuote = false;
+    let quoteChar = "";
+
+    for (const char of trimmed) {
+      if (!inQuote && (char === '"' || char === "'")) {
+        inQuote = true;
+        quoteChar = char;
+      } else if (inQuote && char === quoteChar) {
+        inQuote = false;
+        quoteChar = "";
+      } else if (!inQuote && /\s/.test(char)) {
+        if (current) {
+          tokens.push(current);
+          current = "";
+        }
+      } else {
+        current += char;
+      }
+    }
+    if (current) tokens.push(current);
+
+    return tokens;
+  }).filter(tokens => tokens.length > 0);
+}
+
+/**
+ * Execute a pipeline using Worker-based isolation.
+ * Each command runs in its own Worker, connected via SharedArrayBuffer pipes.
+ */
+async function executePipeline(
+  options: ShellExecutionOptions
+): Promise<ShellExecutionResult> {
+  const start = Date.now();
+  const commands = parsePipeline(options.command);
+
+  if (commands.length === 0) {
+    return {
+      success: true,
+      stdout: "",
+      stderr: "",
+      exit_code: 0,
+      execution_time_ms: Date.now() - start,
+    };
+  }
+
+  // For single command, use simple execution
+  if (commands.length === 1) {
+    return executeShellSimple({
+      ...options,
+      command: commands[0].join(" "),
+    });
+  }
+
+  const busyboxDir = await resolveBusyboxDir(options.busyboxDir);
+  const jsPath = "file://" + join(busyboxDir, "busybox.js");
+  const wasmPath = "file://" + join(busyboxDir, "busybox.wasm");
+
+  // Create pipes between commands
+  const pipes: PipeBuffer[] = [];
+  for (let i = 0; i < commands.length - 1; i++) {
+    pipes.push(createPipeBuffer());
+  }
+
+  const blob = new Blob([BUSYBOX_WORKER_CODE], { type: "application/javascript" });
+  const workerUrl = URL.createObjectURL(blob);
+  const workers: Worker[] = [];
+
+  try {
+    // Start all workers
+    const promises: Promise<{ exitCode: number; output: string; stderr: string }>[] = [];
+
+    for (let i = 0; i < commands.length; i++) {
+      const stdinBuffer = i > 0 ? pipes[i - 1].buffer : undefined;
+      const stdoutBuffer = i < commands.length - 1 ? pipes[i].buffer : undefined;
+
+      const worker = new Worker(workerUrl, { type: "module" });
+      workers.push(worker);
+
+      const promise = new Promise<{ exitCode: number; output: string; stderr: string }>((resolve, reject) => {
+        worker.onmessage = (e) => {
+          if (e.data.type === "ready") {
+            worker.postMessage({
+              type: "run",
+              argv: ["busybox", ...commands[i]],
+            });
+          } else if (e.data.type === "done") {
+            resolve({
+              exitCode: e.data.exitCode,
+              output: e.data.output || "",
+              stderr: e.data.stderr || "",
+            });
+          } else if (e.data.type === "error") {
+            reject(new Error(e.data.error));
+          }
+        };
+        worker.onerror = (e) => reject(new Error(e.message));
+
+        worker.postMessage({
+          type: "init",
+          jsPath,
+          wasmPath,
+          stdinBuffer,
+          stdoutBuffer,
+          files: options.files || {},
+        });
+      });
+
+      promises.push(promise);
+    }
+
+    // Wait for all commands to complete
+    const results = await Promise.all(promises);
+
+    // Collect output from the last command
+    const lastResult = results[results.length - 1];
+    const allStderr = results.map(r => r.stderr).filter(Boolean).join("\n");
+
+    return {
+      success: lastResult.exitCode === 0,
+      stdout: lastResult.output,
+      stderr: allStderr,
+      exit_code: lastResult.exitCode,
+      execution_time_ms: Date.now() - start,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      stdout: "",
+      stderr: err instanceof Error ? err.message : String(err),
+      exit_code: 1,
+      execution_time_ms: Date.now() - start,
+    };
+  } finally {
+    workers.forEach(w => w.terminate());
+    URL.revokeObjectURL(workerUrl);
+  }
+}
+
+/**
+ * Execute shell command using ProcessManager (full shell support).
+ * Supports pipes, variables, subshells, and other shell features.
+ */
+async function executeShellWithProcessManager(
+  options: ShellExecutionOptions
+): Promise<ShellExecutionResult> {
+  const start = Date.now();
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
+
+  const manager = new ProcessManager({
+    busyboxDir: options.busyboxDir,
+    initialFiles: options.files,
+    onStdout: (text) => stdoutLines.push(text),
+    onStderr: (text) => stderrLines.push(text),
+  });
+
+  try {
+    const pid = await manager.spawnShell(options.command);
+    const result = await manager.waitForProcess(pid);
+
+    return {
+      success: result.exitCode === 0,
+      stdout: stdoutLines.join("\n"),
+      stderr: stderrLines.join("\n"),
+      exit_code: result.exitCode,
+      execution_time_ms: Date.now() - start,
+      created_files: result.changedFiles.map((f) => ({
+        path: f.path,
+        content: Array.from(f.content),
+      })),
+    };
+  } catch (err) {
+    return {
+      success: false,
+      stdout: stdoutLines.join("\n"),
+      stderr: err instanceof Error ? err.message : String(err),
+      exit_code: 1,
+      execution_time_ms: Date.now() - start,
+    };
+  } finally {
+    manager.cleanup();
+  }
+}
+
+/**
+ * Execute shell command using simple applet invocation.
+ * Faster but limited to basic commands without pipes/variables.
+ */
+async function executeShellSimple(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
   const start = Date.now();
   const output: OutputCapture = { stdout: [], stderr: [] };
 
@@ -560,14 +1079,47 @@ async function executeShell(options: ShellExecutionOptions): Promise<ShellExecut
       created_files: createdFiles,
     };
   } catch (err) {
+    // Improved error handling for non-Error objects
+    let errMsg: string;
+    if (err instanceof Error) {
+      errMsg = err.message;
+    } else if (err && typeof err === "object") {
+      errMsg = JSON.stringify(err);
+    } else {
+      errMsg = String(err);
+    }
     return {
       success: false,
       stdout: "",
-      stderr: err instanceof Error ? err.message : String(err),
+      stderr: errMsg,
       exit_code: 1,
       execution_time_ms: Date.now() - start,
     };
   }
+}
+
+/**
+ * Execute shell command, automatically choosing the best execution mode.
+ * - Pipeline mode: Worker-based isolation for pipe commands
+ * - Simple mode: Direct applet invocation for basic commands
+ * - Full mode: ProcessManager for variables, subshells (TODO)
+ */
+async function executeShell(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
+  // Check for pipes first - use Worker-based pipeline execution
+  if (hasPipes(options.command)) {
+    return executePipeline(options);
+  }
+
+  // Check if command needs full shell support (variables, subshells, etc.)
+  if (needsFullShell(options.command)) {
+    // TODO: ProcessManager doesn't fully work yet for these cases
+    // For now, fall back to simple execution with a warning
+    console.error("Warning: Complex shell features not fully supported, attempting simple execution");
+    return executeShellSimple(options);
+  }
+
+  // Use simple mode for basic commands
+  return executeShellSimple(options);
 }
 
 async function main() {

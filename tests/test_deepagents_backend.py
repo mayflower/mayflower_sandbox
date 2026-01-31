@@ -511,3 +511,295 @@ class TestMatchesGlobFilter:
 
     def test_root_base_path(self, backend):
         assert backend._matches_glob_filter("/file.py", "/", "*.py") is True
+
+
+class TestErrorPaths:
+    """Tests for error handling paths in MayflowerSandboxBackend."""
+
+    @pytest.fixture
+    def mock_vfs(self):
+        vfs = AsyncMock()
+        vfs.validate_path = MagicMock(side_effect=lambda p: p if p.startswith("/") else f"/{p}")
+        vfs.file_exists = AsyncMock(return_value=False)
+        vfs.list_files = AsyncMock(return_value=[])
+        vfs.read_file = AsyncMock(return_value={"content": b"test content"})
+        vfs.write_file = AsyncMock()
+        return vfs
+
+    @pytest.fixture
+    def mock_executor(self):
+        executor = AsyncMock()
+        result = MagicMock()
+        result.stdout = "output"
+        result.stderr = ""
+        result.success = True
+        result.exit_code = 0
+        executor.execute = AsyncMock(return_value=result)
+        executor.execute_shell = AsyncMock(return_value=result)
+        return executor
+
+    @pytest.fixture
+    def backend(self, mock_vfs, mock_executor):
+        module = get_module()
+        mock_db_pool = MagicMock()
+        with (
+            patch.object(module, "VirtualFilesystem", return_value=mock_vfs),
+            patch.object(module, "SandboxExecutor", return_value=mock_executor),
+        ):
+            return module.MayflowerSandboxBackend(mock_db_pool, "test_thread")
+
+    @pytest.mark.asyncio
+    async def test_awrite_invalid_path(self, backend, mock_vfs):
+        """Test write with invalid path returns error."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.validate_path = MagicMock(side_effect=InvalidPathError("Path traversal"))
+        result = await backend.awrite("../bad/path", "content")
+        assert result.get("error") is not None
+        assert "Path traversal" in result.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_awrite_write_file_invalid_path_error(self, backend, mock_vfs):
+        """Test write when write_file raises InvalidPathError."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.write_file = AsyncMock(side_effect=InvalidPathError("Invalid destination"))
+        result = await backend.awrite("/file.txt", "content")
+        assert result.get("error") is not None
+        assert "Invalid destination" in result.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_aedit_file_not_found(self, backend, mock_vfs):
+        """Test edit on non-existent file returns error."""
+        from mayflower_sandbox.filesystem import FileNotFoundError
+
+        mock_vfs.read_file = AsyncMock(side_effect=FileNotFoundError("File missing"))
+        result = await backend.aedit("/missing.txt", "old", "new")
+        assert result.get("error") is not None
+        assert "not found" in result.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_aedit_invalid_path(self, backend, mock_vfs):
+        """Test edit with invalid path returns error."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.read_file = AsyncMock(side_effect=InvalidPathError("Bad path"))
+        result = await backend.aedit("../escape.txt", "old", "new")
+        assert result.get("error") is not None
+        assert "not found" in result.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_aedit_write_invalid_path_error(self, backend, mock_vfs):
+        """Test edit when write_file raises InvalidPathError."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.read_file = AsyncMock(return_value={"content": b"old content"})
+        mock_vfs.write_file = AsyncMock(side_effect=InvalidPathError("Write failed"))
+        result = await backend.aedit("/file.txt", "old", "new")
+        assert result.get("error") is not None
+        assert "Write failed" in result.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_aupload_files_write_exception(self, backend, mock_vfs):
+        """Test upload when write_file raises unexpected exception."""
+        mock_vfs.write_file = AsyncMock(side_effect=Exception("Database error"))
+        result = await backend.aupload_files([("/file.txt", b"content")])
+        assert result[0].get("error") == "permission_denied"
+
+    @pytest.mark.asyncio
+    async def test_aupload_files_write_invalid_path(self, backend, mock_vfs):
+        """Test upload when write_file raises InvalidPathError."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.write_file = AsyncMock(side_effect=InvalidPathError("Bad destination"))
+        result = await backend.aupload_files([("/file.txt", b"content")])
+        assert result[0].get("error") == "invalid_path"
+
+    @pytest.mark.asyncio
+    async def test_adownload_files_invalid_path(self, backend, mock_vfs):
+        """Test download with invalid path returns error."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.read_file = AsyncMock(side_effect=InvalidPathError("Bad path"))
+        result = await backend.adownload_files(["../escape.txt"])
+        assert result[0].get("error") == "invalid_path"
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python_with_stderr(self, backend, mock_executor):
+        """Test execute with stderr appends to output."""
+        result_mock = MagicMock()
+        result_mock.stdout = "stdout output"
+        result_mock.stderr = "stderr output"
+        result_mock.success = True
+        result_mock.exit_code = 0
+        mock_executor.execute = AsyncMock(return_value=result_mock)
+
+        result = await backend.aexecute("__PYTHON__\nprint('test')")
+        assert "stdout output" in result.get("output", "")
+        assert "stderr output" in result.get("output", "")
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python_failure(self, backend, mock_executor):
+        """Test execute with failure returns exit code 1."""
+        result_mock = MagicMock()
+        result_mock.stdout = ""
+        result_mock.stderr = "error message"
+        result_mock.success = False
+        result_mock.exit_code = 1
+        mock_executor.execute = AsyncMock(return_value=result_mock)
+
+        result = await backend.aexecute("__PYTHON__\nraise Exception()")
+        assert result.get("exit_code") == 1
+
+    @pytest.mark.asyncio
+    async def test_aexecute_shell_with_stderr(self, backend, mock_executor):
+        """Test shell execute with stderr appends to output."""
+        result_mock = MagicMock()
+        result_mock.stdout = "shell stdout"
+        result_mock.stderr = "shell stderr"
+        result_mock.success = True
+        result_mock.exit_code = 0
+        mock_executor.execute_shell = AsyncMock(return_value=result_mock)
+
+        result = await backend.aexecute("ls -la")
+        assert "shell stdout" in result.get("output", "")
+        assert "shell stderr" in result.get("output", "")
+
+    @pytest.mark.asyncio
+    async def test_aexecute_shell_none_exit_code(self, backend, mock_executor):
+        """Test shell execute with None exit_code defaults based on success."""
+        result_mock = MagicMock()
+        result_mock.stdout = "output"
+        result_mock.stderr = ""
+        result_mock.success = False
+        result_mock.exit_code = None
+        mock_executor.execute_shell = AsyncMock(return_value=result_mock)
+
+        result = await backend.aexecute("failing_command")
+        assert result.get("exit_code") == 1
+
+    @pytest.mark.asyncio
+    async def test_aexecute_shell_none_exit_code_success(self, backend, mock_executor):
+        """Test shell execute with None exit_code and success=True defaults to 0."""
+        result_mock = MagicMock()
+        result_mock.stdout = "output"
+        result_mock.stderr = ""
+        result_mock.success = True
+        result_mock.exit_code = None
+        mock_executor.execute_shell = AsyncMock(return_value=result_mock)
+
+        result = await backend.aexecute("success_command")
+        assert result.get("exit_code") == 0
+
+    @pytest.mark.asyncio
+    async def test_als_info_invalid_path(self, backend, mock_vfs):
+        """Test ls_info with invalid path returns empty list."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.validate_path = MagicMock(side_effect=InvalidPathError("Bad path"))
+        result = await backend.als_info("../escape")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_aread_invalid_path(self, backend, mock_vfs):
+        """Test read with invalid path returns error message."""
+        from mayflower_sandbox.filesystem import InvalidPathError
+
+        mock_vfs.read_file = AsyncMock(side_effect=InvalidPathError("Bad path"))
+        result = await backend.aread("../escape.txt")
+        assert "Error:" in result
+        assert "not found" in result
+
+
+class TestSyncWrappers:
+    """Tests for synchronous wrapper methods."""
+
+    @pytest.fixture
+    def mock_vfs(self):
+        vfs = AsyncMock()
+        vfs.validate_path = MagicMock(side_effect=lambda p: p if p.startswith("/") else f"/{p}")
+        vfs.file_exists = AsyncMock(return_value=False)
+        vfs.list_files = AsyncMock(return_value=[])
+        vfs.read_file = AsyncMock(return_value={"content": b"test content"})
+        vfs.write_file = AsyncMock()
+        return vfs
+
+    @pytest.fixture
+    def mock_executor(self):
+        executor = AsyncMock()
+        result = MagicMock()
+        result.stdout = "output"
+        result.stderr = ""
+        result.success = True
+        result.exit_code = 0
+        executor.execute = AsyncMock(return_value=result)
+        executor.execute_shell = AsyncMock(return_value=result)
+        return executor
+
+    @pytest.fixture
+    def backend(self, mock_vfs, mock_executor):
+        module = get_module()
+        mock_db_pool = MagicMock()
+        with (
+            patch.object(module, "VirtualFilesystem", return_value=mock_vfs),
+            patch.object(module, "SandboxExecutor", return_value=mock_executor),
+        ):
+            return module.MayflowerSandboxBackend(mock_db_pool, "test_thread")
+
+    def test_read_sync(self, backend, mock_vfs):
+        """Test synchronous read wrapper."""
+        mock_vfs.read_file = AsyncMock(return_value={"content": b"line1\nline2"})
+        result = backend.read("/test.txt")
+        assert "line1" in result
+        assert "line2" in result
+
+    def test_write_sync(self, backend, mock_vfs):
+        """Test synchronous write wrapper."""
+        result = backend.write("/new.txt", "content")
+        assert result.get("path") == "/new.txt"
+
+    def test_edit_sync(self, backend, mock_vfs):
+        """Test synchronous edit wrapper."""
+        mock_vfs.read_file = AsyncMock(return_value={"content": b"old text"})
+        result = backend.edit("/file.txt", "old", "new")
+        assert result.get("path") == "/file.txt"
+
+    def test_ls_info_sync(self, backend, mock_vfs):
+        """Test synchronous ls_info wrapper."""
+        mock_vfs.list_files = AsyncMock(
+            return_value=[{"file_path": "/test.txt", "size": 100, "modified_at": None}]
+        )
+        result = backend.ls_info("/")
+        assert len(result) == 1
+
+    def test_grep_raw_sync(self, backend, mock_vfs):
+        """Test synchronous grep_raw wrapper."""
+        mock_vfs.list_files = AsyncMock(
+            return_value=[{"file_path": "/test.txt", "content": b"match here"}]
+        )
+        result = backend.grep_raw("match")
+        assert isinstance(result, list)
+
+    def test_glob_info_sync(self, backend, mock_vfs):
+        """Test synchronous glob_info wrapper."""
+        mock_vfs.list_files = AsyncMock(
+            return_value=[{"file_path": "/test.py", "size": 100, "modified_at": None}]
+        )
+        result = backend.glob_info("*.py")
+        assert len(result) == 1
+
+    def test_upload_files_sync(self, backend, mock_vfs):
+        """Test synchronous upload_files wrapper."""
+        result = backend.upload_files([("/file.txt", b"content")])
+        assert len(result) == 1
+
+    def test_download_files_sync(self, backend, mock_vfs):
+        """Test synchronous download_files wrapper."""
+        mock_vfs.read_file = AsyncMock(return_value={"content": b"content"})
+        result = backend.download_files(["/file.txt"])
+        assert len(result) == 1
+
+    def test_execute_sync(self, backend, mock_executor):
+        """Test synchronous execute wrapper."""
+        result = backend.execute("ls")
+        assert result.get("output") == "output"

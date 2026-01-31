@@ -399,7 +399,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return responses
 
     def _execute_shell(self, command: str) -> ExecuteResponse:
-        """Stub for shell execution (busybox patch will implement)."""
+        """Execute shell command via BusyBox WASM sandbox."""
         result = self._run_async(self._executor.execute_shell(command))
         output = result.stdout or ""
         if result.stderr:
