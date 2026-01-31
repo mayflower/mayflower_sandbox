@@ -27,8 +27,57 @@ try:
         SandboxBackendProtocol,
         WriteResult,
     )
-except Exception as exc:  # pragma: no cover - optional dependency
-    raise ImportError("deepagents is required to use MayflowerSandboxBackend") from exc
+except Exception:  # pragma: no cover - optional dependency
+    # Provide fallback types for testing without deepagents installed
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class ExecuteResponse:  # type: ignore[no-redef]
+        output: str = ""
+        exit_code: int = 0
+        truncated: bool = False
+
+    @dataclass
+    class EditResult:  # type: ignore[no-redef]
+        success: bool = False
+        content: str = ""
+        error: str = ""
+
+    @dataclass
+    class WriteResult:  # type: ignore[no-redef]
+        success: bool = False
+        error: str = ""
+
+    @dataclass
+    class FileInfo:  # type: ignore[no-redef]
+        name: str = ""
+        path: str = ""
+        is_dir: bool = False
+        size: int = 0
+        modified: str = ""
+
+    @dataclass
+    class FileUploadResponse:  # type: ignore[no-redef]
+        path: str = ""
+        success: bool = False
+        error: str = ""
+
+    @dataclass
+    class FileDownloadResponse:  # type: ignore[no-redef]
+        path: str = ""
+        content: bytes = field(default_factory=bytes)
+        error: str = ""
+
+    @dataclass
+    class GrepMatch:  # type: ignore[no-redef]
+        file: str = ""
+        line: int = 0
+        content: str = ""
+
+    # Base class for the protocol when deepagents is not installed
+    class SandboxBackendProtocol:  # type: ignore[no-redef]
+        pass
+
 
 from .filesystem import FileNotFoundError, InvalidPathError, VirtualFilesystem  # noqa: E402
 from .sandbox_executor import SandboxExecutor  # noqa: E402
@@ -60,6 +109,28 @@ def _format_timestamp(value: Any) -> str:
         except Exception:
             return str(value)
     return str(value)
+
+
+def _create_file_data(content: str, created_at: str | None = None) -> dict[str, Any]:
+    """Create a FileData dict matching DeepAgents StateBackend format.
+
+    This ensures MayflowerSandboxBackend populates the `files` state field
+    the same way StateBackend does, enabling the frontend to list files.
+
+    Args:
+        content: File content as string.
+        created_at: Optional creation timestamp (ISO format).
+
+    Returns:
+        FileData dict with content lines and timestamps.
+    """
+    lines = content.split("\n") if isinstance(content, str) else content
+    now = datetime.utcnow().isoformat() + "Z"
+    return {
+        "content": lines,
+        "created_at": created_at or now,
+        "modified_at": now,
+    }
 
 
 class MayflowerSandboxBackend(SandboxBackendProtocol):
@@ -223,7 +294,9 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         except InvalidPathError as exc:
             return WriteResult(error=str(exc))
 
-        return WriteResult(path=normalized, files_update=None)
+        # Return files_update to populate the `files` state field (matches StateBackend)
+        file_data = _create_file_data(content)
+        return WriteResult(path=normalized, files_update={normalized: file_data})
 
     def edit(
         self,
@@ -268,8 +341,13 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         except InvalidPathError as exc:
             return EditResult(error=str(exc))
 
+        # Return files_update to populate the `files` state field (matches StateBackend)
+        # Preserve original created_at if available
+        created_at = _format_timestamp(record.get("created_at"))
+        normalized = _normalize_path(file_path)
+        file_data = _create_file_data(new_content, created_at=created_at or None)
         return EditResult(
-            path=_normalize_path(file_path), files_update=None, occurrences=occurrences
+            path=normalized, files_update={normalized: file_data}, occurrences=occurrences
         )
 
     def _grep_file_matches(
@@ -420,26 +498,97 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             exit_code = 0 if result.success else 1
         return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
+    def _parse_python_command(self, command: str) -> tuple[str, list[str]] | None:
+        """Parse a python command to extract script path and arguments.
+
+        Detects commands like:
+        - python script.py
+        - python3 script.py
+        - python /path/to/script.py arg1 arg2
+
+        Returns:
+            Tuple of (script_path, args) if detected, None otherwise.
+        """
+        parts = command.strip().split()
+        if not parts:
+            return None
+
+        # Check if command starts with python or python3
+        if parts[0] not in ("python", "python3"):
+            return None
+
+        if len(parts) < 2:
+            return None
+
+        script_path = parts[1]
+        # Must be a .py file
+        if not script_path.endswith(".py"):
+            return None
+
+        args = parts[2:] if len(parts) > 2 else []
+        return (script_path, args)
+
+    def _execute_python_code(self, code: str) -> ExecuteResponse:
+        """Execute Python code via Pyodide."""
+        result = self._run_async(self._executor.execute(code))
+        output = result.stdout or ""
+        if result.stderr:
+            output = f"{output}\n{result.stderr}" if output else result.stderr
+        py_exit_code = 0 if result.success else 1
+        return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
+
+    async def _aexecute_python_code(self, code: str) -> ExecuteResponse:
+        """Execute Python code via Pyodide (async)."""
+        result = await self._executor.execute(code)
+        output = result.stdout or ""
+        if result.stderr:
+            output = f"{output}\n{result.stderr}" if output else result.stderr
+        py_exit_code = 0 if result.success else 1
+        return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
+
     def execute(self, command: str) -> ExecuteResponse:
-        if command.startswith("__PYTHON__"):
-            code = command[len("__PYTHON__") :].lstrip("\n")
-            result = self._run_async(self._executor.execute(code))
-            output = result.stdout or ""
-            if result.stderr:
-                output = f"{output}\n{result.stderr}" if output else result.stderr
-            py_exit_code = 0 if result.success else 1
-            return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
+        # Check for python script.py command
+        python_cmd = self._parse_python_command(command)
+        if python_cmd:
+            script_path, args = python_cmd
+            try:
+                record = self._run_async(self._vfs.read_file(script_path))
+            except (FileNotFoundError, InvalidPathError):
+                return ExecuteResponse(
+                    output=f"python: can't open file '{script_path}': No such file",
+                    exit_code=2,
+                    truncated=False,
+                )
+            content_bytes = record.get("content", b"") or b""
+            code = content_bytes.decode("utf-8", errors="replace")
+            # Inject sys.argv for script arguments
+            if args:
+                argv_setup = f"import sys; sys.argv = [{repr(script_path)}, {', '.join(repr(a) for a in args)}]\n"
+                code = argv_setup + code
+            return self._execute_python_code(code)
+
         return self._execute_shell(command)
 
     async def aexecute(self, command: str) -> ExecuteResponse:
-        if command.startswith("__PYTHON__"):
-            code = command[len("__PYTHON__") :].lstrip("\n")
-            result = await self._executor.execute(code)
-            output = result.stdout or ""
-            if result.stderr:
-                output = f"{output}\n{result.stderr}" if output else result.stderr
-            py_exit_code = 0 if result.success else 1
-            return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
+        # Check for python script.py command
+        python_cmd = self._parse_python_command(command)
+        if python_cmd:
+            script_path, args = python_cmd
+            try:
+                record = await self._vfs.read_file(script_path)
+            except (FileNotFoundError, InvalidPathError):
+                return ExecuteResponse(
+                    output=f"python: can't open file '{script_path}': No such file",
+                    exit_code=2,
+                    truncated=False,
+                )
+            content_bytes = record.get("content", b"") or b""
+            code = content_bytes.decode("utf-8", errors="replace")
+            # Inject sys.argv for script arguments
+            if args:
+                argv_setup = f"import sys; sys.argv = [{repr(script_path)}, {', '.join(repr(a) for a in args)}]\n"
+                code = argv_setup + code
+            return await self._aexecute_python_code(code)
 
         result = await self._executor.execute_shell(command)
         output = result.stdout or ""
