@@ -71,7 +71,8 @@ function parseShellCommand(command: string): ParsedShell {
   const result: ParsedShell = { commands: [] };
 
   // Split on && and ; (basic splitting, doesn't handle quotes perfectly)
-  const parts = command.split(/\s*(&&|;)\s*/);
+  // Use simple split pattern without \s* to avoid ReDoS, trim parts afterward
+  const parts = command.split(/(&&|;)/);
 
   let i = 0;
   while (i < parts.length) {
@@ -90,38 +91,59 @@ function parseShellCommand(command: string): ParsedShell {
   return result;
 }
 
-const APPEND_REDIRECT_RE = /\s*>>\s*(\S+)\s*$/;
-const OUTPUT_REDIRECT_RE = /\s*>\s*(\S+)\s*$/;
-const INPUT_REDIRECT_RE = /\s*<\s*(\S+)\s*/;
+/**
+ * Extract the first non-whitespace token from a string.
+ * Returns the token or empty string if none found.
+ */
+function extractFirstToken(str: string): string {
+  const trimmed = str.trim();
+  const spaceIdx = trimmed.indexOf(" ");
+  return spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
+}
 
 function parseSingleCommand(cmdStr: string): ParsedCommand {
   const result: ParsedCommand = { argv: [] };
-  let remaining = cmdStr;
+  let remaining = cmdStr.trim();
 
-  // >> append redirection
-  const appendMatch = APPEND_REDIRECT_RE.exec(remaining);
-  if (appendMatch) {
-    result.redirectAppend = appendMatch[1];
-    remaining = remaining.slice(0, -appendMatch[0].length);
+  // >> append redirection (check first since >> contains >)
+  const appendIdx = remaining.lastIndexOf(">>");
+  if (appendIdx >= 0) {
+    const afterRedirect = remaining.slice(appendIdx + 2).trim();
+    const target = extractFirstToken(afterRedirect);
+    if (target) {
+      result.redirectAppend = target;
+      remaining = remaining.slice(0, appendIdx).trim();
+    }
   }
 
   // > output redirection (only if no append)
   if (!result.redirectAppend) {
-    const outMatch = OUTPUT_REDIRECT_RE.exec(remaining);
-    if (outMatch) {
-      result.redirectOut = outMatch[1];
-      remaining = remaining.slice(0, -outMatch[0].length);
+    const outIdx = remaining.lastIndexOf(">");
+    if (outIdx >= 0) {
+      const afterRedirect = remaining.slice(outIdx + 1).trim();
+      const target = extractFirstToken(afterRedirect);
+      if (target) {
+        result.redirectOut = target;
+        remaining = remaining.slice(0, outIdx).trim();
+      }
     }
   }
 
   // < input redirection
-  const inMatch = INPUT_REDIRECT_RE.exec(remaining);
-  if (inMatch) {
-    result.redirectIn = inMatch[1];
-    remaining = remaining.replace(inMatch[0], " ");
+  const inIdx = remaining.indexOf("<");
+  if (inIdx >= 0) {
+    const afterRedirect = remaining.slice(inIdx + 1).trim();
+    const target = extractFirstToken(afterRedirect);
+    if (target) {
+      result.redirectIn = target;
+      // Remove the redirection from remaining
+      const targetStart = remaining.indexOf(target, inIdx);
+      const targetEnd = targetStart + target.length;
+      remaining = (remaining.slice(0, inIdx) + " " + remaining.slice(targetEnd)).trim();
+    }
   }
 
-  result.argv = parseArgv(remaining.trim());
+  result.argv = parseArgv(remaining);
   return result;
 }
 
@@ -803,9 +825,11 @@ function collectFiles(FS, paths) {
 }
 
 // Parse shell command (&&, ;, redirections) - mirrors main thread parser
+// Uses indexOf-based parsing to avoid ReDoS from complex regex patterns
 function parseShellCommand(command) {
   const result = { commands: [] };
-  const parts = command.split(/\\s*(&&|;)\\s*/);
+  // Simple split without \\s* to avoid ReDoS, trim parts afterward
+  const parts = command.split(/(&&|;)/);
   let i = 0;
   while (i < parts.length) {
     const cmdStr = parts[i].trim();
@@ -823,32 +847,49 @@ function parseShellCommand(command) {
 
 function parseSingleCommand(cmdStr) {
   const result = { argv: [] };
-  let remaining = cmdStr;
+  let remaining = cmdStr.trim();
 
-  // >> append redirection
-  const appendMatch = /\\s*>>\\s*(\\S+)\\s*$/.exec(remaining);
-  if (appendMatch) {
-    result.redirectAppend = appendMatch[1];
-    remaining = remaining.slice(0, -appendMatch[0].length);
+  // >> append redirection (check first since >> contains >)
+  const appendIdx = remaining.lastIndexOf(">>");
+  if (appendIdx >= 0) {
+    const afterRedirect = remaining.slice(appendIdx + 2).trim();
+    const spaceIdx = afterRedirect.indexOf(" ");
+    const target = spaceIdx >= 0 ? afterRedirect.slice(0, spaceIdx) : afterRedirect;
+    if (target) {
+      result.redirectAppend = target;
+      remaining = remaining.slice(0, appendIdx).trim();
+    }
   }
 
   // > output redirection (only if no append)
   if (!result.redirectAppend) {
-    const outMatch = /\\s*>\\s*(\\S+)\\s*$/.exec(remaining);
-    if (outMatch) {
-      result.redirectOut = outMatch[1];
-      remaining = remaining.slice(0, -outMatch[0].length);
+    const outIdx = remaining.lastIndexOf(">");
+    if (outIdx >= 0) {
+      const afterRedirect = remaining.slice(outIdx + 1).trim();
+      const spaceIdx = afterRedirect.indexOf(" ");
+      const target = spaceIdx >= 0 ? afterRedirect.slice(0, spaceIdx) : afterRedirect;
+      if (target) {
+        result.redirectOut = target;
+        remaining = remaining.slice(0, outIdx).trim();
+      }
     }
   }
 
   // < input redirection
-  const inMatch = /\\s*<\\s*(\\S+)\\s*/.exec(remaining);
-  if (inMatch) {
-    result.redirectIn = inMatch[1];
-    remaining = remaining.replace(inMatch[0], " ");
+  const inIdx = remaining.indexOf("<");
+  if (inIdx >= 0) {
+    const afterRedirect = remaining.slice(inIdx + 1).trim();
+    const spaceIdx = afterRedirect.indexOf(" ");
+    const target = spaceIdx >= 0 ? afterRedirect.slice(0, spaceIdx) : afterRedirect;
+    if (target) {
+      result.redirectIn = target;
+      // Remove < and target from remaining
+      const targetEnd = remaining.indexOf(target, inIdx) + target.length;
+      remaining = (remaining.slice(0, inIdx) + " " + remaining.slice(targetEnd)).trim();
+    }
   }
 
-  result.argv = parseArgv(remaining.trim());
+  result.argv = parseArgv(remaining);
   return result;
 }
 
