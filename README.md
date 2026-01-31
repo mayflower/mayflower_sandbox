@@ -209,6 +209,22 @@ This pattern enables complex visualizations and large-scale data processing with
 
 Mayflower Sandbox provides a `SandboxBackendProtocol` adapter for the [DeepAgents](https://github.com/mayflower/deepagents) framework, enabling secure Python and shell execution in DeepAgents-powered applications.
 
+### SandboxBackendProtocol Methods
+
+The `MayflowerSandboxBackend` class implements all methods required by DeepAgents:
+
+| Method | Async Version | Description |
+|--------|---------------|-------------|
+| `execute(command)` | `aexecute()` | Run shell commands or Python (with `__PYTHON__` prefix) |
+| `read(path, offset, limit)` | `aread()` | Read file content with line numbers |
+| `write(path, content)` | `awrite()` | Create new file (fails if exists) |
+| `edit(path, old, new, replace_all)` | `aedit()` | Replace string in existing file |
+| `ls_info(path)` | `als_info()` | List directory contents |
+| `glob_info(pattern, path)` | `aglob_info()` | Find files matching glob pattern |
+| `grep_raw(pattern, path, glob)` | `agrep_raw()` | Search file contents with regex |
+| `upload_files(files)` | `aupload_files()` | Batch upload files |
+| `download_files(paths)` | `adownload_files()` | Batch download files |
+
 ### Usage
 
 ```python
@@ -232,32 +248,31 @@ backend = MayflowerSandboxBackend(
     timeout_seconds=60.0  # Execution timeout
 )
 
-# Use with DeepAgents
-# backend implements SandboxBackendProtocol with:
-# - execute(command) - Run shell or Python (__PYTHON__ prefix)
-# - read/write/edit - File operations
-# - ls_info/glob_info/grep_raw - File search
-# - upload_files/download_files - Batch file operations
-```
-
-### Shell Execution
-
-The backend supports shell command execution via BusyBox WASM:
-
-```python
-# Shell commands
+# Execute shell commands
 result = await backend.aexecute("echo hello > /tmp/test.txt")
 result = await backend.aexecute("cat /tmp/test.txt | grep hello")
 
-# Python code (use __PYTHON__ prefix)
+# Execute Python code (use __PYTHON__ prefix)
 result = await backend.aexecute("__PYTHON__\nprint('Hello from Python')")
+
+# File operations
+content = await backend.aread("/tmp/test.txt")
+await backend.awrite("/tmp/new.txt", "content")
+await backend.aedit("/tmp/test.txt", "hello", "world")
+
+# Search operations
+files = await backend.aglob_info("*.txt", "/tmp")
+matches = await backend.agrep_raw("hello", path="/tmp")
 ```
 
-**Supported shell features:**
-- Basic commands: `echo`, `cat`, `grep`, `wc`, `ls`, `mkdir`, `rm`, etc.
-- Pipes: `echo hello | cat | grep hello`
-- Command chaining: `cmd1 && cmd2`, `cmd1 ; cmd2`
-- Redirections: `>`, `>>`, `<`
+### Shell Execution Features
+
+The backend supports shell command execution via BusyBox WASM:
+
+- **Basic commands:** `echo`, `cat`, `grep`, `wc`, `ls`, `mkdir`, `rm`, etc.
+- **Pipes:** `echo hello | cat | grep hello`
+- **Command chaining:** `cmd1 && cmd2`, `cmd1 ; cmd2`
+- **Redirections:** `>`, `>>`, `<`
 
 **Pipeline architecture:** Each pipe stage runs in a separate Deno Worker connected via SharedArrayBuffer ring buffers with Atomics synchronization.
 
