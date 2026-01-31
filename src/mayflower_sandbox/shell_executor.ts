@@ -1,15 +1,12 @@
 /**
  * Mayflower Sandbox - Busybox Shell Executor (WASM + VFS)
  *
- * This script loads VFS files from stdin, materializes them in BusyBox MEMFS,
- * executes shell commands, and returns changed files back to Python.
+ * All shell commands run in isolated Deno Workers with BusyBox WASM.
+ * VFS files from PostgreSQL are mounted into MEMFS before execution,
+ * and modified files are returned to Python for persistence.
  *
- * Pipeline commands (with |) use Worker-based isolation where each stage
- * runs in a separate Deno Worker connected via SharedArrayBuffer pipes.
- * This is necessary because BusyBox WASM has global state that prevents
- * running multiple commands in the same process.
- *
- * Non-pipe commands use direct applet invocation as an optimization.
+ * Pipeline commands (with |) use multiple Workers connected via
+ * SharedArrayBuffer ring buffer pipes with Atomics synchronization.
  */
 
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
@@ -45,44 +42,6 @@ type BusyboxModule = {
 type BusyboxModuleFactory = (options: Record<string, unknown>) => Promise<BusyboxModule>;
 
 const IGNORE_PREFIXES = ["/dev", "/proc", "/sys"];
-
-/**
- * Check if a command contains pipes (|) that need Worker-based execution.
- */
-function hasPipes(command: string): boolean {
-  // Match | but not || (which is OR)
-  // Simple approach: look for | not preceded/followed by |
-  return /(?<!\|)\|(?!\|)/.test(command);
-}
-
-/**
- * Check if a command requires full shell support (ProcessManager).
- * Returns true for commands with variables, subshells, etc.
- * Note: Pipes are now handled separately via Worker-based execution.
- */
-function needsFullShell(command: string): boolean {
-  // Patterns that require full shell support (excluding pipes which we handle via Workers)
-  const complexPatterns = [
-    /\|\|/,         // Or chains
-    /\$\w/,         // Variable expansion
-    /\$\(/,         // Command substitution
-    /`/,            // Backtick substitution
-    /\bfor\b/,      // For loops
-    /\bwhile\b/,    // While loops
-    /\bif\b/,       // If statements
-    /\bcase\b/,     // Case statements
-    /<<</,          // Here strings
-    /<</,           // Here documents
-    /\(\s*\)/,      // Subshells
-    /\{.*\}/,       // Brace expansion (basic check)
-    /\bexport\b/,   // Export (modifies env)
-    /\beval\b/,     // Eval
-    /\bsource\b/,   // Source/dot commands
-    /^\s*\./,       // Dot command
-  ];
-
-  return complexPatterns.some((pattern) => pattern.test(command));
-}
 
 // Shell command parsing types
 interface ParsedCommand {
@@ -792,6 +751,188 @@ let vfsFiles = {};
 const outputBuffer = [];
 const stderrBuffer = [];
 
+// State for per-command output redirection (checked by print function)
+let currentRedirect = null;
+let redirectBuffer = [];
+
+// Snapshot filesystem to track changes
+function snapshotFs(FS, path) {
+  const snapshot = new Map();
+  function walk(dir) {
+    try {
+      const entries = FS.readdir(dir).filter(e => e !== '.' && e !== '..');
+      for (const entry of entries) {
+        const fullPath = dir === '/' ? '/' + entry : dir + '/' + entry;
+        try {
+          const stat = FS.stat(fullPath);
+          if (FS.isDir(stat.mode)) {
+            walk(fullPath);
+          } else if (FS.isFile(stat.mode)) {
+            snapshot.set(fullPath, { mtime: stat.mtime, size: stat.size });
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+  walk(path);
+  return snapshot;
+}
+
+// Find files that changed between snapshots
+function findChangedFiles(before, after) {
+  const changed = [];
+  for (const [path, info] of after) {
+    const prev = before.get(path);
+    if (!prev || prev.mtime !== info.mtime || prev.size !== info.size) {
+      changed.push(path);
+    }
+  }
+  return changed;
+}
+
+// Collect file contents
+function collectFiles(FS, paths) {
+  const files = [];
+  for (const path of paths) {
+    try {
+      const content = FS.readFile(path);
+      files.push({ path, content: Array.from(content) });
+    } catch (e) {}
+  }
+  return files;
+}
+
+// Parse shell command (&&, ;, redirections) - mirrors main thread parser
+function parseShellCommand(command) {
+  const result = { commands: [] };
+  const parts = command.split(/\\s*(&&|;)\\s*/);
+  let i = 0;
+  while (i < parts.length) {
+    const cmdStr = parts[i].trim();
+    if (!cmdStr || cmdStr === "&&" || cmdStr === ";") {
+      i++;
+      continue;
+    }
+    const type = (i > 0 && parts[i - 1] === "&&") ? "stop_on_error" : "always";
+    const parsed = parseSingleCommand(cmdStr);
+    result.commands.push({ ...parsed, type });
+    i++;
+  }
+  return result;
+}
+
+function parseSingleCommand(cmdStr) {
+  const result = { argv: [] };
+  let remaining = cmdStr;
+
+  // >> append redirection
+  const appendMatch = /\\s*>>\\s*(\\S+)\\s*$/.exec(remaining);
+  if (appendMatch) {
+    result.redirectAppend = appendMatch[1];
+    remaining = remaining.slice(0, -appendMatch[0].length);
+  }
+
+  // > output redirection (only if no append)
+  if (!result.redirectAppend) {
+    const outMatch = /\\s*>\\s*(\\S+)\\s*$/.exec(remaining);
+    if (outMatch) {
+      result.redirectOut = outMatch[1];
+      remaining = remaining.slice(0, -outMatch[0].length);
+    }
+  }
+
+  // < input redirection
+  const inMatch = /\\s*<\\s*(\\S+)\\s*/.exec(remaining);
+  if (inMatch) {
+    result.redirectIn = inMatch[1];
+    remaining = remaining.replace(inMatch[0], " ");
+  }
+
+  result.argv = parseArgv(remaining.trim());
+  return result;
+}
+
+function parseArgv(str) {
+  const args = [];
+  let current = "";
+  let inQuote = null;
+  for (const c of str) {
+    if (inQuote) {
+      if (c === inQuote) inQuote = null;
+      else current += c;
+    } else if (c === '"' || c === "'") {
+      inQuote = c;
+    } else if (c === " " || c === "\\t") {
+      if (current) { args.push(current); current = ""; }
+    } else {
+      current += c;
+    }
+  }
+  if (current) args.push(current);
+  return args;
+}
+
+// Execute a single applet with optional redirection
+function executeApplet(module, cmd) {
+  if (cmd.argv.length === 0) return 0;
+  const FS = module.FS;
+
+  let exitCode = 0;
+  const hasRedirect = !!(cmd.redirectOut || cmd.redirectAppend);
+
+  // Set redirect state - print function will check this
+  if (hasRedirect) {
+    currentRedirect = cmd.redirectOut || cmd.redirectAppend;
+    redirectBuffer = [];
+  }
+
+  const originalQuit = module.quit;
+  module.quit = (status, toThrow) => {
+    exitCode = status;
+    if (toThrow) throw toThrow;
+    throw new Error("ExitStatus");
+  };
+
+  try {
+    const result = module.callMain(["busybox", ...cmd.argv]);
+    if (typeof result === "number") exitCode = result;
+  } catch (err) {
+    if (err.name !== "ExitStatus" && err.message !== "ExitStatus") throw err;
+  } finally {
+    module.quit = originalQuit;
+  }
+
+  // Handle output redirection - write captured output to file
+  if (hasRedirect) {
+    const content = redirectBuffer.join("\\n") + (redirectBuffer.length ? "\\n" : "");
+    const path = currentRedirect;
+    try {
+      const dir = path.substring(0, path.lastIndexOf("/"));
+      if (dir && dir !== "/") {
+        try { FS.mkdirTree(dir); } catch (e) {}
+      }
+      if (cmd.redirectAppend) {
+        try {
+          const existing = FS.readFile(path, { encoding: "utf8" });
+          FS.writeFile(path, existing + content);
+        } catch (e) {
+          FS.writeFile(path, content);
+        }
+      } else {
+        FS.writeFile(path, content);
+      }
+    } catch (err) {
+      stderrBuffer.push("Cannot redirect to " + path + ": " + err);
+      exitCode = 1;
+    } finally {
+      currentRedirect = null;
+      redirectBuffer = [];
+    }
+  }
+
+  return exitCode;
+}
+
 self.onmessage = async (e) => {
   const msg = e.data;
 
@@ -807,8 +948,13 @@ self.onmessage = async (e) => {
         noExitRuntime: true,
         thisProgram: "busybox",
         print: (text) => {
-          if (stdoutPipe) stdoutPipe.write(text + "\\n");
-          else outputBuffer.push(text);
+          if (currentRedirect) {
+            redirectBuffer.push(text);
+          } else if (stdoutPipe) {
+            stdoutPipe.write(text + "\\n");
+          } else {
+            outputBuffer.push(text);
+          }
         },
         printErr: (text) => stderrBuffer.push(text),
         locateFile(path) {
@@ -843,19 +989,35 @@ self.onmessage = async (e) => {
         }
       }
 
+      // Store command for later execution
+      self.command = msg.command;
       self.postMessage({ type: "ready" });
     } catch (err) {
       self.postMessage({ type: "error", error: String(err) });
     }
   } else if (msg.type === "run") {
     try {
-      const exitCode = module.callMain(msg.argv);
+      const FS = module.FS;
+      const before = snapshotFs(FS, "/");
+
+      // Parse and execute commands directly (avoid sh -c which requires fork)
+      const parsed = parseShellCommand(self.command);
+      let exitCode = 0;
+      for (const cmd of parsed.commands) {
+        if (cmd.type === "stop_on_error" && exitCode !== 0) break;
+        exitCode = executeApplet(module, cmd);
+      }
+
+      const after = snapshotFs(FS, "/");
+      const changedPaths = findChangedFiles(before, after);
+      const createdFiles = changedPaths.length > 0 ? collectFiles(FS, changedPaths) : [];
       if (stdoutPipe) stdoutPipe.close();
       self.postMessage({
         type: "done",
         exitCode,
         output: outputBuffer.join("\\n"),
-        stderr: stderrBuffer.join("\\n")
+        stderr: stderrBuffer.join("\\n"),
+        createdFiles
       });
     } catch (err) {
       self.postMessage({ type: "error", error: String(err) });
@@ -920,14 +1082,6 @@ async function executePipeline(
     };
   }
 
-  // For single command, use simple execution
-  if (commands.length === 1) {
-    return executeShellSimple({
-      ...options,
-      command: commands[0].join(" "),
-    });
-  }
-
   const busyboxDir = await resolveBusyboxDir(options.busyboxDir);
   const jsPath = "file://" + join(busyboxDir, "busybox.js");
   const wasmPath = "file://" + join(busyboxDir, "busybox.wasm");
@@ -944,7 +1098,7 @@ async function executePipeline(
 
   try {
     // Start all workers
-    const promises: Promise<{ exitCode: number; output: string; stderr: string }>[] = [];
+    const promises: Promise<{ exitCode: number; output: string; stderr: string; createdFiles: Array<{path: string; content: number[]}> }>[] = [];
 
     for (let i = 0; i < commands.length; i++) {
       const stdinBuffer = i > 0 ? pipes[i - 1].buffer : undefined;
@@ -953,24 +1107,25 @@ async function executePipeline(
       const worker = new Worker(workerUrl, { type: "module" });
       workers.push(worker);
 
-      const promise = new Promise<{ exitCode: number; output: string; stderr: string }>((resolve, reject) => {
+      const promise = new Promise<{ exitCode: number; output: string; stderr: string; createdFiles: Array<{path: string; content: number[]}> }>((resolve, reject) => {
         worker.onmessage = (e) => {
           if (e.data.type === "ready") {
-            worker.postMessage({
-              type: "run",
-              argv: ["busybox", ...commands[i]],
-            });
+            worker.postMessage({ type: "run" });
           } else if (e.data.type === "done") {
             resolve({
               exitCode: e.data.exitCode,
               output: e.data.output || "",
               stderr: e.data.stderr || "",
+              createdFiles: e.data.createdFiles || [],
             });
           } else if (e.data.type === "error") {
             reject(new Error(e.data.error));
           }
         };
         worker.onerror = (e) => reject(new Error(e.message));
+
+        // Use sh -c to let BusyBox shell handle parsing (redirections, &&, etc.)
+        const cmdString = commands[i].join(" ");
 
         worker.postMessage({
           type: "init",
@@ -979,6 +1134,7 @@ async function executePipeline(
           stdinBuffer,
           stdoutBuffer,
           files: options.files || {},
+          command: cmdString,
         });
       });
 
@@ -988,9 +1144,12 @@ async function executePipeline(
     // Wait for all commands to complete
     const results = await Promise.all(promises);
 
-    // Collect output from the last command
+    // Collect output and files from the last command
     const lastResult = results[results.length - 1];
     const allStderr = results.map(r => r.stderr).filter(Boolean).join("\n");
+
+    // Merge created files from all workers (last one has the final state)
+    const createdFiles = lastResult.createdFiles.length > 0 ? lastResult.createdFiles : undefined;
 
     return {
       success: lastResult.exitCode === 0,
@@ -998,6 +1157,7 @@ async function executePipeline(
       stderr: allStderr,
       exit_code: lastResult.exitCode,
       execution_time_ms: Date.now() - start,
+      created_files: createdFiles,
     };
   } catch (err) {
     return {
@@ -1014,78 +1174,11 @@ async function executePipeline(
 }
 
 /**
- * Execute shell command using simple applet invocation.
- * Faster but limited to basic commands without pipes/variables.
- */
-async function executeShellSimple(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
-  const start = Date.now();
-  const output: OutputCapture = { stdout: [], stderr: [] };
-
-  try {
-    const busyboxDir = await resolveBusyboxDir(options.busyboxDir);
-    const module = await loadBusyboxModule(busyboxDir, output);
-    const fs = module.FS;
-
-    ensureBaseDirs(fs);
-    if (options.files) {
-      await mountFiles(fs, options.files);
-    }
-
-    const before = snapshotFs(fs, "/");
-    const { stdout, stderr, exit_code } = runCommand(module, options.command, output);
-    const after = snapshotFs(fs, "/");
-
-    const changedPaths = findChangedFiles(before, after);
-    const createdFiles = changedPaths.length > 0 ? collectFiles(fs, changedPaths) : undefined;
-
-    return {
-      success: exit_code === 0,
-      stdout,
-      stderr,
-      exit_code,
-      execution_time_ms: Date.now() - start,
-      created_files: createdFiles,
-    };
-  } catch (err) {
-    // Improved error handling for non-Error objects
-    let errMsg: string;
-    if (err instanceof Error) {
-      errMsg = err.message;
-    } else if (err && typeof err === "object") {
-      errMsg = JSON.stringify(err);
-    } else {
-      errMsg = String(err);
-    }
-    return {
-      success: false,
-      stdout: "",
-      stderr: errMsg,
-      exit_code: 1,
-      execution_time_ms: Date.now() - start,
-    };
-  }
-}
-
-/**
- * Execute shell command.
- * Pipeline commands use Worker-based isolation (each stage in separate Worker).
- * Non-pipe commands use direct invocation as an optimization.
+ * Execute shell command using Worker-based isolation.
+ * Each command (or pipeline stage) runs in a separate Deno Worker with BusyBox WASM.
  */
 async function executeShell(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
-  // Pipe commands require Worker-based isolation
-  if (hasPipes(options.command)) {
-    return executePipeline(options);
-  }
-
-  // Check if command needs full shell support (variables, subshells, etc.)
-  if (needsFullShell(options.command)) {
-    // TODO: Variables/subshells not yet supported via pipeline
-    console.error("Warning: Complex shell features not fully supported, attempting simple execution");
-    return executeShellSimple(options);
-  }
-
-  // Use simple mode for basic commands
-  return executeShellSimple(options);
+  return executePipeline(options);
 }
 
 async function main() {
