@@ -26,6 +26,7 @@ def mock_deepagents():
 
     # Create mock protocol types
     mock_protocol = MagicMock()
+    mock_protocol.BackendProtocol = object
     mock_protocol.EditResult = dict
     mock_protocol.ExecuteResponse = dict
     mock_protocol.FileDownloadResponse = dict
@@ -47,6 +48,8 @@ def mock_deepagents():
         # Force reimport of our module with mocked dependencies
         if "mayflower_sandbox.deepagents_backend" in sys.modules:
             del sys.modules["mayflower_sandbox.deepagents_backend"]
+        if "mayflower_sandbox" in sys.modules:
+            del sys.modules["mayflower_sandbox"]
         yield
 
 
@@ -56,6 +59,7 @@ def get_module():
     if not DEEPAGENTS_AVAILABLE:
         # Set up mocks before import
         mock_protocol = MagicMock()
+        mock_protocol.BackendProtocol = object
         mock_protocol.EditResult = dict
         mock_protocol.ExecuteResponse = dict
         mock_protocol.FileDownloadResponse = dict
@@ -68,6 +72,12 @@ def get_module():
         sys.modules["deepagents"] = MagicMock()
         sys.modules["deepagents.backends"] = MagicMock()
         sys.modules["deepagents.backends.protocol"] = mock_protocol
+
+        # Clear cached modules
+        if "mayflower_sandbox.deepagents_backend" in sys.modules:
+            del sys.modules["mayflower_sandbox.deepagents_backend"]
+        if "mayflower_sandbox" in sys.modules:
+            del sys.modules["mayflower_sandbox"]
 
     from mayflower_sandbox import deepagents_backend
 

@@ -1,7 +1,12 @@
-"""DeepAgents backend adapter for Mayflower Sandbox.
+"""DeepAgents backend adapters for Mayflower Sandbox.
 
-Implements BackendProtocol and SandboxBackendProtocol using the PostgreSQL-backed
-VirtualFilesystem and the Pyodide SandboxExecutor.
+Provides two backend implementations:
+
+1. PostgresBackend - Implements BackendProtocol for file storage using PostgreSQL.
+   Can be used standalone or composed with CompositeBackend.
+
+2. MayflowerSandboxBackend - Extends PostgresBackend with SandboxBackendProtocol,
+   adding Python/shell execution via Pyodide and BusyBox WASM.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from deepagents.backends.protocol import (
+        BackendProtocol,
         EditResult,
         ExecuteResponse,
         FileDownloadResponse,
@@ -27,7 +33,10 @@ try:
         SandboxBackendProtocol,
         WriteResult,
     )
+
+    DEEPAGENTS_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
+    DEEPAGENTS_AVAILABLE = False
     # Provide fallback types for testing without deepagents installed
     from dataclasses import dataclass, field
 
@@ -39,44 +48,48 @@ except Exception:  # pragma: no cover - optional dependency
 
     @dataclass
     class EditResult:  # type: ignore[no-redef]
-        success: bool = False
-        content: str = ""
-        error: str = ""
+        error: str | None = None
+        path: str | None = None
+        files_update: dict[str, Any] | None = None
+        occurrences: int | None = None
 
     @dataclass
     class WriteResult:  # type: ignore[no-redef]
-        success: bool = False
-        error: str = ""
+        error: str | None = None
+        path: str | None = None
+        files_update: dict[str, Any] | None = None
 
     @dataclass
     class FileInfo:  # type: ignore[no-redef]
-        name: str = ""
         path: str = ""
         is_dir: bool = False
         size: int = 0
-        modified: str = ""
+        modified_at: str = ""
 
     @dataclass
     class FileUploadResponse:  # type: ignore[no-redef]
         path: str = ""
-        success: bool = False
-        error: str = ""
+        error: str | None = None
 
     @dataclass
     class FileDownloadResponse:  # type: ignore[no-redef]
         path: str = ""
-        content: bytes = field(default_factory=bytes)
-        error: str = ""
+        content: bytes | None = field(default_factory=bytes)
+        error: str | None = None
 
     @dataclass
     class GrepMatch:  # type: ignore[no-redef]
-        file: str = ""
+        path: str = ""
         line: int = 0
-        content: str = ""
+        text: str = ""
 
     # Base class for the protocol when deepagents is not installed
-    class SandboxBackendProtocol:  # type: ignore[no-redef]
+    # Use a single base class to avoid metaclass conflicts
+    class BackendProtocol:  # type: ignore[no-redef]
         pass
+
+    # SandboxBackendProtocol is the same as BackendProtocol for fallback
+    SandboxBackendProtocol = BackendProtocol  # type: ignore[misc]
 
 
 from .filesystem import FileNotFoundError, InvalidPathError, VirtualFilesystem  # noqa: E402
@@ -114,8 +127,8 @@ def _format_timestamp(value: Any) -> str:
 def _create_file_data(content: str, created_at: str | None = None) -> dict[str, Any]:
     """Create a FileData dict matching DeepAgents StateBackend format.
 
-    This ensures MayflowerSandboxBackend populates the `files` state field
-    the same way StateBackend does, enabling the frontend to list files.
+    This ensures backends populate the `files` state field the same way
+    StateBackend does, enabling the frontend to list files.
 
     Args:
         content: File content as string.
@@ -125,7 +138,9 @@ def _create_file_data(content: str, created_at: str | None = None) -> dict[str, 
         FileData dict with content lines and timestamps.
     """
     lines = content.split("\n") if isinstance(content, str) else content
-    now = datetime.utcnow().isoformat() + "Z"
+    from datetime import timezone
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "content": lines,
         "created_at": created_at or now,
@@ -133,38 +148,53 @@ def _create_file_data(content: str, created_at: str | None = None) -> dict[str, 
     }
 
 
-class MayflowerSandboxBackend(SandboxBackendProtocol):
-    """DeepAgents backend adapter for Mayflower Sandbox."""
+class PostgresBackend(BackendProtocol):
+    """DeepAgents BackendProtocol implementation using PostgreSQL for file storage.
 
-    def __init__(
-        self,
-        db_pool: Any,
-        thread_id: str,
-        *,
-        allow_net: bool = False,
-        stateful: bool = True,
-        timeout_seconds: float = 60.0,
-    ) -> None:
+    This backend stores files in a PostgreSQL database via VirtualFilesystem.
+    It implements the full BackendProtocol interface for file operations but
+    does NOT support command execution (no execute() method).
+
+    Use this backend:
+    - Standalone for persistent file storage
+    - As a route in CompositeBackend (e.g., for /memories/)
+    - As a base for MayflowerSandboxBackend which adds execution
+
+    Example:
+        ```python
+        from deepagents.backends import CompositeBackend, StateBackend
+
+        # Use PostgresBackend for persistent memories
+        postgres = PostgresBackend(db_pool, thread_id)
+
+        composite = CompositeBackend(
+            default=StateBackend(runtime),
+            routes={"/memories/": postgres}
+        )
+        ```
+    """
+
+    def __init__(self, db_pool: Any, thread_id: str) -> None:
+        """Initialize PostgresBackend.
+
+        Args:
+            db_pool: asyncpg connection pool for PostgreSQL.
+            thread_id: Thread/session identifier for file isolation.
+        """
         self._thread_id = thread_id
         self._vfs = VirtualFilesystem(db_pool, thread_id)
-        self._executor = SandboxExecutor(
-            db_pool,
-            thread_id,
-            allow_net=allow_net,
-            stateful=stateful,
-            timeout_seconds=timeout_seconds,
-        )
+        self._db_pool = db_pool
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread_id: int | None = None
         try:
             self._loop = asyncio.get_running_loop()
             self._loop_thread_id = threading.get_ident()
         except RuntimeError:
-            # Expected when called outside async context - no running event loop
             self._loop = None
             self._loop_thread_id = None
 
     def _run_async(self, coro: Any) -> Any:
+        """Run async coroutine from sync context."""
         try:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -182,18 +212,16 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
 
         if threading.get_ident() == self._loop_thread_id:
             raise RuntimeError(
-                "Synchronous sandbox backend method called from the event loop; "
-                "use the async backend methods instead."
+                "Synchronous backend method called from the event loop; "
+                "use the async methods instead."
             )
 
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        # Use configured timeout plus buffer for cross-thread communication
-        timeout = self._executor.timeout_seconds + 10.0
-        return future.result(timeout=timeout)
+        return future.result(timeout=120.0)
 
-    @property
-    def id(self) -> str:
-        return f"mayflower:{self._thread_id}"
+    # -------------------------------------------------------------------------
+    # ls_info
+    # -------------------------------------------------------------------------
 
     def ls_info(self, path: str) -> list[FileInfo]:
         return self._run_async(self.als_info(path))
@@ -247,6 +275,10 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         infos.sort(key=lambda item: item.get("path", ""))
         return infos
 
+    # -------------------------------------------------------------------------
+    # read
+    # -------------------------------------------------------------------------
+
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
         return self._run_async(self.aread(file_path, offset=offset, limit=limit))
 
@@ -270,6 +302,10 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         end_idx = min(len(lines), start_idx + limit)
         selected = lines[start_idx:end_idx]
         return _format_line_numbers(selected, start_line=start_idx + 1)
+
+    # -------------------------------------------------------------------------
+    # write
+    # -------------------------------------------------------------------------
 
     def write(self, file_path: str, content: str) -> WriteResult:
         return self._run_async(self.awrite(file_path, content))
@@ -297,6 +333,10 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         # Return files_update to populate the `files` state field (matches StateBackend)
         file_data = _create_file_data(content)
         return WriteResult(path=normalized, files_update={normalized: file_data})
+
+    # -------------------------------------------------------------------------
+    # edit
+    # -------------------------------------------------------------------------
 
     def edit(
         self,
@@ -341,14 +381,17 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         except InvalidPathError as exc:
             return EditResult(error=str(exc))
 
-        # Return files_update to populate the `files` state field (matches StateBackend)
-        # Preserve original created_at if available
+        # Return files_update to populate the `files` state field
         created_at = _format_timestamp(record.get("created_at"))
         normalized = _normalize_path(file_path)
         file_data = _create_file_data(new_content, created_at=created_at or None)
         return EditResult(
             path=normalized, files_update={normalized: file_data}, occurrences=occurrences
         )
+
+    # -------------------------------------------------------------------------
+    # grep_raw
+    # -------------------------------------------------------------------------
 
     def _grep_file_matches(
         self,
@@ -410,6 +453,10 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
 
         return matches
 
+    # -------------------------------------------------------------------------
+    # glob_info
+    # -------------------------------------------------------------------------
+
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         return self._run_async(self.aglob_info(pattern, path=path))
 
@@ -439,6 +486,10 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
 
         infos.sort(key=lambda item: item.get("path", ""))
         return infos
+
+    # -------------------------------------------------------------------------
+    # upload_files / download_files
+    # -------------------------------------------------------------------------
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         return self._run_async(self.aupload_files(files))
@@ -487,16 +538,91 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
         return responses
 
-    def _execute_shell(self, command: str) -> ExecuteResponse:
-        """Execute shell command via BusyBox WASM sandbox."""
-        result = self._run_async(self._executor.execute_shell(command))
-        output = result.stdout or ""
-        if result.stderr:
-            output = f"{output}\n{result.stderr}" if output else result.stderr
-        exit_code: int | None = result.exit_code
-        if exit_code is None:
-            exit_code = 0 if result.success else 1
-        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+
+class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
+    """DeepAgents SandboxBackendProtocol implementation with PostgreSQL storage and Pyodide execution.
+
+    Extends PostgresBackend with command execution capabilities:
+    - Python scripts via Pyodide WebAssembly sandbox
+    - Shell commands via BusyBox WebAssembly sandbox
+
+    Example:
+        ```python
+        backend = MayflowerSandboxBackend(db_pool, thread_id)
+
+        # File operations (inherited from PostgresBackend)
+        backend.write("/app/script.py", "print('hello')")
+
+        # Command execution (SandboxBackendProtocol)
+        result = backend.execute("python /app/script.py")
+        print(result.output)  # "hello"
+        ```
+    """
+
+    def __init__(
+        self,
+        db_pool: Any,
+        thread_id: str,
+        *,
+        allow_net: bool = False,
+        stateful: bool = True,
+        timeout_seconds: float = 60.0,
+    ) -> None:
+        """Initialize MayflowerSandboxBackend.
+
+        Args:
+            db_pool: asyncpg connection pool for PostgreSQL.
+            thread_id: Thread/session identifier for file and execution isolation.
+            allow_net: Whether to allow network access in Pyodide sandbox.
+            stateful: Whether to maintain state between executions.
+            timeout_seconds: Execution timeout in seconds.
+        """
+        super().__init__(db_pool, thread_id)
+        self._executor = SandboxExecutor(
+            db_pool,
+            thread_id,
+            allow_net=allow_net,
+            stateful=stateful,
+            timeout_seconds=timeout_seconds,
+        )
+        self._timeout_seconds = timeout_seconds
+
+    def _run_async(self, coro: Any) -> Any:
+        """Run async coroutine from sync context with execution timeout."""
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is None:
+            return asyncio.run(coro)
+
+        if self._loop is None:
+            self._loop = running_loop
+            self._loop_thread_id = threading.get_ident()
+
+        if self._loop is None or not self._loop.is_running():
+            return asyncio.run(coro)
+
+        if threading.get_ident() == self._loop_thread_id:
+            raise RuntimeError(
+                "Synchronous sandbox backend method called from the event loop; "
+                "use the async backend methods instead."
+            )
+
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        # Use configured timeout plus buffer for cross-thread communication
+        timeout = self._timeout_seconds + 10.0
+        return future.result(timeout=timeout)
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend instance."""
+        return f"mayflower:{self._thread_id}"
+
+    # -------------------------------------------------------------------------
+    # execute (SandboxBackendProtocol)
+    # -------------------------------------------------------------------------
 
     def _parse_python_command(self, command: str) -> tuple[str, list[str]] | None:
         """Parse a python command to extract script path and arguments.
@@ -513,7 +639,6 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         if not parts:
             return None
 
-        # Check if command starts with python or python3
         if parts[0] not in ("python", "python3"):
             return None
 
@@ -521,7 +646,6 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
             return None
 
         script_path = parts[1]
-        # Must be a .py file
         if not script_path.endswith(".py"):
             return None
 
@@ -546,8 +670,30 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         py_exit_code = 0 if result.success else 1
         return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
 
+    def _execute_shell(self, command: str) -> ExecuteResponse:
+        """Execute shell command via BusyBox WASM sandbox."""
+        result = self._run_async(self._executor.execute_shell(command))
+        output = result.stdout or ""
+        if result.stderr:
+            output = f"{output}\n{result.stderr}" if output else result.stderr
+        exit_code: int | None = result.exit_code
+        if exit_code is None:
+            exit_code = 0 if result.success else 1
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+
     def execute(self, command: str) -> ExecuteResponse:
-        # Check for python script.py command
+        """Execute a command in the sandbox.
+
+        Automatically routes:
+        - `python script.py` or `python3 script.py` → Pyodide
+        - Other commands → BusyBox shell
+
+        Args:
+            command: Shell command string to execute.
+
+        Returns:
+            ExecuteResponse with combined output, exit code, and truncation flag.
+        """
         python_cmd = self._parse_python_command(command)
         if python_cmd:
             script_path, args = python_cmd
@@ -561,7 +707,6 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
                 )
             content_bytes = record.get("content", b"") or b""
             code = content_bytes.decode("utf-8", errors="replace")
-            # Inject sys.argv for script arguments
             if args:
                 argv_setup = f"import sys; sys.argv = [{repr(script_path)}, {', '.join(repr(a) for a in args)}]\n"
                 code = argv_setup + code
@@ -570,7 +715,7 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
         return self._execute_shell(command)
 
     async def aexecute(self, command: str) -> ExecuteResponse:
-        # Check for python script.py command
+        """Async version of execute."""
         python_cmd = self._parse_python_command(command)
         if python_cmd:
             script_path, args = python_cmd
@@ -584,7 +729,6 @@ class MayflowerSandboxBackend(SandboxBackendProtocol):
                 )
             content_bytes = record.get("content", b"") or b""
             code = content_bytes.decode("utf-8", errors="replace")
-            # Inject sys.argv for script arguments
             if args:
                 argv_setup = f"import sys; sys.argv = [{repr(script_path)}, {', '.join(repr(a) for a in args)}]\n"
                 code = argv_setup + code
