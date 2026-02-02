@@ -215,8 +215,8 @@ Mayflower Sandbox offers two integration options:
 
 | Feature | LangChain Tools (12 tools) | DeepAgents Backend |
 |---------|---------------------------|-------------------|
-| Execute Python code | `python_run` | `execute("__PYTHON__\n...")` |
-| Run .py files from VFS | `python_run_file` | ❌ (read file, then execute) |
+| Execute Python code | `python_run` | `execute("python script.py")` |
+| Run .py files from VFS | `python_run_file` | `execute("python script.py")` |
 | State-based execution | `python_run_prepared` | ❌ |
 | Execute shell commands | ❌ | `execute("shell cmd")` |
 | Read files | `file_read` | `read()` |
@@ -228,18 +228,69 @@ Mayflower Sandbox offers two integration options:
 | Grep search | `file_grep` | `grep_raw()` |
 | Batch upload | ❌ | `upload_files()` |
 | Batch download | ❌ | `download_files()` |
-| Install Skills | `skill_install` | ❌ |
-| Bind MCP servers | `mcp_bind_http` | ❌ |
+| Skills | `skill_install` | via SkillsMiddleware |
+| MCP servers | `mcp_bind_http` | ❌ |
 
-**Use LangChain Tools** for LangGraph agents with full features (skills, MCP, state-based execution).
+**Use LangChain Tools** for LangGraph agents with full features (MCP, state-based execution).
 
-**Use DeepAgents Backend** when integrating with DeepAgents framework (shell execution, batch operations).
+**Use DeepAgents Backend** when integrating with DeepAgents framework (shell execution, batch operations, SkillsMiddleware).
+
+### Skills in DeepAgents
+
+Skills are NOT part of the `SandboxBackendProtocol` interface. Instead, DeepAgents handles skills via `SkillsMiddleware`, which uses the backend's existing file operations:
+
+1. Skills are directories containing a `SKILL.md` file with YAML frontmatter
+2. `SkillsMiddleware` scans for skills using `backend.ls_info()` and `backend.download_files()`
+3. Skill documentation is injected into the system prompt
+4. **Skill scripts execute via `backend.execute()`** - Python via `python script.py`, shell otherwise
+
+Since Mayflower's backend implements all required methods, it fully supports DeepAgents skills including executable scripts:
+
+```python
+from deepagents.middleware.skills import SkillsMiddleware
+from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
+
+backend = MayflowerSandboxBackend(db_pool, thread_id="user_123")
+
+# Upload a skill with a Python helper script
+await backend.aupload_files([
+    ("/skills/data-analysis/SKILL.md", b"""---
+name: data-analysis
+description: Analyze CSV data with statistical methods
+---
+# Data Analysis Skill
+
+## Usage
+Run the analysis script:
+```
+python /skills/data-analysis/analyze.py /tmp/data.csv
+```
+
+Or use shell utilities directly:
+```
+cat /tmp/data.csv | grep "pattern" | wc -l
+```
+"""),
+    ("/skills/data-analysis/analyze.py", b'''
+import sys
+print(f"Analyzing: {sys.argv[1]}")
+# Analysis code...
+'''),
+])
+
+# SkillsMiddleware discovers skills via ls_info/download_files
+middleware = SkillsMiddleware(backend=backend, sources=["/skills/"])
+
+# Execution:
+# - Python scripts: backend.execute("python /path/to/script.py arg1 arg2")
+# - Shell commands: backend.execute("cat file | grep pattern")
+```
 
 ### SandboxBackendProtocol Methods
 
 | Method | Async Version | Description |
 |--------|---------------|-------------|
-| `execute(command)` | `aexecute()` | Run shell or Python (`__PYTHON__` prefix) |
+| `execute(command)` | `aexecute()` | Run shell commands or `python script.py` |
 | `read(path, offset, limit)` | `aread()` | Read file with line numbers |
 | `write(path, content)` | `awrite()` | Create new file (fails if exists) |
 | `edit(path, old, new)` | `aedit()` | Replace string in file |
@@ -265,17 +316,13 @@ backend = MayflowerSandboxBackend(
     timeout_seconds=60.0
 )
 
-# Shell commands (default)
+# Shell commands
 result = await backend.aexecute("echo hello | grep hello")
 result = await backend.aexecute("cat /tmp/file.txt > /tmp/copy.txt")
 
-# Python code (prefix with __PYTHON__)
-result = await backend.aexecute("__PYTHON__\nimport math\nprint(math.pi)")
-
-# To run a .py file from VFS, read then execute:
-content = await backend.aread("/tmp/script.py")
-# Extract code from content (strip line numbers), then:
-result = await backend.aexecute(f"__PYTHON__\n{code}")
+# Python scripts (auto-detected and executed via Pyodide)
+result = await backend.aexecute("python /tmp/script.py")
+result = await backend.aexecute("python3 /tmp/script.py arg1 arg2")
 ```
 
 ### Shell Features

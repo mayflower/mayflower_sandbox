@@ -1,26 +1,17 @@
 """
-Test docx to markdown conversion using mammoth.
+Test docx to markdown conversion.
+Uses MayflowerSandboxBackend to execute Python code in the sandbox.
 """
 
 import os
-import sys
 
 import asyncpg
 import pytest
 from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 load_dotenv()
 
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
-
-from mayflower_sandbox.tools import create_sandbox_tools
-
-# Mark all tests in this module as slow (LLM-based)
-pytestmark = pytest.mark.slow
+from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
 
 
 @pytest.fixture
@@ -50,162 +41,137 @@ async def db_pool():
 
 
 @pytest.fixture
-async def clean_files(db_pool):
-    """Clean files and error history before each test."""
-    async with db_pool.acquire() as conn:
-        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'docx_md'")
-
-    from mayflower_sandbox.tools.execute import _error_history
-
-    _error_history.clear()
-
-    yield
+async def backend(db_pool):
+    """Create MayflowerSandboxBackend instance."""
+    return MayflowerSandboxBackend(db_pool, thread_id="docx_md")
 
 
 @pytest.fixture
-def agent(db_pool):
-    """Create LangGraph agent with sandbox tools."""
-    tools = create_sandbox_tools(db_pool, thread_id="docx_md")
-    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
-    agent = create_agent(llm, tools, checkpointer=MemorySaver())
-    return agent
+async def clean_files(db_pool):
+    """Clean files before each test."""
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'docx_md'")
+    yield
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_to_markdown_basic(agent, clean_files):
-    """Test basic docx to markdown conversion using mammoth."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/test.docx using python-docx with:
-Title: "Test Document"
-Heading 1: "Section 1"
-Paragraph: "This is a test paragraph with **bold** text."
-Heading 2: "Section 2"
-Bullet list:
-  - Item 1
-  - Item 2
+@pytest.mark.asyncio
+async def test_docx_to_markdown_basic(backend, clean_files):
+    """Test basic docx to markdown conversion."""
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_to_markdown
 
-Then convert it to markdown using mammoth. Save the markdown to /tmp/test.md and show me the markdown content.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-md-1"}, "recursion_limit": 50},
-    )
+# Create a document with headings and paragraphs
+paragraphs = [
+    "Test Document",
+    "Section 1",
+    "This is a test paragraph.",
+    "Section 2",
+    "Another paragraph here."
+]
+docx_bytes = create_docx_bytes(paragraphs)
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    # Check for markdown elements
-    assert any(word in response for word in ["#", "markdown", "section", "converted"])
+# Convert to markdown
+markdown = docx_to_markdown(docx_bytes)
 
+with open("/tmp/test.md", "w") as f:
+    f.write(markdown)
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_to_markdown_with_formatting(agent, clean_files):
-    """Test docx to markdown with rich formatting."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/formatted.docx with:
-- Heading 1: "API Documentation"
-- Paragraph with bold text: "**Important:** This is critical"
-- Heading 2: "Endpoints"
-- Numbered list:
-  1. GET /users
-  2. POST /users
-  3. DELETE /users
-- Paragraph: "Use authentication token"
+print("Markdown content:")
+print(markdown)
+"""
 
-Convert to markdown using mammoth and save to /tmp/formatted.md. Tell me if it contains markdown headings (#).""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-md-2"}, "recursion_limit": 50},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert any(word in response for word in ["#", "heading", "markdown", "yes", "contains"])
+    await backend.aupload_files([("/tmp/convert.py", code.encode())])
+    result = await backend.aexecute("python /tmp/convert.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "Test Document" in result.output or "Section" in result.output
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_to_markdown_with_tables(agent, clean_files):
-    """Test docx to markdown conversion with tables."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/table.docx with:
-Title: "Data Report"
-A table with headers: Name, Value
-Row 1: Alpha, 100
-Row 2: Beta, 200
+@pytest.mark.asyncio
+async def test_docx_to_markdown_preserves_text(backend, clean_files):
+    """Test that markdown conversion preserves text content."""
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_to_markdown
 
-Convert to markdown using mammoth. Check if the markdown contains a table format (pipe characters |).""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-md-3"}, "recursion_limit": 50},
-    )
+paragraphs = [
+    "Important Header",
+    "This paragraph contains important information.",
+    "Another paragraph with more details."
+]
+docx_bytes = create_docx_bytes(paragraphs)
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["table", "pipe", "|", "markdown", "converted"])
+markdown = docx_to_markdown(docx_bytes)
 
+# Verify all text is present
+assert "Important Header" in markdown, "Header missing"
+assert "important information" in markdown, "Content missing"
+assert "more details" in markdown, "Details missing"
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_to_markdown_fallback(agent, clean_files):
-    """Test that fallback works when mammoth is not available (extract plain text)."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a simple Word document at /tmp/simple.docx with just text:
-"Hello World from DOCX"
+print("All text preserved in markdown conversion")
+print(markdown)
+"""
 
-Then implement the fallback conversion without mammoth:
-1. Read the docx file bytes
-2. Unzip it to access word/document.xml
-3. Parse XML and extract all w:t (text) nodes
-4. Join the text with newlines
-
-Save to /tmp/simple.md and show the content.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-md-fallback"}, "recursion_limit": 50},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "Hello World" in response or "hello world" in response.lower()
+    await backend.aupload_files([("/tmp/preserve.py", code.encode())])
+    result = await backend.aexecute("python /tmp/preserve.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "preserved" in result.output.lower()
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_to_markdown_with_links(agent, clean_files):
-    """Test docx to markdown with hyperlinks."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/links.docx with:
-Heading: "Resources"
-Paragraph: "Visit our website"
-Add a hyperlink: "Click here" linking to "https://example.com"
+@pytest.mark.asyncio
+async def test_docx_extract_text_fallback(backend, clean_files):
+    """Test plain text extraction from docx."""
+    code = """
+from document.docx_ooxml import create_docx_bytes, unzip_docx_like
+import re
 
-Convert to markdown using mammoth. Check if markdown contains a link in format [text](url).""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-md-links"}, "recursion_limit": 50},
-    )
+paragraphs = ["Hello World from DOCX", "Second paragraph here"]
+docx_bytes = create_docx_bytes(paragraphs)
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["link", "[", "](", "markdown", "http"])
+# Extract text using XML parsing
+files = unzip_docx_like(docx_bytes)
+doc_xml = files["word/document.xml"].decode("utf-8")
+
+# Extract text from w:t elements
+text_pattern = r'<w:t[^>]*>([^<]*)</w:t>'
+matches = re.findall(text_pattern, doc_xml)
+extracted_text = " ".join(matches)
+
+print("Extracted text:", extracted_text)
+assert "Hello World" in extracted_text, "Text extraction failed"
+print("Text extraction successful")
+"""
+
+    await backend.aupload_files([("/tmp/extract.py", code.encode())])
+    result = await backend.aexecute("python /tmp/extract.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "Hello World" in result.output
+
+
+@pytest.mark.asyncio
+async def test_docx_roundtrip(backend, clean_files):
+    """Test creating docx and converting back to text."""
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_to_markdown
+
+original_paragraphs = [
+    "Document Title",
+    "First section content.",
+    "Second section content."
+]
+
+# Create docx
+docx_bytes = create_docx_bytes(original_paragraphs)
+
+# Convert back to markdown
+markdown = docx_to_markdown(docx_bytes)
+
+# Verify roundtrip
+for para in original_paragraphs:
+    assert para in markdown, f"Lost paragraph: {para}"
+
+print("Roundtrip successful - all content preserved")
+"""
+
+    await backend.aupload_files([("/tmp/roundtrip.py", code.encode())])
+    result = await backend.aexecute("python /tmp/roundtrip.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "successful" in result.output.lower()

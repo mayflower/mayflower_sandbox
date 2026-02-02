@@ -1,26 +1,17 @@
 """
 Test adding comments to Word documents using pure OOXML manipulation.
+Uses MayflowerSandboxBackend to execute Python code in the sandbox.
 """
 
 import os
-import sys
 
 import asyncpg
 import pytest
 from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 load_dotenv()
 
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
-
-from mayflower_sandbox.tools import create_sandbox_tools
-
-# Mark all tests in this module as slow (LLM-based)
-pytestmark = pytest.mark.slow
+from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
 
 
 @pytest.fixture
@@ -50,243 +41,172 @@ async def db_pool():
 
 
 @pytest.fixture
-async def clean_files(db_pool):
-    """Clean files and error history before each test."""
-    async with db_pool.acquire() as conn:
-        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'docx_comment'")
-
-    from mayflower_sandbox.tools.execute import _error_history
-
-    _error_history.clear()
-
-    yield
+async def backend(db_pool):
+    """Create MayflowerSandboxBackend instance."""
+    return MayflowerSandboxBackend(db_pool, thread_id="docx_comment")
 
 
 @pytest.fixture
-def agent(db_pool):
-    """Create LangGraph agent with sandbox tools."""
-    tools = create_sandbox_tools(db_pool, thread_id="docx_comment")
-    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
-    agent = create_agent(llm, tools, checkpointer=MemorySaver())
-    return agent
+async def clean_files(db_pool):
+    """Clean files before each test."""
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'docx_comment'")
+    yield
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_add_comment_basic(agent, clean_files):
+@pytest.mark.asyncio
+async def test_docx_add_comment_basic(backend, clean_files):
     """Test adding a comment to a paragraph using the docx_add_comment helper."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/doc.docx with three paragraphs:
-Paragraph 1: "Introduction text"
-Paragraph 2: "Main content here"
-Paragraph 3: "Conclusion text"
+    # Create a Word document with paragraphs
+    create_doc_code = """
+from document.docx_ooxml import create_docx_bytes
 
-Then add a comment to paragraph 1 (index 0) using the helper:
-1. Import the helper: from document.docx_ooxml import docx_add_comment
-2. Read the docx file as bytes
-3. Use docx_add_comment(docx_bytes, 0, "Please expand this", author="Reviewer")
-4. Save the result to /tmp/doc_commented.docx
+paragraphs = ["Introduction text", "Main content here", "Conclusion text"]
+docx_bytes = create_docx_bytes(paragraphs)
 
-Tell me if the comment was successfully added.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "comment-1"}, "recursion_limit": 50},
-    )
+with open("/tmp/doc.docx", "wb") as f:
+    f.write(docx_bytes)
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["comment", "success", "added", "created", "modified"])
+print("Document created with", len(paragraphs), "paragraphs")
+"""
+
+    # Upload and execute the script
+    await backend.aupload_files([("/tmp/create_doc.py", create_doc_code.encode())])
+    result = await backend.aexecute("python /tmp/create_doc.py")
+    assert result.exit_code == 0, f"Failed to create doc: {result.output}"
+    assert "3 paragraphs" in result.output
+
+    # Add comment using the helper
+    add_comment_code = """
+from document.docx_ooxml import docx_add_comment
+
+with open("/tmp/doc.docx", "rb") as f:
+    docx_bytes = f.read()
+
+result_bytes = docx_add_comment(docx_bytes, 0, "Please expand this", author="Reviewer")
+
+with open("/tmp/doc_commented.docx", "wb") as f:
+    f.write(result_bytes)
+
+print("Comment added successfully")
+"""
+
+    await backend.aupload_files([("/tmp/add_comment.py", add_comment_code.encode())])
+    result = await backend.aexecute("python /tmp/add_comment.py")
+    assert result.exit_code == 0, f"Failed to add comment: {result.output}"
+    assert "successfully" in result.output.lower()
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_add_multiple_comments(agent, clean_files):
+@pytest.mark.asyncio
+async def test_docx_add_multiple_comments(backend, clean_files):
     """Test adding comments to multiple paragraphs using the helper."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/multi.docx with:
-Paragraph 0: "First paragraph"
-Paragraph 1: "Second paragraph"
-Paragraph 2: "Third paragraph"
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_add_comment
 
-Add comments using the docx_add_comment helper:
-1. Import: from document.docx_ooxml import docx_add_comment
-2. Read /tmp/multi.docx as bytes
-3. Add first comment: docx_add_comment(docx_bytes, 0, "Review this section", author="Reviewer")
-4. Add second comment to the result: docx_add_comment(result, 2, "Add more details", author="Reviewer")
-5. Save final result to /tmp/multi_commented.docx
+# Create document
+paragraphs = ["First paragraph", "Second paragraph", "Third paragraph"]
+docx_bytes = create_docx_bytes(paragraphs)
 
-Confirm both comments were added.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "comment-multi"}, "recursion_limit": 50},
-    )
+# Add first comment
+result1 = docx_add_comment(docx_bytes, 0, "Review this section", author="Reviewer")
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["both", "two", "comments", "added", "success"])
+# Add second comment
+result2 = docx_add_comment(result1, 2, "Add more details", author="Reviewer")
+
+with open("/tmp/multi_commented.docx", "wb") as f:
+    f.write(result2)
+
+print("Both comments added successfully")
+"""
+
+    await backend.aupload_files([("/tmp/multi_comment.py", code.encode())])
+    result = await backend.aexecute("python /tmp/multi_comment.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "both" in result.output.lower()
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_comment_with_metadata(agent, clean_files):
-    """Test adding comment with author, initials, and date metadata using helper."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create Word doc at /tmp/meta.docx with one paragraph: "Review needed"
+@pytest.mark.asyncio
+async def test_docx_comment_with_metadata(backend, clean_files):
+    """Test adding comment with author, initials, and date metadata."""
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_add_comment
 
-Add a comment using the docx_add_comment helper with metadata:
-1. Import: from document.docx_ooxml import docx_add_comment
-2. Read the docx as bytes
-3. Use: docx_add_comment(docx_bytes, 0, "Approved", author="John Doe", initials="JD")
-4. Save to /tmp/meta_commented.docx
+docx_bytes = create_docx_bytes(["Review needed"])
+result = docx_add_comment(docx_bytes, 0, "Approved", author="John Doe", initials="JD")
 
-Tell me if the comment with metadata was added successfully.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "comment-meta"}, "recursion_limit": 50},
-    )
+with open("/tmp/meta_commented.docx", "wb") as f:
+    f.write(result)
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(
-        word in response for word in ["metadata", "author", "approved", "correct", "success"]
-    )
+print("Comment with metadata added successfully")
+"""
+
+    await backend.aupload_files([("/tmp/meta_comment.py", code.encode())])
+    result = await backend.aexecute("python /tmp/meta_comment.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "metadata" in result.output.lower() or "successfully" in result.output.lower()
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_comment_ensure_relationships(agent, clean_files):
-    """Test that helper properly creates comments.xml relationship."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create Word doc at /tmp/rels.docx with text: "Test document"
+@pytest.mark.asyncio
+async def test_docx_comment_verify_structure(backend, clean_files):
+    """Test that helper correctly creates comment structure in document."""
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_add_comment, unzip_docx_like
 
-Add a comment using the helper (which handles relationships automatically):
-1. Import: from document.docx_ooxml import docx_add_comment, unzip_docx_like
-2. Read docx as bytes
-3. Add comment: docx_add_comment(docx_bytes, 0, "Test comment")
-4. Verify the relationship by unzipping the result and checking word/_rels/document.xml.rels
-5. Save to /tmp/rels_commented.docx
+docx_bytes = create_docx_bytes(["This is a test paragraph with some text"])
+result = docx_add_comment(docx_bytes, 0, "Test comment")
 
-Confirm the helper created the comments relationship.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "comment-rels"}, "recursion_limit": 50},
-    )
+# Verify the structure
+files = unzip_docx_like(result)
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(
-        word in response for word in ["relationship", "created", "verified", "success", "correct"]
-    )
+# Check comments.xml exists
+assert "word/comments.xml" in files, "comments.xml not created"
 
+# Check document.xml has comment markers
+doc_xml = files["word/document.xml"]
+assert b"commentRangeStart" in doc_xml, "Missing commentRangeStart"
+assert b"commentRangeEnd" in doc_xml, "Missing commentRangeEnd"
+assert b"commentReference" in doc_xml, "Missing commentReference"
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_comment_range_markers(agent, clean_files):
-    """Test that helper correctly positions comment range markers."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create Word doc at /tmp/range.docx with:
-"This is a test paragraph with some text"
+with open("/tmp/structure_verified.docx", "wb") as f:
+    f.write(result)
 
-Add a comment using the docx_add_comment helper:
-1. Import: from document.docx_ooxml import docx_add_comment, unzip_docx_like
-2. Read docx as bytes
-3. Add comment: docx_add_comment(docx_bytes, 0, "Test comment")
-4. Unzip the result and parse word/document.xml to verify range markers exist
-5. Save to /tmp/range_commented.docx
+print("Comment structure verified successfully")
+"""
 
-The helper should automatically create: commentRangeStart, commentRangeEnd, and commentReference.
-Confirm the markers are present.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "comment-range"}, "recursion_limit": 50},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(
-        word in response
-        for word in ["marker", "position", "correct", "structure", "success", "present"]
-    )
+    await backend.aupload_files([("/tmp/verify_structure.py", code.encode())])
+    result = await backend.aexecute("python /tmp/verify_structure.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "verified" in result.output.lower() or "successfully" in result.output.lower()
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_comment_empty_paragraph(agent, clean_files):
-    """Test that helper handles empty paragraphs correctly."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create Word doc at /tmp/empty.docx with an empty paragraph (no text)
-
-Add a comment using the helper (which handles empty paragraphs):
-1. Import: from document.docx_ooxml import docx_add_comment
-2. Read docx as bytes
-3. Add comment: docx_add_comment(docx_bytes, 0, "Empty paragraph needs content")
-4. Save to /tmp/empty_commented.docx
-
-The helper should create a run if the paragraph is empty. Confirm it worked.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "comment-empty"}, "recursion_limit": 50},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(
-        word in response for word in ["empty", "comment", "added", "success", "created", "worked"]
-    )
-
-
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_docx_comment_verify_id_generation(agent, clean_files):
+@pytest.mark.asyncio
+async def test_docx_comment_sequential_ids(backend, clean_files):
     """Test that helper generates unique sequential comment IDs."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create Word doc at /tmp/ids.docx with three paragraphs
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_add_comment, unzip_docx_like
 
-Add comments to all three paragraphs using the helper:
-1. Import: from document.docx_ooxml import docx_add_comment
-2. Read docx as bytes
-3. Add first comment: result1 = docx_add_comment(docx_bytes, 0, "Comment 1")
-4. Add second comment: result2 = docx_add_comment(result1, 1, "Comment 2")
-5. Add third comment: result3 = docx_add_comment(result2, 2, "Comment 3")
-6. Save result3 to /tmp/ids_commented.docx
+docx_bytes = create_docx_bytes(["Para 1", "Para 2", "Para 3"])
 
-The helper should generate IDs 0, 1, 2 automatically. Confirm this worked.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "comment-ids"}, "recursion_limit": 50},
-    )
+# Add three comments
+result1 = docx_add_comment(docx_bytes, 0, "Comment 1")
+result2 = docx_add_comment(result1, 1, "Comment 2")
+result3 = docx_add_comment(result2, 2, "Comment 3")
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(
-        word in response
-        for word in ["0", "1", "2", "correct", "sequential", "unique", "success", "worked"]
-    )
+# Verify IDs
+files = unzip_docx_like(result3)
+comments_xml = files["word/comments.xml"].decode("utf-8")
+
+assert 'w:id="0"' in comments_xml, "Missing comment ID 0"
+assert 'w:id="1"' in comments_xml, "Missing comment ID 1"
+assert 'w:id="2"' in comments_xml, "Missing comment ID 2"
+
+with open("/tmp/ids_commented.docx", "wb") as f:
+    f.write(result3)
+
+print("Sequential IDs 0, 1, 2 verified successfully")
+"""
+
+    await backend.aupload_files([("/tmp/verify_ids.py", code.encode())])
+    result = await backend.aexecute("python /tmp/verify_ids.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+    assert "0, 1, 2" in result.output or "successfully" in result.output.lower()

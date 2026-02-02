@@ -325,6 +325,61 @@ def docx_find_replace(docx_bytes: bytes, replacements: dict[str, str]) -> bytes:
     return zip_docx_like(parts)
 
 
+def create_docx_bytes(paragraphs: list[str]) -> bytes:
+    """
+    Create a minimal Word document from paragraphs.
+
+    Args:
+        paragraphs: List of paragraph texts
+
+    Returns:
+        Word document as bytes
+
+    Example:
+        >>> paragraphs = ["Title", "First paragraph", "Second paragraph"]
+        >>> docx_bytes = create_docx_bytes(paragraphs)
+        >>> open('/tmp/doc.docx', 'wb').write(docx_bytes)
+    """
+    # Create document.xml body content
+    body_content = ""
+    for para_text in paragraphs:
+        body_content += f"""<w:p><w:r><w:t>{para_text}</w:t></w:r></w:p>"""
+
+    # Create document.xml
+    document_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>{body_content}<w:sectPr/></w:body>
+</w:document>"""
+
+    # Create [Content_Types].xml
+    content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"""
+
+    # Create _rels/.rels
+    rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+
+    # Create word/_rels/document.xml.rels
+    doc_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"""
+
+    parts = {
+        "[Content_Types].xml": content_types_xml.encode("utf-8"),
+        "_rels/.rels": rels_xml.encode("utf-8"),
+        "word/document.xml": document_xml.encode("utf-8"),
+        "word/_rels/document.xml.rels": doc_rels_xml.encode("utf-8"),
+    }
+
+    return zip_docx_like(parts)
+
+
 def docx_to_markdown(docx_bytes: bytes) -> str:
     """
     Convert Word document to Markdown.

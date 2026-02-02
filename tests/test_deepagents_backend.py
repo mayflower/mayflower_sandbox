@@ -425,12 +425,6 @@ class TestMayflowerSandboxBackend:
         assert result[0].get("error") == "file_not_found"
 
     @pytest.mark.asyncio
-    async def test_aexecute_python(self, backend, mock_executor):
-        result = await backend.aexecute("__PYTHON__\nprint('hello')")
-        assert result.get("output") == "output"
-        assert result.get("exit_code") == 0
-
-    @pytest.mark.asyncio
     async def test_aexecute_shell(self, backend, mock_executor):
         result = await backend.aexecute("ls -la")
         assert result.get("output") == "output"
@@ -511,6 +505,122 @@ class TestMatchesGlobFilter:
 
     def test_root_base_path(self, backend):
         assert backend._matches_glob_filter("/file.py", "/", "*.py") is True
+
+
+class TestParsePythonCommand:
+    """Tests for _parse_python_command method."""
+
+    @pytest.fixture
+    def backend(self):
+        module = get_module()
+        mock_db_pool = MagicMock()
+        with (
+            patch.object(module, "VirtualFilesystem"),
+            patch.object(module, "SandboxExecutor"),
+        ):
+            return module.MayflowerSandboxBackend(mock_db_pool, "test")
+
+    def test_python_script(self, backend):
+        result = backend._parse_python_command("python script.py")
+        assert result == ("script.py", [])
+
+    def test_python3_script(self, backend):
+        result = backend._parse_python_command("python3 script.py")
+        assert result == ("script.py", [])
+
+    def test_python_with_path(self, backend):
+        result = backend._parse_python_command("python /path/to/script.py")
+        assert result == ("/path/to/script.py", [])
+
+    def test_python_with_args(self, backend):
+        result = backend._parse_python_command("python script.py arg1 arg2")
+        assert result == ("script.py", ["arg1", "arg2"])
+
+    def test_not_python_command(self, backend):
+        result = backend._parse_python_command("ls -la")
+        assert result is None
+
+    def test_python_without_script(self, backend):
+        result = backend._parse_python_command("python")
+        assert result is None
+
+    def test_python_non_py_file(self, backend):
+        result = backend._parse_python_command("python script.txt")
+        assert result is None
+
+    def test_empty_command(self, backend):
+        result = backend._parse_python_command("")
+        assert result is None
+
+
+class TestExecutePythonScript:
+    """Tests for executing Python scripts via python command."""
+
+    @pytest.fixture
+    def mock_vfs(self):
+        vfs = AsyncMock()
+        vfs.validate_path = MagicMock(side_effect=lambda p: p if p.startswith("/") else f"/{p}")
+        vfs.read_file = AsyncMock(return_value={"content": b"print('hello from script')"})
+        return vfs
+
+    @pytest.fixture
+    def mock_executor(self):
+        executor = AsyncMock()
+        result = MagicMock()
+        result.stdout = "hello from script"
+        result.stderr = None
+        result.success = True
+        executor.execute = AsyncMock(return_value=result)
+        executor.execute_shell = AsyncMock(return_value=result)
+        return executor
+
+    @pytest.fixture
+    def backend(self, mock_vfs, mock_executor):
+        module = get_module()
+        mock_db_pool = MagicMock()
+        with (
+            patch.object(module, "VirtualFilesystem", return_value=mock_vfs),
+            patch.object(module, "SandboxExecutor", return_value=mock_executor),
+        ):
+            backend = module.MayflowerSandboxBackend(mock_db_pool, "test")
+            backend._vfs = mock_vfs
+            backend._executor = mock_executor
+            return backend
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python_script(self, backend, mock_vfs, mock_executor):
+        result = await backend.aexecute("python /tmp/script.py")
+        # Should read the file from VFS
+        mock_vfs.read_file.assert_called_once_with("/tmp/script.py")
+        # Should execute via Pyodide
+        mock_executor.execute.assert_called_once()
+        assert result.get("output") == "hello from script"
+        assert result.get("exit_code") == 0
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python_script_with_args(self, backend, mock_vfs, mock_executor):
+        await backend.aexecute("python /tmp/script.py arg1 arg2")
+        mock_vfs.read_file.assert_called_once_with("/tmp/script.py")
+        # Check that sys.argv was injected
+        call_args = mock_executor.execute.call_args[0][0]
+        assert "sys.argv" in call_args
+        assert "arg1" in call_args
+        assert "arg2" in call_args
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python_script_not_found(self, backend, mock_vfs):
+        from mayflower_sandbox.filesystem import FileNotFoundError
+
+        mock_vfs.read_file = AsyncMock(side_effect=FileNotFoundError("not found"))
+        result = await backend.aexecute("python /missing/script.py")
+        assert "can't open file" in result.get("output", "")
+        assert result.get("exit_code") == 2
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python3_script(self, backend, mock_vfs, mock_executor):
+        result = await backend.aexecute("python3 /tmp/script.py")
+        mock_vfs.read_file.assert_called_once_with("/tmp/script.py")
+        assert result.get("exit_code") == 0
 
 
 class TestErrorPaths:
@@ -625,8 +735,9 @@ class TestErrorPaths:
         assert result[0].get("error") == "invalid_path"
 
     @pytest.mark.asyncio
-    async def test_aexecute_python_with_stderr(self, backend, mock_executor):
+    async def test_aexecute_python_with_stderr(self, backend, mock_vfs, mock_executor):
         """Test execute with stderr appends to output."""
+        mock_vfs.read_file = AsyncMock(return_value={"content": b"print('test')"})
         result_mock = MagicMock()
         result_mock.stdout = "stdout output"
         result_mock.stderr = "stderr output"
@@ -634,13 +745,14 @@ class TestErrorPaths:
         result_mock.exit_code = 0
         mock_executor.execute = AsyncMock(return_value=result_mock)
 
-        result = await backend.aexecute("__PYTHON__\nprint('test')")
+        result = await backend.aexecute("python /tmp/script.py")
         assert "stdout output" in result.get("output", "")
         assert "stderr output" in result.get("output", "")
 
     @pytest.mark.asyncio
-    async def test_aexecute_python_failure(self, backend, mock_executor):
+    async def test_aexecute_python_failure(self, backend, mock_vfs, mock_executor):
         """Test execute with failure returns exit code 1."""
+        mock_vfs.read_file = AsyncMock(return_value={"content": b"raise Exception()"})
         result_mock = MagicMock()
         result_mock.stdout = ""
         result_mock.stderr = "error message"
@@ -648,7 +760,7 @@ class TestErrorPaths:
         result_mock.exit_code = 1
         mock_executor.execute = AsyncMock(return_value=result_mock)
 
-        result = await backend.aexecute("__PYTHON__\nraise Exception()")
+        result = await backend.aexecute("python /tmp/script.py")
         assert result.get("exit_code") == 1
 
     @pytest.mark.asyncio
