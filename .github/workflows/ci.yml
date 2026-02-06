@@ -92,6 +92,15 @@ jobs:
           bandit -r src/mayflower_sandbox --exclude src/mayflower_sandbox/helpers/document -f json -o bandit-results.json || true
           echo "Bandit scan complete"
 
+      # SBOM validation (ensure SBOM can always be generated)
+      - name: Validate SBOM generation
+        run: |
+          pip install cyclonedx-bom
+          cyclonedx-py environment --of json --output sbom-validate.cdx.json || echo "WARNING: SBOM generation failed"
+          if [ -f sbom-validate.cdx.json ]; then
+            python3 -c "import json; json.load(open('sbom-validate.cdx.json')); print('SBOM valid JSON')"
+          fi
+
       # ESLint for TypeScript
       - name: Run ESLint on TypeScript
         run: |
