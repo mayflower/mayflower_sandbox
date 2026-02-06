@@ -38,8 +38,10 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         run: |
           uv run cyclonedx-py environment \
-            --of json \
-            --output sbom.cdx.json \
+            --of JSON \
+            -o sbom.cdx.json \
+            --mc-type library \
+            --pyproject pyproject.toml \
             .venv
 
       # Generate broad SBOM with Syft (catches non-Python artifacts: .wasm, .ts)

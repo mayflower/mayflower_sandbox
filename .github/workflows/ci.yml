@@ -96,7 +96,7 @@ jobs:
       - name: Validate SBOM generation
         run: |
           pip install cyclonedx-bom
-          cyclonedx-py environment --of json --output sbom-validate.cdx.json || echo "WARNING: SBOM generation failed"
+          cyclonedx-py environment --of JSON -o sbom-validate.cdx.json || echo "WARNING: SBOM generation failed"
           if [ -f sbom-validate.cdx.json ]; then
             python3 -c "import json; json.load(open('sbom-validate.cdx.json')); print('SBOM valid JSON')"
           fi
