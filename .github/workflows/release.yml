@@ -32,12 +32,12 @@ jobs:
 
       - name: Build package
         run: |
-          python -m build
+          uv run python -m build
 
       # Generate Python SBOM from installed environment
       - name: Generate SBOM (CycloneDX)
         run: |
-          cyclonedx-py environment \
+          uv run cyclonedx-py environment \
             --of json \
             --output sbom.cdx.json \
             .venv
