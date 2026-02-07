@@ -15,6 +15,7 @@ import asyncio
 import fnmatch
 import logging
 import re
+import shlex
 import threading
 from datetime import datetime
 from typing import Any
@@ -624,6 +625,10 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
     # execute (SandboxBackendProtocol)
     # -------------------------------------------------------------------------
 
+    # Sentinel prefix used by ToolCallContentMiddleware to pass extracted
+    # Python code directly (e.g. "__PYTHON__\nprint('hello')").
+    _PYTHON_SENTINEL = "__PYTHON__"
+
     def _parse_python_command(self, command: str) -> tuple[str, list[str]] | None:
         """Parse a python command to extract script path and arguments.
 
@@ -651,6 +656,34 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
 
         args = parts[2:] if len(parts) > 2 else []
         return (script_path, args)
+
+    @staticmethod
+    def _extract_inline_python(command: str) -> str | None:
+        """Extract Python code from ``python -c "..."`` or ``python3 -c '...'``.
+
+        Returns the code string if the command matches, None otherwise.
+        """
+        match = re.match(r"^python3?\s+-c\s+(.+)$", command.strip(), re.DOTALL)
+        if not match:
+            return None
+
+        code_part = match.group(1).strip()
+
+        # Try shell-style unquoting (handles escaped quotes etc.)
+        try:
+            tokens = shlex.split(code_part)
+            if tokens:
+                return tokens[0]
+        except ValueError:
+            pass
+
+        # Fallback: strip outer quotes manually
+        if (code_part.startswith('"') and code_part.endswith('"')) or (
+            code_part.startswith("'") and code_part.endswith("'")
+        ):
+            return code_part[1:-1]
+
+        return code_part
 
     def _execute_python_code(self, code: str) -> ExecuteResponse:
         """Execute Python code via Pyodide."""
@@ -685,7 +718,9 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
         """Execute a command in the sandbox.
 
         Automatically routes:
-        - `python script.py` or `python3 script.py` → Pyodide
+        - ``__PYTHON__\\n<code>`` sentinel → Pyodide (direct code execution)
+        - ``python -c "..."`` inline → Pyodide
+        - ``python script.py`` or ``python3 script.py`` → Pyodide (file-based)
         - Other commands → BusyBox shell
 
         Args:
@@ -694,6 +729,20 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
+        # Handle __PYTHON__ sentinel (produced by ToolCallContentMiddleware)
+        sentinel_prefix = f"{self._PYTHON_SENTINEL}\n"
+        if command.startswith(sentinel_prefix):
+            code = command[len(sentinel_prefix) :]
+            logger.info("Routing __PYTHON__ sentinel to Pyodide (%d chars)", len(code))
+            return self._execute_python_code(code)
+
+        # Handle python -c "..." inline execution
+        inline_code = self._extract_inline_python(command)
+        if inline_code:
+            logger.info("Routing python -c to Pyodide (%d chars)", len(inline_code))
+            return self._execute_python_code(inline_code)
+
+        # Handle python script.py (file-based execution)
         python_cmd = self._parse_python_command(command)
         if python_cmd:
             script_path, args = python_cmd
@@ -716,6 +765,20 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
 
     async def aexecute(self, command: str) -> ExecuteResponse:
         """Async version of execute."""
+        # Handle __PYTHON__ sentinel (produced by ToolCallContentMiddleware)
+        sentinel_prefix = f"{self._PYTHON_SENTINEL}\n"
+        if command.startswith(sentinel_prefix):
+            code = command[len(sentinel_prefix) :]
+            logger.info("Routing __PYTHON__ sentinel to Pyodide (%d chars)", len(code))
+            return await self._aexecute_python_code(code)
+
+        # Handle python -c "..." inline execution
+        inline_code = self._extract_inline_python(command)
+        if inline_code:
+            logger.info("Routing python -c to Pyodide (%d chars)", len(inline_code))
+            return await self._aexecute_python_code(inline_code)
+
+        # Handle python script.py (file-based execution)
         python_cmd = self._parse_python_command(command)
         if python_cmd:
             script_path, args = python_cmd

@@ -563,6 +563,93 @@ class TestParsePythonCommand:
         assert result is None
 
 
+class TestExtractInlinePython:
+    """Tests for _extract_inline_python method."""
+
+    @pytest.fixture
+    def backend(self):
+        module = get_module()
+        mock_db_pool = MagicMock()
+        with (
+            patch.object(module, "VirtualFilesystem"),
+            patch.object(module, "SandboxExecutor"),
+        ):
+            return module.MayflowerSandboxBackend(mock_db_pool, "test")
+
+    def test_python_c_double_quotes(self, backend):
+        result = backend._extract_inline_python('python -c "print(42)"')
+        assert result == "print(42)"
+
+    def test_python_c_single_quotes(self, backend):
+        result = backend._extract_inline_python("python -c 'print(42)'")
+        assert result == "print(42)"
+
+    def test_python3_c(self, backend):
+        result = backend._extract_inline_python('python3 -c "print(42)"')
+        assert result == "print(42)"
+
+    def test_not_python_c(self, backend):
+        result = backend._extract_inline_python("python script.py")
+        assert result is None
+
+    def test_non_python_command(self, backend):
+        result = backend._extract_inline_python("ls -la")
+        assert result is None
+
+    def test_empty_command(self, backend):
+        result = backend._extract_inline_python("")
+        assert result is None
+
+    def test_unquoted_code(self, backend):
+        result = backend._extract_inline_python("python -c print(42)")
+        assert result == "print(42)"
+
+
+class TestExecutePythonSentinel:
+    """Tests for __PYTHON__ sentinel execution routing."""
+
+    @pytest.fixture
+    def mock_executor(self):
+        executor = AsyncMock()
+        result = MagicMock()
+        result.stdout = "5050"
+        result.stderr = None
+        result.success = True
+        executor.execute = AsyncMock(return_value=result)
+        executor.execute_shell = AsyncMock(return_value=result)
+        return executor
+
+    @pytest.fixture
+    def backend(self, mock_executor):
+        module = get_module()
+        mock_db_pool = MagicMock()
+        mock_vfs = AsyncMock()
+        with (
+            patch.object(module, "VirtualFilesystem", return_value=mock_vfs),
+            patch.object(module, "SandboxExecutor", return_value=mock_executor),
+        ):
+            backend = module.MayflowerSandboxBackend(mock_db_pool, "test")
+            backend._executor = mock_executor
+            return backend
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python_sentinel(self, backend, mock_executor):
+        code = "print(sum(range(1, 101)))"
+        result = await backend.aexecute(f"__PYTHON__\n{code}")
+        # Should route to Pyodide, not BusyBox
+        mock_executor.execute.assert_called_once_with(code)
+        mock_executor.execute_shell.assert_not_called()
+        assert result.get("output") == "5050"
+
+    @pytest.mark.asyncio
+    async def test_aexecute_python_c_inline(self, backend, mock_executor):
+        result = await backend.aexecute('python -c "print(sum(range(1, 101)))"')
+        # Should extract code and route to Pyodide
+        mock_executor.execute.assert_called_once_with("print(sum(range(1, 101)))")
+        mock_executor.execute_shell.assert_not_called()
+        assert result.get("output") == "5050"
+
+
 class TestExecutePythonScript:
     """Tests for executing Python scripts via python command."""
 
