@@ -18,15 +18,13 @@ from mayflower_sandbox.sandbox_executor import SandboxExecutor
 @pytest.fixture
 async def db_pool():
     """Create test database connection pool."""
-    db_config = {
-        "host": os.getenv("POSTGRES_HOST", "localhost"),
-        "database": os.getenv("POSTGRES_DB", "mayflower_test"),
-        "user": os.getenv("POSTGRES_USER", "postgres"),
-        "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-        "port": int(os.getenv("POSTGRES_PORT", "5432")),
-    }
-
-    pool = await asyncpg.create_pool(**db_config)
+    pool = await asyncpg.create_pool(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        database=os.getenv("POSTGRES_DB", "mayflower_test"),
+        user=os.getenv("POSTGRES_USER", "postgres"),
+        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+    )
 
     # Ensure session exists
     async with pool.acquire() as conn:
@@ -768,6 +766,7 @@ print("Initial file created")
 
     result1 = await executor.execute(code1)
     assert result1.success is True
+    assert result1.created_files is not None
     assert "/tmp/counter.txt" in result1.created_files
 
     # Second execution: modify the same file
@@ -783,7 +782,8 @@ print("File modified")
 
     result2 = await executor.execute(code2)
     assert result2.success is True
-    assert "/tmp/counter.txt" in result2.created_files, "Modified files should be tracked"
+    assert result2.created_files is not None, "Modified files should be tracked"
+    assert "/tmp/counter.txt" in result2.created_files
 
     # Verify final content
     async with db_pool.acquire() as conn:
@@ -822,7 +822,8 @@ print("Log appended")
 
     result2 = await executor.execute(code2)
     assert result2.success is True
-    assert "/tmp/log.txt" in result2.created_files, "Appended files should be tracked"
+    assert result2.created_files is not None, "Appended files should be tracked"
+    assert "/tmp/log.txt" in result2.created_files
 
     # Verify appended content
     async with db_pool.acquire() as conn:

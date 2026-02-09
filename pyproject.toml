@@ -103,24 +103,15 @@ select = [
 
 ignore = [
     "E501",   # line too long (handled by formatter)
-    "B008",   # do not perform function calls in argument defaults
-    "B904",   # raise from inside except without explicit exception chaining
-    "B905",   # zip without strict parameter (Python 3.10+)
     "SIM105", # use contextlib.suppress
     "SIM108", # use ternary operator instead of if-else
-    "N806",   # variable in function should be lowercase (for XML elements)
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = [
+"tests/**" = [
     "N802",   # function name should be lowercase
     "N803",   # argument name should be lowercase
     "E402",   # module level import not at top of file (needed for load_dotenv)
-    "S101",   # assert in tests is expected
-    "S108",   # /tmp paths in tests refer to sandbox VFS, not host filesystem
-    "S311",   # pseudo-random generator ok in tests
-]
-"**/test_*.py" = [
     "S101",   # assert in tests is expected
     "S102",   # exec usage in tests for dynamic module creation
     "S108",   # /tmp paths in tests refer to sandbox VFS, not host filesystem
@@ -170,14 +161,13 @@ module = [
 ]
 ignore_missing_imports = true
 
-# Ignore errors in helper modules (optional dependencies)
+# Helper modules use optional dependencies (micropip, pyodide)
 [[tool.mypy.overrides]]
 module = "mayflower_sandbox.helpers.*"
-ignore_errors = true
+ignore_missing_imports = true
 
-# Relax type checking in tests
+# Relax type checking in tests (but still check for real errors)
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
 check_untyped_defs = false
-ignore_errors = true

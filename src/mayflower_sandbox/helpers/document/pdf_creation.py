@@ -14,7 +14,7 @@ try:
     from . import ensure_package
 except ImportError:
     # Fallback for when called from document.pdf_creation directly in Pyodide
-    from document import ensure_package
+    from document import ensure_package  # type: ignore[no-redef]
 
 
 async def load_dejavu_font() -> bytes:

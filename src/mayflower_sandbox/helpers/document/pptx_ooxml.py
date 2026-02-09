@@ -206,6 +206,8 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
             rid = sld.get(f"{{{NS['r']}}}id")
             if rid in relmap:
                 target = relmap[rid].get("Target")
+                if target is None:
+                    continue
                 # Extract slide number from target like "slides/slide1.xml"
                 try:
                     # Get basename and extract number
@@ -218,8 +220,9 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
         # Reorder by updating the rId references
         for i, sld in enumerate(ids):
             new_slide_num = new_order[i]
-            if new_slide_num in slide_to_rid:
-                sld.set(f"{{{NS['r']}}}id", slide_to_rid[new_slide_num])
+            new_rid = slide_to_rid.get(new_slide_num)
+            if new_rid is not None:
+                sld.set(f"{{{NS['r']}}}id", new_rid)
 
         parts[_PRESENTATION_XML] = ET.tostring(pres, encoding="utf-8", xml_declaration=True)
         parts[rels_path] = ET.tostring(rels, encoding="utf-8", xml_declaration=True)

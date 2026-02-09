@@ -47,15 +47,13 @@ async def vfs_file_exists(db_pool, thread_id: str, path: str) -> bool:
 @pytest.fixture
 async def db_pool():
     """Create test database connection pool."""
-    db_config = {
-        "host": os.getenv("POSTGRES_HOST", "localhost"),
-        "database": os.getenv("POSTGRES_DB", "mayflower_test"),
-        "user": os.getenv("POSTGRES_USER", "postgres"),
-        "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-        "port": int(os.getenv("POSTGRES_PORT", "5432")),
-    }
-
-    pool = await asyncpg.create_pool(**db_config)
+    pool = await asyncpg.create_pool(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        database=os.getenv("POSTGRES_DB", "mayflower_test"),
+        user=os.getenv("POSTGRES_USER", "postgres"),
+        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+    )
 
     async with pool.acquire() as conn:
         await conn.execute(

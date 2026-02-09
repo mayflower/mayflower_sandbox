@@ -40,12 +40,26 @@ class PyodideWorker:
         self.lock = asyncio.Lock()
         self._request_id = 0
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._read_buffer = b""
 
     async def _read_large_line(self, reader: asyncio.StreamReader) -> bytes:
         """Read a line with support for large responses (up to 10MB)."""
         chunks = []
         total_size = 0
         max_size = 10 * 1024 * 1024  # 10MB
+
+        # Use leftover data from a previous read
+        if self._read_buffer:
+            chunks.append(self._read_buffer)
+            total_size += len(self._read_buffer)
+            self._read_buffer = b""
+            # Check if the leftover already contains a full line
+            full_data = chunks[0]
+            if b"\n" in full_data:
+                newline_pos = full_data.find(b"\n")
+                if newline_pos < len(full_data) - 1:
+                    self._read_buffer = full_data[newline_pos + 1 :]
+                return full_data[: newline_pos + 1]
 
         while True:
             chunk = await reader.read(8192)
@@ -60,13 +74,11 @@ class PyodideWorker:
 
             # Check if we've read a complete line
             if b"\n" in chunk:
-                # Find the newline and keep only up to it
                 full_data = b"".join(chunks)
                 newline_pos = full_data.find(b"\n")
-                # Put back the extra data
+                # Store extra data for next call
                 if newline_pos < len(full_data) - 1:
-                    extra = full_data[newline_pos + 1 :]
-                    reader._buffer = extra + reader._buffer  # type: ignore[attr-defined]
+                    self._read_buffer = full_data[newline_pos + 1 :]
                 return full_data[: newline_pos + 1]
 
         return b"".join(chunks)
@@ -97,10 +109,10 @@ class PyodideWorker:
         try:
             await asyncio.wait_for(self._wait_ready(), timeout=15.0)
             logger.info(f"[Worker {self.worker_id}] Ready (PID: {self.process.pid})")
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as err:
             logger.error(f"[Worker {self.worker_id}] Initialization timeout")
             await self.kill()
-            raise RuntimeError(f"Worker {self.worker_id} failed to initialize")
+            raise RuntimeError(f"Worker {self.worker_id} failed to initialize") from err
 
     async def _wait_ready(self) -> None:
         """Wait for worker to print 'Ready' to stderr.
@@ -155,26 +167,26 @@ class PyodideWorker:
 
             try:
                 # Build JSON-RPC request
-                request = {
-                    "jsonrpc": "2.0",
-                    "id": self._request_id,
-                    "method": "execute",
-                    "params": {
-                        "code": code,
-                        "thread_id": thread_id,
-                        "stateful": stateful,
-                        "timeout_ms": timeout_ms,
-                    },
+                params: dict[str, Any] = {
+                    "code": code,
+                    "thread_id": thread_id,
+                    "stateful": stateful,
+                    "timeout_ms": timeout_ms,
                 }
 
                 if session_bytes:
-                    request["params"]["session_bytes"] = list(session_bytes)  # type: ignore[index]
+                    params["session_bytes"] = list(session_bytes)
                 if session_metadata:
-                    request["params"]["session_metadata"] = session_metadata  # type: ignore[index]
+                    params["session_metadata"] = session_metadata
                 if files:
-                    request["params"]["files"] = {  # type: ignore[index]
-                        path: list(content) for path, content in files.items()
-                    }
+                    params["files"] = {path: list(content) for path, content in files.items()}
+
+                request: dict[str, Any] = {
+                    "jsonrpc": "2.0",
+                    "id": self._request_id,
+                    "method": "execute",
+                    "params": params,
+                }
 
                 # Send request
                 request_line = json.dumps(request) + "\n"
@@ -196,8 +208,8 @@ class PyodideWorker:
                         self._read_large_line(self.process.stdout),
                         timeout=timeout_ms / 1000.0 + 5.0,
                     )
-                except asyncio.LimitOverrunError:
-                    raise RuntimeError("Response too large (>10MB)")
+                except asyncio.LimitOverrunError as err:
+                    raise RuntimeError("Response too large (>10MB)") from err
 
                 if not response_line:
                     raise RuntimeError("Worker closed stdout")

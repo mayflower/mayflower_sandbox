@@ -18,7 +18,7 @@ def ensure_package(package_name: str, import_name: str | None = None) -> None:
 
     try:
         __import__(import_name)
-    except ImportError:
+    except ImportError as err:
         # Check if we're in Pyodide
         import sys
 
@@ -45,4 +45,4 @@ def ensure_package(package_name: str, import_name: str | None = None) -> None:
                 f"{import_name} is required. "
                 f"Install with: pip install {package_name} (regular Python) "
                 f"or await micropip.install('{package_name}') (Pyodide)"
-            )
+            ) from err

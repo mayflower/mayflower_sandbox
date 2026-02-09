@@ -9,38 +9,42 @@ import pytest
 async def db_pool():
     """Create test database connection pool."""
     # Get database connection info from environment or use defaults
-    db_config = {
-        "host": os.getenv("POSTGRES_HOST", "localhost"),
-        "database": os.getenv("POSTGRES_DB", "mayflower_test"),
-        "user": os.getenv("POSTGRES_USER", "postgres"),
-        "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-        "port": int(os.getenv("POSTGRES_PORT", "5432")),
-    }
+    pg_host = os.getenv("POSTGRES_HOST", "localhost")
+    pg_database = os.getenv("POSTGRES_DB", "mayflower_test")
+    pg_user = os.getenv("POSTGRES_USER", "postgres")
+    pg_password = os.getenv("POSTGRES_PASSWORD", "postgres")
+    pg_port = int(os.getenv("POSTGRES_PORT", "5432"))
 
     # Create test database if it doesn't exist
     try:
         sys_conn = await asyncpg.connect(
-            host=db_config["host"],
+            host=pg_host,
             database="postgres",
-            user=db_config["user"],
-            password=db_config["password"],
-            port=db_config["port"],
+            user=pg_user,
+            password=pg_password,
+            port=pg_port,
         )
 
         # Check if test database exists
         exists = await sys_conn.fetchval(
-            "SELECT 1 FROM pg_database WHERE datname = $1", db_config["database"]
+            "SELECT 1 FROM pg_database WHERE datname = $1", pg_database
         )
 
         if not exists:
-            await sys_conn.execute(f"CREATE DATABASE {db_config['database']}")
+            await sys_conn.execute(f"CREATE DATABASE {pg_database}")
 
         await sys_conn.close()
     except Exception as e:
         print(f"Warning: Could not create test database: {e}")
 
     # Connect to test database
-    pool = await asyncpg.create_pool(**db_config)
+    pool = await asyncpg.create_pool(
+        host=pg_host,
+        database=pg_database,
+        user=pg_user,
+        password=pg_password,
+        port=pg_port,
+    )
 
     # Check if tables already exist (created by CI setup)
     async with pool.acquire() as conn:

@@ -68,7 +68,7 @@ async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
             return {"echoed": args}
 
         stub_module = ModuleType("mayflower_mcp")
-        stub_module.call = stub_call
+        stub_module.call = stub_call  # type: ignore[attr-defined]  # dynamic stub module
         monkeypatch.setitem(sys.modules, "mayflower_mcp", stub_module)
 
         ffi_module = ModuleType("pyodide.ffi")
@@ -76,9 +76,9 @@ async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
         def to_py(value, **_kwargs):
             return value
 
-        ffi_module.to_py = to_py
+        ffi_module.to_py = to_py  # type: ignore[attr-defined]  # dynamic stub module
         pyodide_module = ModuleType("pyodide")
-        pyodide_module.ffi = SimpleNamespace(to_py=to_py)
+        pyodide_module.ffi = SimpleNamespace(to_py=to_py)  # type: ignore[attr-defined]  # dynamic stub module
         monkeypatch.setitem(sys.modules, "pyodide", pyodide_module)
         monkeypatch.setitem(sys.modules, "pyodide.ffi", ffi_module)
 
