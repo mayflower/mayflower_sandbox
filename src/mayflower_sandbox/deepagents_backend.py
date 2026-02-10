@@ -685,6 +685,53 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
 
         return code_part
 
+    # Class-level store for files created during execute(), keyed by thread_id.
+    # Consumed by the tool node to inject into LangGraph state.files.
+    _pending_files_by_thread: dict[str, dict[str, Any]] = {}
+
+    def _store_pending_files(self, result: Any) -> None:
+        """Build files_update from created files and store for later consumption."""
+        if not result.created_files:
+            return
+        files_update: dict[str, Any] = {}
+        for file_path in result.created_files:
+            try:
+                record = self._run_async(self._vfs.read_file(file_path))
+                content_bytes = record.get("content", b"") or b""
+                content_str = content_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                content_str = ""
+            normalized = _normalize_path(file_path)
+            files_update[normalized] = _create_file_data(content_str)
+        if files_update:
+            MayflowerSandboxBackend._pending_files_by_thread[self._thread_id] = files_update
+
+    async def _astore_pending_files(self, result: Any) -> None:
+        """Async version: build files_update from created files and store."""
+        if not result.created_files:
+            return
+        files_update: dict[str, Any] = {}
+        for file_path in result.created_files:
+            try:
+                record = await self._vfs.read_file(file_path)
+                content_bytes = record.get("content", b"") or b""
+                content_str = content_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                content_str = ""
+            normalized = _normalize_path(file_path)
+            files_update[normalized] = _create_file_data(content_str)
+        if files_update:
+            MayflowerSandboxBackend._pending_files_by_thread[self._thread_id] = files_update
+
+    @classmethod
+    def consume_pending_files_update(cls, thread_id: str) -> dict[str, Any] | None:
+        """Retrieve and clear pending files_update for a thread.
+
+        Called by the tool node after execute() to inject created files into
+        LangGraph state so they appear in the frontend Files panel.
+        """
+        return cls._pending_files_by_thread.pop(thread_id, None)
+
     def _execute_python_code(self, code: str) -> ExecuteResponse:
         """Execute Python code via Pyodide."""
         result = self._run_async(self._executor.execute(code))
@@ -692,6 +739,7 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
         if result.stderr:
             output = f"{output}\n{result.stderr}" if output else result.stderr
         py_exit_code = 0 if result.success else 1
+        self._store_pending_files(result)
         return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
 
     async def _aexecute_python_code(self, code: str) -> ExecuteResponse:
@@ -701,6 +749,7 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
         if result.stderr:
             output = f"{output}\n{result.stderr}" if output else result.stderr
         py_exit_code = 0 if result.success else 1
+        await self._astore_pending_files(result)
         return ExecuteResponse(output=output, exit_code=py_exit_code, truncated=False)
 
     def _execute_shell(self, command: str) -> ExecuteResponse:
