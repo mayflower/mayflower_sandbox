@@ -183,10 +183,19 @@ Deno.test("isSystemPath returns true for /share paths", () => {
   assertEquals(isSystemPath("/share"), true);
 });
 
+Deno.test("isSystemPath returns true for /proc /dev /etc /usr /site-packages", () => {
+  assertEquals(isSystemPath("/proc/1/status"), true);
+  assertEquals(isSystemPath("/dev/null"), true);
+  assertEquals(isSystemPath("/etc/passwd"), true);
+  assertEquals(isSystemPath("/usr/local/bin"), true);
+  assertEquals(isSystemPath("/site-packages/numpy"), true);
+});
+
 Deno.test("isSystemPath returns false for user paths", () => {
   assertEquals(isSystemPath("/tmp/file.txt"), false);
   assertEquals(isSystemPath("/home/user"), false);
   assertEquals(isSystemPath("/data/output.csv"), false);
+  assertEquals(isSystemPath("/fibonacci_spiral.png"), false);
 });
 
 // snapshotFiles tests
@@ -205,6 +214,36 @@ Deno.test("snapshotFiles handles non-existing paths", () => {
   const pyodide = createMockPyodide({});
   const snapshot = snapshotFiles(pyodide, ["/nonexistent"]);
   assertEquals(snapshot.size, 0);
+});
+
+Deno.test("snapshotFiles from root captures root-level files and skips system dirs", () => {
+  const pyodide = createMockPyodide({
+    "/": { isDir: true },
+    "/fibonacci_spiral.png": { isDir: false, content: [137, 80, 78, 71], size: 4 },
+    "/tmp": { isDir: true },
+    "/tmp/plot.png": { isDir: false, content: [1, 2, 3], size: 3 },
+    "/home": { isDir: true },
+    "/home/pyodide": { isDir: true },
+    "/home/pyodide/script.py": { isDir: false, content: [35], size: 1 },
+    "/lib": { isDir: true },
+    "/lib/python3.13": { isDir: true },
+    "/lib/python3.13/os.py": { isDir: false, content: [0], size: 1 },
+    "/share": { isDir: true },
+    "/share/data.txt": { isDir: false, content: [0], size: 1 },
+    "/proc": { isDir: true },
+    "/dev": { isDir: true },
+    "/site-packages": { isDir: true },
+    "/site-packages/numpy": { isDir: true },
+  });
+  const snapshot = snapshotFiles(pyodide, ["/"]);
+  // Root-level file captured
+  assertEquals(snapshot.get("/fibonacci_spiral.png"), 4);
+  // /tmp and /home files captured
+  assertEquals(snapshot.get("/tmp/plot.png"), 3);
+  assertEquals(snapshot.get("/home/pyodide/script.py"), 1);
+  // System paths skipped
+  assertEquals(snapshot.has("/lib/python3.13/os.py"), false);
+  assertEquals(snapshot.has("/share/data.txt"), false);
 });
 
 // collectFiles tests

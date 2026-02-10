@@ -216,7 +216,7 @@ function collectChangedFiles(
   beforeSnapshot: Map<string, number>,
 ): Array<{ path: string; content: number[] }> | undefined {
   const allChangedPaths = new Set([...tracker.createdFiles, ...tracker.modifiedFiles]);
-  const afterSnapshot = snapshotFiles(pyodide, ["/tmp", "/home"]);
+  const afterSnapshot = snapshotFiles(pyodide, ["/"]);
   const snapshotChanges = findChangedFiles(beforeSnapshot, afterSnapshot);
   snapshotChanges.forEach((p) => allChangedPaths.add(p));
 

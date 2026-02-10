@@ -90,7 +90,15 @@ export function readFileContent(pyodide: any, path: string): number[] | null {
  * Check if path is a system path that should be filtered
  */
 export function isSystemPath(path: string): boolean {
-  return path.startsWith("/lib") || path.startsWith("/share");
+  return (
+    path.startsWith("/lib") ||
+    path.startsWith("/share") ||
+    path.startsWith("/proc") ||
+    path.startsWith("/dev") ||
+    path.startsWith("/etc") ||
+    path.startsWith("/usr") ||
+    path.startsWith("/site-packages")
+  );
 }
 
 /**
@@ -101,6 +109,7 @@ function snapshotPath(
   path: string,
   snapshot: Map<string, number>,
 ): void {
+  if (isSystemPath(path)) return;
   if (!pathExists(pyodide, path)) return;
 
   if (isDirectory(pyodide, path)) {
