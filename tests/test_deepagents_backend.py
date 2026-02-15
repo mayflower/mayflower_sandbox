@@ -282,42 +282,42 @@ class TestMayflowerSandboxBackend:
     @pytest.mark.asyncio
     async def test_awrite_success(self, backend, mock_vfs):
         result = await backend.awrite("/new_file.txt", "content")
-        assert result.get("path") == "/new_file.txt"
-        assert result.get("error") is None
+        assert result.path == "/new_file.txt"
+        assert result.error is None
 
     @pytest.mark.asyncio
     async def test_awrite_file_exists(self, backend, mock_vfs):
         mock_vfs.file_exists = AsyncMock(return_value=True)
         result = await backend.awrite("/existing.txt", "content")
-        assert result.get("error") is not None
-        assert "already exists" in result.get("error", "")
+        assert result.error is not None
+        assert "already exists" in result.error
 
     @pytest.mark.asyncio
     async def test_aedit_success(self, backend, mock_vfs):
         mock_vfs.read_file = AsyncMock(return_value={"content": b"hello world"})
         result = await backend.aedit("/test.txt", "world", "universe")
-        assert result.get("path") == "/test.txt"
-        assert result.get("occurrences") == 1
+        assert result.path == "/test.txt"
+        assert result.occurrences == 1
 
     @pytest.mark.asyncio
     async def test_aedit_string_not_found(self, backend, mock_vfs):
         mock_vfs.read_file = AsyncMock(return_value={"content": b"hello world"})
         result = await backend.aedit("/test.txt", "missing", "replacement")
-        assert "Error:" in result.get("error", "")
-        assert "not found" in result.get("error", "")
+        assert "Error:" in (result.error or "")
+        assert "not found" in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_aedit_multiple_occurrences_without_replace_all(self, backend, mock_vfs):
         mock_vfs.read_file = AsyncMock(return_value={"content": b"hello hello hello"})
         result = await backend.aedit("/test.txt", "hello", "hi")
-        assert "Error:" in result.get("error", "")
-        assert "3 times" in result.get("error", "")
+        assert "Error:" in (result.error or "")
+        assert "3 times" in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_aedit_multiple_occurrences_with_replace_all(self, backend, mock_vfs):
         mock_vfs.read_file = AsyncMock(return_value={"content": b"hello hello hello"})
         result = await backend.aedit("/test.txt", "hello", "hi", replace_all=True)
-        assert result.get("occurrences") == 3
+        assert result.occurrences == 3
 
     @pytest.mark.asyncio
     async def test_agrep_raw_success(self, backend, mock_vfs):
@@ -408,7 +408,7 @@ class TestMayflowerSandboxBackend:
         files = [("/file1.txt", b"content1"), ("/file2.txt", b"content2")]
         result = await backend.aupload_files(files)
         assert len(result) == 2
-        assert all(r.get("error") is None for r in result)
+        assert all(r.error is None for r in result)
 
     @pytest.mark.asyncio
     async def test_aupload_files_invalid_path(self, backend, mock_vfs):
@@ -416,15 +416,15 @@ class TestMayflowerSandboxBackend:
 
         mock_vfs.validate_path = MagicMock(side_effect=InvalidPathError("bad path"))
         result = await backend.aupload_files([("../bad", b"content")])
-        assert result[0].get("error") == "invalid_path"
+        assert result[0].error == "invalid_path"
 
     @pytest.mark.asyncio
     async def test_adownload_files_success(self, backend, mock_vfs):
         mock_vfs.read_file = AsyncMock(return_value={"content": b"file content"})
         result = await backend.adownload_files(["/test.txt"])
         assert len(result) == 1
-        assert result[0].get("content") == b"file content"
-        assert result[0].get("error") is None
+        assert result[0].content == b"file content"
+        assert result[0].error is None
 
     @pytest.mark.asyncio
     async def test_adownload_files_not_found(self, backend, mock_vfs):
@@ -432,13 +432,13 @@ class TestMayflowerSandboxBackend:
 
         mock_vfs.read_file = AsyncMock(side_effect=FileNotFoundError("not found"))
         result = await backend.adownload_files(["/missing.txt"])
-        assert result[0].get("error") == "file_not_found"
+        assert result[0].error == "file_not_found"
 
     @pytest.mark.asyncio
     async def test_aexecute_shell(self, backend, mock_executor):
         result = await backend.aexecute("ls -la")
-        assert result.get("output") == "output"
-        assert result.get("exit_code") == 0
+        assert result.output == "output"
+        assert result.exit_code == 0
 
 
 class TestGrepFileMatches:
@@ -639,7 +639,7 @@ class TestExecutePythonSentinel:
         # Should route to Pyodide, not BusyBox
         mock_executor.execute.assert_called_once_with(code)
         mock_executor.execute_shell.assert_not_called()
-        assert result.get("output") == "5050"
+        assert result.output == "5050"
 
     @pytest.mark.asyncio
     async def test_aexecute_python_c_inline(self, backend, mock_executor):
@@ -647,7 +647,7 @@ class TestExecutePythonSentinel:
         # Should extract code and route to Pyodide
         mock_executor.execute.assert_called_once_with("print(sum(range(1, 101)))")
         mock_executor.execute_shell.assert_not_called()
-        assert result.get("output") == "5050"
+        assert result.output == "5050"
 
 
 class TestExecutePythonScript:
@@ -691,8 +691,8 @@ class TestExecutePythonScript:
         mock_vfs.read_file.assert_called_once_with("/tmp/script.py")
         # Should execute via Pyodide
         mock_executor.execute.assert_called_once()
-        assert result.get("output") == "hello from script"
-        assert result.get("exit_code") == 0
+        assert result.output == "hello from script"
+        assert result.exit_code == 0
 
     @pytest.mark.asyncio
     async def test_aexecute_python_script_with_args(self, backend, mock_vfs, mock_executor):
@@ -710,14 +710,14 @@ class TestExecutePythonScript:
 
         mock_vfs.read_file = AsyncMock(side_effect=FileNotFoundError("not found"))
         result = await backend.aexecute("python /missing/script.py")
-        assert "can't open file" in result.get("output", "")
-        assert result.get("exit_code") == 2
+        assert "can't open file" in result.output
+        assert result.exit_code == 2
 
     @pytest.mark.asyncio
     async def test_aexecute_python3_script(self, backend, mock_vfs, mock_executor):
         result = await backend.aexecute("python3 /tmp/script.py")
         mock_vfs.read_file.assert_called_once_with("/tmp/script.py")
-        assert result.get("exit_code") == 0
+        assert result.exit_code == 0
 
 
 class TestErrorPaths:
@@ -762,8 +762,8 @@ class TestErrorPaths:
 
         mock_vfs.validate_path = MagicMock(side_effect=InvalidPathError("Path traversal"))
         result = await backend.awrite("../bad/path", "content")
-        assert result.get("error") is not None
-        assert "Path traversal" in result.get("error", "")
+        assert result.error is not None
+        assert "Path traversal" in result.error
 
     @pytest.mark.asyncio
     async def test_awrite_write_file_invalid_path_error(self, backend, mock_vfs):
@@ -772,8 +772,8 @@ class TestErrorPaths:
 
         mock_vfs.write_file = AsyncMock(side_effect=InvalidPathError("Invalid destination"))
         result = await backend.awrite("/file.txt", "content")
-        assert result.get("error") is not None
-        assert "Invalid destination" in result.get("error", "")
+        assert result.error is not None
+        assert "Invalid destination" in result.error
 
     @pytest.mark.asyncio
     async def test_aedit_file_not_found(self, backend, mock_vfs):
@@ -782,8 +782,8 @@ class TestErrorPaths:
 
         mock_vfs.read_file = AsyncMock(side_effect=FileNotFoundError("File missing"))
         result = await backend.aedit("/missing.txt", "old", "new")
-        assert result.get("error") is not None
-        assert "not found" in result.get("error", "")
+        assert result.error is not None
+        assert "not found" in result.error
 
     @pytest.mark.asyncio
     async def test_aedit_invalid_path(self, backend, mock_vfs):
@@ -792,8 +792,8 @@ class TestErrorPaths:
 
         mock_vfs.read_file = AsyncMock(side_effect=InvalidPathError("Bad path"))
         result = await backend.aedit("../escape.txt", "old", "new")
-        assert result.get("error") is not None
-        assert "not found" in result.get("error", "")
+        assert result.error is not None
+        assert "not found" in result.error
 
     @pytest.mark.asyncio
     async def test_aedit_write_invalid_path_error(self, backend, mock_vfs):
@@ -803,15 +803,15 @@ class TestErrorPaths:
         mock_vfs.read_file = AsyncMock(return_value={"content": b"old content"})
         mock_vfs.write_file = AsyncMock(side_effect=InvalidPathError("Write failed"))
         result = await backend.aedit("/file.txt", "old", "new")
-        assert result.get("error") is not None
-        assert "Write failed" in result.get("error", "")
+        assert result.error is not None
+        assert "Write failed" in result.error
 
     @pytest.mark.asyncio
     async def test_aupload_files_write_exception(self, backend, mock_vfs):
         """Test upload when write_file raises unexpected exception."""
         mock_vfs.write_file = AsyncMock(side_effect=Exception("Database error"))
         result = await backend.aupload_files([("/file.txt", b"content")])
-        assert result[0].get("error") == "write_error"
+        assert result[0].error == "permission_denied"
 
     @pytest.mark.asyncio
     async def test_aupload_files_write_invalid_path(self, backend, mock_vfs):
@@ -820,7 +820,7 @@ class TestErrorPaths:
 
         mock_vfs.write_file = AsyncMock(side_effect=InvalidPathError("Bad destination"))
         result = await backend.aupload_files([("/file.txt", b"content")])
-        assert result[0].get("error") == "invalid_path"
+        assert result[0].error == "invalid_path"
 
     @pytest.mark.asyncio
     async def test_adownload_files_invalid_path(self, backend, mock_vfs):
@@ -829,7 +829,7 @@ class TestErrorPaths:
 
         mock_vfs.read_file = AsyncMock(side_effect=InvalidPathError("Bad path"))
         result = await backend.adownload_files(["../escape.txt"])
-        assert result[0].get("error") == "invalid_path"
+        assert result[0].error == "invalid_path"
 
     @pytest.mark.asyncio
     async def test_aexecute_python_with_stderr(self, backend, mock_vfs, mock_executor):
@@ -843,8 +843,8 @@ class TestErrorPaths:
         mock_executor.execute = AsyncMock(return_value=result_mock)
 
         result = await backend.aexecute("python /tmp/script.py")
-        assert "stdout output" in result.get("output", "")
-        assert "stderr output" in result.get("output", "")
+        assert "stdout output" in result.output
+        assert "stderr output" in result.output
 
     @pytest.mark.asyncio
     async def test_aexecute_python_failure(self, backend, mock_vfs, mock_executor):
@@ -858,7 +858,7 @@ class TestErrorPaths:
         mock_executor.execute = AsyncMock(return_value=result_mock)
 
         result = await backend.aexecute("python /tmp/script.py")
-        assert result.get("exit_code") == 1
+        assert result.exit_code == 1
 
     @pytest.mark.asyncio
     async def test_aexecute_shell_with_stderr(self, backend, mock_executor):
@@ -871,8 +871,8 @@ class TestErrorPaths:
         mock_executor.execute_shell = AsyncMock(return_value=result_mock)
 
         result = await backend.aexecute("ls -la")
-        assert "shell stdout" in result.get("output", "")
-        assert "shell stderr" in result.get("output", "")
+        assert "shell stdout" in result.output
+        assert "shell stderr" in result.output
 
     @pytest.mark.asyncio
     async def test_aexecute_shell_none_exit_code(self, backend, mock_executor):
@@ -885,7 +885,7 @@ class TestErrorPaths:
         mock_executor.execute_shell = AsyncMock(return_value=result_mock)
 
         result = await backend.aexecute("failing_command")
-        assert result.get("exit_code") == 1
+        assert result.exit_code == 1
 
     @pytest.mark.asyncio
     async def test_aexecute_shell_none_exit_code_success(self, backend, mock_executor):
@@ -898,7 +898,7 @@ class TestErrorPaths:
         mock_executor.execute_shell = AsyncMock(return_value=result_mock)
 
         result = await backend.aexecute("success_command")
-        assert result.get("exit_code") == 0
+        assert result.exit_code == 0
 
     @pytest.mark.asyncio
     async def test_als_info_invalid_path(self, backend, mock_vfs):
@@ -965,13 +965,13 @@ class TestSyncWrappers:
     def test_write_sync(self, backend, mock_vfs):
         """Test synchronous write wrapper."""
         result = backend.write("/new.txt", "content")
-        assert result.get("path") == "/new.txt"
+        assert result.path == "/new.txt"
 
     def test_edit_sync(self, backend, mock_vfs):
         """Test synchronous edit wrapper."""
         mock_vfs.read_file = AsyncMock(return_value={"content": b"old text"})
         result = backend.edit("/file.txt", "old", "new")
-        assert result.get("path") == "/file.txt"
+        assert result.path == "/file.txt"
 
     def test_ls_info_sync(self, backend, mock_vfs):
         """Test synchronous ls_info wrapper."""
@@ -1011,4 +1011,4 @@ class TestSyncWrappers:
     def test_execute_sync(self, backend, mock_executor):
         """Test synchronous execute wrapper."""
         result = backend.execute("ls")
-        assert result.get("output") == "output"
+        assert result.output == "output"
