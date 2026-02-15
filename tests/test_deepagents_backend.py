@@ -1,84 +1,24 @@
 """Unit tests for deepagents_backend module.
 
 Tests helper functions and the MayflowerSandboxBackend class.
-Uses mocking to handle the optional deepagents dependency.
+When deepagents is not installed, the module's own ImportError fallback
+provides proper dataclass types that support attribute access.
 """
 
-import importlib.util
 import re
-import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Check if deepagents is available
-DEEPAGENTS_AVAILABLE = importlib.util.find_spec("deepagents") is not None
 
-
-# Mock deepagents protocol types so we can import the module for testing
-@pytest.fixture(scope="module", autouse=True)
-def mock_deepagents():
-    """Mock deepagents module if not installed."""
-    if DEEPAGENTS_AVAILABLE:
-        yield
-        return
-
-    # Create mock protocol types
-    mock_protocol = MagicMock()
-    mock_protocol.BackendProtocol = object
-    mock_protocol.EditResult = dict
-    mock_protocol.ExecuteResponse = dict
-    mock_protocol.FileDownloadResponse = dict
-    mock_protocol.FileInfo = dict
-    mock_protocol.FileUploadResponse = dict
-    mock_protocol.GrepMatch = dict
-    mock_protocol.WriteResult = dict
-    mock_protocol.SandboxBackendProtocol = object
-
-    # Patch the modules
-    with patch.dict(
-        sys.modules,
-        {
-            "deepagents": MagicMock(),
-            "deepagents.backends": MagicMock(),
-            "deepagents.backends.protocol": mock_protocol,
-        },
-    ):
-        # Force reimport of our module with mocked dependencies
-        if "mayflower_sandbox.deepagents_backend" in sys.modules:
-            del sys.modules["mayflower_sandbox.deepagents_backend"]
-        if "mayflower_sandbox" in sys.modules:
-            del sys.modules["mayflower_sandbox"]
-        yield
-
-
-# Import after the mock is set up
 def get_module():
-    """Get the deepagents_backend module (with mocking if needed)."""
-    if not DEEPAGENTS_AVAILABLE:
-        # Set up mocks before import
-        mock_protocol = MagicMock()
-        mock_protocol.BackendProtocol = object
-        mock_protocol.EditResult = dict
-        mock_protocol.ExecuteResponse = dict
-        mock_protocol.FileDownloadResponse = dict
-        mock_protocol.FileInfo = dict
-        mock_protocol.FileUploadResponse = dict
-        mock_protocol.GrepMatch = dict
-        mock_protocol.WriteResult = dict
-        mock_protocol.SandboxBackendProtocol = object
+    """Get the deepagents_backend module.
 
-        sys.modules["deepagents"] = MagicMock()
-        sys.modules["deepagents.backends"] = MagicMock()
-        sys.modules["deepagents.backends.protocol"] = mock_protocol
-
-        # Clear cached modules
-        if "mayflower_sandbox.deepagents_backend" in sys.modules:
-            del sys.modules["mayflower_sandbox.deepagents_backend"]
-        if "mayflower_sandbox" in sys.modules:
-            del sys.modules["mayflower_sandbox"]
-
+    When deepagents is not installed, the module's own ImportError fallback
+    provides proper dataclass types (WriteResult, EditResult, etc.) that
+    support attribute access. No mocking needed.
+    """
     from mayflower_sandbox import deepagents_backend
 
     return deepagents_backend
