@@ -36,7 +36,7 @@ try:
     )
 
     DEEPAGENTS_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover - optional dependency
     DEEPAGENTS_AVAILABLE = False
     # Provide fallback types for testing without deepagents installed
     from dataclasses import dataclass, field
@@ -431,9 +431,9 @@ class PostgresBackend(BackendProtocol):
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         try:
-            regex = re.compile(pattern)
+            regex = re.compile(re.escape(pattern))
         except re.error as exc:
-            return f"Invalid regex pattern: {exc}"
+            return f"Invalid pattern: {exc}"
 
         base = _normalize_path(path or "/")
         if base != "/" and not base.endswith("/"):
@@ -510,7 +510,9 @@ class PostgresBackend(BackendProtocol):
             except PermissionError:
                 responses.append(FileUploadResponse(path=path, error="permission_denied"))
             except Exception as e:
-                logger.error(f"Unexpected error uploading file {path}: {e}", exc_info=True)
+                logger.error(
+                    f"Upload failed for {path} (reporting as permission_denied): {e}", exc_info=True
+                )
                 responses.append(FileUploadResponse(path=path, error="permission_denied"))
             else:
                 responses.append(FileUploadResponse(path=normalized, error=None))
@@ -687,6 +689,7 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
 
     # Class-level store for files created during execute(), keyed by thread_id.
     # Consumed by the tool node to inject into LangGraph state.files.
+    _pending_files_lock = threading.Lock()
     _pending_files_by_thread: dict[str, dict[str, Any]] = {}
 
     def _store_pending_files(self, result: Any) -> None:
@@ -700,11 +703,15 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
                 content_bytes = record.get("content", b"") or b""
                 content_str = content_bytes.decode("utf-8", errors="replace")
             except Exception:
+                logger.warning(
+                    "Failed to read created file %s for files_update", file_path, exc_info=True
+                )
                 content_str = ""
             normalized = _normalize_path(file_path)
             files_update[normalized] = _create_file_data(content_str)
         if files_update:
-            MayflowerSandboxBackend._pending_files_by_thread[self._thread_id] = files_update
+            with MayflowerSandboxBackend._pending_files_lock:
+                MayflowerSandboxBackend._pending_files_by_thread[self._thread_id] = files_update
 
     async def _astore_pending_files(self, result: Any) -> None:
         """Async version: build files_update from created files and store."""
@@ -717,11 +724,15 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
                 content_bytes = record.get("content", b"") or b""
                 content_str = content_bytes.decode("utf-8", errors="replace")
             except Exception:
+                logger.warning(
+                    "Failed to read created file %s for files_update", file_path, exc_info=True
+                )
                 content_str = ""
             normalized = _normalize_path(file_path)
             files_update[normalized] = _create_file_data(content_str)
         if files_update:
-            MayflowerSandboxBackend._pending_files_by_thread[self._thread_id] = files_update
+            with MayflowerSandboxBackend._pending_files_lock:
+                MayflowerSandboxBackend._pending_files_by_thread[self._thread_id] = files_update
 
     @classmethod
     def consume_pending_files_update(cls, thread_id: str) -> dict[str, Any] | None:
@@ -730,7 +741,8 @@ class MayflowerSandboxBackend(PostgresBackend, SandboxBackendProtocol):
         Called by the tool node after execute() to inject created files into
         LangGraph state so they appear in the frontend Files panel.
         """
-        return cls._pending_files_by_thread.pop(thread_id, None)
+        with cls._pending_files_lock:
+            return cls._pending_files_by_thread.pop(thread_id, None)
 
     def _execute_python_code(self, code: str) -> ExecuteResponse:
         """Execute Python code via Pyodide."""

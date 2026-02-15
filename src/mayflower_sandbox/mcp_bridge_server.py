@@ -128,6 +128,10 @@ class MCPBridgeServer:
                     self.thread_id,
                 )
             except asyncpg.UndefinedTableError:
+                logger.warning(
+                    "Table 'sandbox_mcp_servers' does not exist. "
+                    "MCP server bindings are unavailable. Run database migrations."
+                )
                 rows = []
             except asyncpg.UndefinedColumnError:
                 # Fall back if schemas column doesn't exist yet
@@ -243,11 +247,20 @@ class MCPBridgeServer:
             else:
                 # Parse JSON payload and execute MCP call
                 data = json.loads(payload.decode("utf-8"))
-                status, body = await self._execute_mcp_call(
-                    data.get("server"), data.get("tool"), data.get("args") or {}
-                )
+                server_name = data.get("server")
+                tool_name = data.get("tool")
+                if not server_name or not tool_name:
+                    status = "400 Bad Request"
+                    body = json.dumps({"error": "Missing 'server' or 'tool' in request"}).encode(
+                        "utf-8"
+                    )
+                else:
+                    status, body = await self._execute_mcp_call(
+                        server_name, tool_name, data.get("args") or {}
+                    )
 
         except Exception as exc:  # noqa: BLE001 - return error payload to sandbox
+            logger.error("MCP bridge request failed: %s", exc, exc_info=True)
             status = "500 Internal Server Error"
             body = json.dumps({"error": str(exc)}).encode("utf-8")
 

@@ -72,7 +72,7 @@ class TestServeFileError:
         resp = await error_client.get("/files/thread1/tmp/test.txt")
         assert resp.status == 500
         data = await resp.json()
-        assert "disk error" in data["error"]
+        assert data["error"] == "Internal server error"
 
 
 # ---------------------------------------------------------------------------
@@ -99,4 +99,4 @@ class TestListFilesError:
         resp = await list_error_client.get("/files/thread1")
         assert resp.status == 500
         data = await resp.json()
-        assert "query failed" in data["error"]
+        assert data["error"] == "Internal server error"

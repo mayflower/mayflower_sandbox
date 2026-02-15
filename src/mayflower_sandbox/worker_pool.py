@@ -246,6 +246,7 @@ class PyodideWorker:
             except asyncio.TimeoutError:
                 return {"status": "timeout", "error": "Health check timeout"}
             except Exception as e:
+                logger.warning("[Worker %d] Health check exception: %s", self.worker_id, e)
                 return {"status": "error", "error": str(e)}
 
     async def shutdown(self) -> None:
@@ -346,6 +347,8 @@ class WorkerPool:
         if not self.started:
             raise RuntimeError("Worker pool not started")
 
+        failures: list[tuple[int, str]] = []
+
         # Try to find idle worker
         for _ in range(self.size):
             worker = self.workers[self.next_worker_idx]
@@ -364,6 +367,7 @@ class WorkerPool:
                     )
                 except Exception as e:
                     logger.error(f"Worker {worker.worker_id} execution failed: {e}")
+                    failures.append((worker.worker_id, str(e)))
                     # Try to restart worker (store reference to prevent GC)
                     task = asyncio.create_task(self._restart_worker(worker))
                     self._background_tasks.add(task)
@@ -374,15 +378,19 @@ class WorkerPool:
         worker = self.workers[self.next_worker_idx]
         self.next_worker_idx = (self.next_worker_idx + 1) % self.size
 
-        return await worker.execute(
-            code=code,
-            thread_id=thread_id,
-            stateful=stateful,
-            session_bytes=session_bytes,
-            session_metadata=session_metadata,
-            files=files,
-            timeout_ms=timeout_ms,
-        )
+        try:
+            return await worker.execute(
+                code=code,
+                thread_id=thread_id,
+                stateful=stateful,
+                session_bytes=session_bytes,
+                session_metadata=session_metadata,
+                files=files,
+                timeout_ms=timeout_ms,
+            )
+        except Exception as e:
+            failures.append((worker.worker_id, str(e)))
+            raise RuntimeError(f"All workers failed. Failures: {failures}") from e
 
     async def _restart_worker(self, worker: PyodideWorker) -> None:
         """Restart a failed worker."""

@@ -364,6 +364,10 @@ class SandboxExecutor:
                     self.thread_id,
                 )
             except asyncpg.UndefinedTableError:
+                logger.warning(
+                    "Table 'sandbox_mcp_servers' does not exist. "
+                    "MCP server bindings are unavailable. Run database migrations."
+                )
                 rows = []
 
         servers: dict[str, dict[str, Any]] = {}
@@ -444,6 +448,7 @@ class SandboxExecutor:
                 )
                 body = json.dumps({"result": result}, default=self._json_default).encode("utf-8")
         except Exception as exc:  # noqa: BLE001 - return error payload to sandbox
+            logger.error("MCP bridge request failed: %s", exc, exc_info=True)
             status = "500 Internal Server Error"
             body = json.dumps({"error": str(exc)}).encode("utf-8")
         finally:
@@ -728,7 +733,21 @@ class SandboxExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout_bytes, stderr_bytes = await proc.communicate(stdin_payload)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(stdin_payload),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr=f"Shell execution timed out after {self.timeout_seconds}s",
+                execution_time=time.time() - start_time,
+                exit_code=124,
+            )
         except Exception as e:
             return ExecutionResult(
                 success=False,

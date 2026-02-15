@@ -329,17 +329,27 @@ class TestMayflowerSandboxBackend:
                 },
             ]
         )
-        result = await backend.agrep_raw(r"def .*\(\)")
+        # grep_raw uses literal matching (not regex) per protocol spec
+        result = await backend.agrep_raw("def hello():")
         assert isinstance(result, list)
-        assert len(result) == 2
+        assert len(result) == 1
         assert result[0]["line"] == 1
-        assert result[1]["line"] == 3
 
     @pytest.mark.asyncio
-    async def test_agrep_raw_invalid_regex(self, backend):
+    async def test_agrep_raw_special_chars_literal(self, backend, mock_vfs):
+        """Special regex chars are treated as literal text via re.escape."""
+        mock_vfs.list_files = AsyncMock(
+            return_value=[
+                {
+                    "file_path": "/test.txt",
+                    "content": b"[invalid\nno match\n",
+                },
+            ]
+        )
         result = await backend.agrep_raw("[invalid")
-        assert isinstance(result, str)
-        assert "Invalid regex" in result
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["line"] == 1
 
     @pytest.mark.asyncio
     async def test_agrep_raw_with_path_filter(self, backend, mock_vfs):

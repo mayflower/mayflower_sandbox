@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import textwrap
@@ -13,6 +14,8 @@ import yaml
 
 from .filesystem import FileNotFoundError, VirtualFilesystem
 from .mcp_bindings import MCPBindingManager
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -331,7 +334,12 @@ async def add_http_mcp_server(
             for filename, content in package_files.items():
                 await _write_text(vfs, pkg_root / filename, content)
         except Exception:
-            # Fall back to kwargs-based wrappers on any generation error
+            logger.warning(
+                "Typed stub generation failed for MCP server '%s', "
+                "falling back to untyped wrappers",
+                name,
+                exc_info=True,
+            )
             use_typed = False
 
     if not use_typed:
