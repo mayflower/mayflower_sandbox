@@ -2,15 +2,16 @@
 Comprehensive document processing tests matching maistack skills.
 Uses MayflowerSandboxBackend to execute Python code in the sandbox.
 
-Tests all operations from:
-- excel_skill.py
-- pdf_skill.py
-- powerpoint_skill.py
-- word_skill.py
+Tests all operations from the helpers/document/ package:
+- xlsx_helpers.py  (Excel: openpyxl-based read/write)
+- pdf_creation.py  (PDF: fpdf2-based creation)
+- pdf_manipulation.py (PDF: pypdf-based merge/split/extract)
+- pptx_ooxml.py    (PowerPoint: pure OOXML manipulation)
+- docx_ooxml.py    (Word: pure OOXML creation/extraction)
 
 Test Strategy:
 - All assertions use deterministic VFS verification
-- Execute Python scripts directly via backend.execute("python script.py")
+- Execute Python scripts directly via backend.aexecute("python script.py")
 - Verify file existence and format directly in database
 """
 
@@ -83,27 +84,34 @@ async def clean_files(db_pool):
 
 
 # ============================================================================
-# EXCEL TESTS (matching excel_skill.py)
+# EXCEL TESTS (helpers/document/xlsx_helpers.py)
 # ============================================================================
 
 
 @pytest.mark.asyncio
 async def test_excel_create_workbook(backend, db_pool, clean_files):
-    """Test: ExcelSkill.create_workbook()"""
+    """Test: Create Excel workbook using openpyxl (auto-installed by ensure_package)."""
     code = """
-from document.xlsx import create_xlsx_bytes
+from document import ensure_package
+ensure_package("openpyxl")
 
-# Create workbook with data
-headers = ["Product", "Quantity", "Price", "Total"]
-data = [
-    ["Laptop", 5, 1200, "=B2*C2"],
-    ["Mouse", 25, 30, "=B3*C3"],
-]
+from openpyxl import Workbook
 
-xlsx_bytes = create_xlsx_bytes(headers, data)
+wb = Workbook()
+ws = wb.active
+ws.title = "Sales"
+
+# Write headers and data
+ws.append(["Product", "Quantity", "Price"])
+ws.append(["Laptop", 5, 1200])
+ws.append(["Mouse", 25, 30])
+
+import io
+buf = io.BytesIO()
+wb.save(buf)
 
 with open("/tmp/sales.xlsx", "wb") as f:
-    f.write(xlsx_bytes)
+    f.write(buf.getvalue())
 
 print("Excel file created successfully")
 """
@@ -120,24 +128,33 @@ print("Excel file created successfully")
 
 
 @pytest.mark.asyncio
-async def test_excel_read_workbook(backend, db_pool, clean_files):
-    """Test: ExcelSkill.read_workbook()"""
+async def test_excel_read_with_helpers(backend, db_pool, clean_files):
+    """Test: Create Excel then read back with xlsx_to_dict helper."""
     code = """
-from document.xlsx import create_xlsx_bytes, xlsx_to_dict
+from document import ensure_package
+ensure_package("openpyxl")
 
-# Create workbook
-headers = ["Name", "Score"]
-data = [["Alice", 95], ["Bob", 87]]
-xlsx_bytes = create_xlsx_bytes(headers, data)
+from openpyxl import Workbook
+
+# Create workbook with data
+wb = Workbook()
+ws = wb.active
+ws.title = "Data"
+ws.append(["Name", "Score"])
+ws.append(["Alice", 95])
+ws.append(["Bob", 87])
+
+import io
+buf = io.BytesIO()
+wb.save(buf)
+xlsx_bytes = buf.getvalue()
 
 with open("/tmp/data.xlsx", "wb") as f:
     f.write(xlsx_bytes)
 
-# Read it back
-with open("/tmp/data.xlsx", "rb") as f:
-    content = f.read()
-
-result = xlsx_to_dict(content)
+# Read back using the helper
+from document.xlsx_helpers import xlsx_to_dict
+result = xlsx_to_dict(xlsx_bytes, "Data")
 print(f"Read {len(result)} rows")
 print(f"Alice's score: {result[0]['Score']}")
 """
@@ -152,28 +169,23 @@ print(f"Alice's score: {result[0]['Score']}")
 
 
 # ============================================================================
-# PDF TESTS (matching pdf_skill.py)
+# PDF TESTS (helpers/document/pdf_creation.py, pdf_manipulation.py)
 # ============================================================================
 
 
 @pytest.mark.asyncio
 async def test_pdf_create(backend, db_pool, clean_files):
-    """Test: PDFCreator.create_pdf()"""
+    """Test: pdf_create_simple() from document.pdf_creation."""
     code = """
-from document.pdf import create_pdf_bytes
+from document.pdf_creation import pdf_create_simple
 
-sections = [
-    ("Q4 Financial Report", ""),
-    ("Executive Summary", "Revenue increased 25%"),
-    ("Key Metrics", "Customer growth at 40%"),
-]
+path = pdf_create_simple(
+    "Q4 Financial Report",
+    ["Revenue increased 25%", "Customer growth at 40%"],
+    output_path="/tmp/report.pdf",
+)
 
-pdf_bytes = create_pdf_bytes(sections)
-
-with open("/tmp/report.pdf", "wb") as f:
-    f.write(pdf_bytes)
-
-print("PDF created successfully")
+print(f"PDF created at {path}")
 """
 
     await backend.aupload_files([("/tmp/create_pdf.py", code.encode())])
@@ -188,22 +200,18 @@ print("PDF created successfully")
 
 @pytest.mark.asyncio
 async def test_pdf_merge(backend, db_pool, clean_files):
-    """Test: PDFSkill.merge_pdfs()"""
+    """Test: pdf_merge() from document.pdf_manipulation."""
     code = """
-from document.pdf import create_pdf_bytes, merge_pdfs
+from document.pdf_creation import pdf_create_simple
+from document.pdf_manipulation import pdf_merge
 
 # Create two PDFs
-pdf1 = create_pdf_bytes([("Page 1", "Content for page 1")])
-pdf2 = create_pdf_bytes([("Page 2", "Content for page 2")])
+pdf_create_simple("Page 1", ["Content for page 1"], output_path="/tmp/doc1.pdf")
+pdf_create_simple("Page 2", ["Content for page 2"], output_path="/tmp/doc2.pdf")
 
-with open("/tmp/doc1.pdf", "wb") as f:
-    f.write(pdf1)
-with open("/tmp/doc2.pdf", "wb") as f:
-    f.write(pdf2)
-
-# Merge them
+# Read them back
 with open("/tmp/doc1.pdf", "rb") as f1, open("/tmp/doc2.pdf", "rb") as f2:
-    merged = merge_pdfs([f1.read(), f2.read()])
+    merged = pdf_merge([f1.read(), f2.read()])
 
 with open("/tmp/merged.pdf", "wb") as f:
     f.write(merged)
@@ -223,70 +231,109 @@ print("PDFs merged successfully")
 
 
 # ============================================================================
-# POWERPOINT TESTS (matching powerpoint_skill.py)
+# POWERPOINT TESTS (helpers/document/pptx_ooxml.py)
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_powerpoint_create(backend, db_pool, clean_files):
-    """Test: PowerPointSkill.create_simple_presentation()"""
+async def test_powerpoint_create_and_extract(backend, db_pool, clean_files):
+    """Test: Build a minimal PPTX using OOXML, then extract text with pptx_extract_text."""
     code = """
-from document.pptx import create_pptx_bytes
+import io
+import zipfile
 
-slides = [
-    {"title": "Company Overview 2024", "content": ""},
-    {"title": "Mission", "content": "Innovate, Lead, Grow"},
-    {"title": "Metrics", "content": "40% growth"},
-]
+# Build a minimal valid PPTX with one slide containing text.
+# A PPTX is a ZIP with specific OOXML XML files.
 
-pptx_bytes = create_pptx_bytes(slides)
+content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>'''
+
+rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+    Target="ppt/presentation.xml"/>
+</Relationships>'''
+
+presentation = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId2"/>
+  </p:sldIdLst>
+</p:presentation>'''
+
+ppt_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId2"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
+    Target="slides/slide1.xml"/>
+</Relationships>'''
+
+slide1 = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+      <p:grpSpPr/>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+        <p:spPr/>
+        <p:txBody>
+          <a:bodyPr/>
+          <a:p><a:r><a:t>Company Code: XYZ789</a:t></a:r></a:p>
+          <a:p><a:r><a:t>Important info</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>'''
+
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr("[Content_Types].xml", content_types)
+    zf.writestr("_rels/.rels", rels)
+    zf.writestr("ppt/presentation.xml", presentation)
+    zf.writestr("ppt/_rels/presentation.xml.rels", ppt_rels)
+    zf.writestr("ppt/slides/slide1.xml", slide1)
+
+pptx_bytes = buf.getvalue()
 
 with open("/tmp/pitch.pptx", "wb") as f:
     f.write(pptx_bytes)
 
-print("PowerPoint created successfully")
+# Extract text with the helper
+from document.pptx_ooxml import pptx_extract_text
+texts = pptx_extract_text(pptx_bytes)
+print(f"Extracted from {len(texts)} slides")
+for slide_num, slide_texts in texts.items():
+    print(f"  Slide {slide_num}: {slide_texts}")
+
+# Write extracted text to verify
+with open("/tmp/extracted.txt", "w") as f:
+    for slide_texts in texts.values():
+        f.write("\\n".join(slide_texts))
+
+print("PowerPoint created and text extracted successfully")
 """
 
     await backend.aupload_files([("/tmp/create_pptx.py", code.encode())])
     result = await backend.aexecute("python /tmp/create_pptx.py")
     assert result.exit_code == 0, f"Failed: {result.output}"
 
-    # Deterministic VFS verification - PPTX files are ZIP-based (PK magic bytes)
+    # Verify PPTX file
     content = await vfs_read_file(db_pool, "doc_skills", "/tmp/pitch.pptx")
     assert content is not None, "PowerPoint file was not created"
     assert content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
-
-
-@pytest.mark.asyncio
-async def test_powerpoint_extract_text(backend, db_pool, clean_files):
-    """Test: PowerPointSkill.extract_text()"""
-    code = """
-from document.pptx import create_pptx_bytes, pptx_extract_text
-
-slides = [{"title": "Company Code: XYZ789", "content": "Important info"}]
-pptx_bytes = create_pptx_bytes(slides)
-
-with open("/tmp/info.pptx", "wb") as f:
-    f.write(pptx_bytes)
-
-# Extract text
-with open("/tmp/info.pptx", "rb") as f:
-    text = pptx_extract_text(f.read())
-
-with open("/tmp/extracted.txt", "w") as f:
-    f.write(text)
-
-print("Text extracted:", text)
-"""
-
-    await backend.aupload_files([("/tmp/extract_pptx.py", code.encode())])
-    result = await backend.aexecute("python /tmp/extract_pptx.py")
-    assert result.exit_code == 0, f"Failed: {result.output}"
-
-    # Verify PowerPoint was created with correct format
-    pptx_content = await vfs_read_file(db_pool, "doc_skills", "/tmp/info.pptx")
-    assert pptx_content is not None, "PowerPoint file was not created"
-    assert pptx_content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
 
     # Verify extraction worked
     extracted = await vfs_read_file(db_pool, "doc_skills", "/tmp/extracted.txt")
@@ -295,13 +342,13 @@ print("Text extracted:", text)
 
 
 # ============================================================================
-# WORD TESTS (matching word_skill.py)
+# WORD TESTS (helpers/document/docx_ooxml.py)
 # ============================================================================
 
 
 @pytest.mark.asyncio
 async def test_word_create_document(backend, db_pool, clean_files):
-    """Test: WordSkill.create_document()"""
+    """Test: create_docx_bytes() from document.docx_ooxml."""
     code = """
 from document.docx_ooxml import create_docx_bytes
 
@@ -333,7 +380,7 @@ print("Word document created successfully")
 
 @pytest.mark.asyncio
 async def test_word_extract_text(backend, db_pool, clean_files):
-    """Test: WordSkill.extract_text()"""
+    """Test: create_docx_bytes() + docx_to_markdown() from document.docx_ooxml."""
     code = """
 from document.docx_ooxml import create_docx_bytes, docx_to_markdown
 
@@ -377,21 +424,29 @@ print("Text extracted:", text)
 async def test_multi_format_workflow(backend, db_pool, clean_files):
     """Test creating multiple document formats in one workflow."""
     code = """
-from document.xlsx import create_xlsx_bytes
-from document.pdf import create_pdf_bytes
-from document.docx_ooxml import create_docx_bytes
+# Excel - use openpyxl directly (auto-installed by ensure_package)
+from document import ensure_package
+ensure_package("openpyxl")
+from openpyxl import Workbook
+import io
 
-# Create Excel
-xlsx = create_xlsx_bytes(["Product", "Q1", "Q2"], [["Widget", 100, 150], ["Gadget", 200, 250]])
+wb = Workbook()
+ws = wb.active
+ws.title = "Sales"
+ws.append(["Product", "Q1", "Q2"])
+ws.append(["Widget", 100, 150])
+ws.append(["Gadget", 200, 250])
+buf = io.BytesIO()
+wb.save(buf)
 with open("/tmp/sales.xlsx", "wb") as f:
-    f.write(xlsx)
+    f.write(buf.getvalue())
 
-# Create PDF
-pdf = create_pdf_bytes([("Sales Report", "Quarterly sales summary")])
-with open("/tmp/sales.pdf", "wb") as f:
-    f.write(pdf)
+# PDF - use pdf_create_simple helper
+from document.pdf_creation import pdf_create_simple
+pdf_create_simple("Sales Report", ["Quarterly sales summary"], output_path="/tmp/sales.pdf")
 
-# Create Word
+# Word - use create_docx_bytes helper
+from document.docx_ooxml import create_docx_bytes
 docx = create_docx_bytes(["Executive Summary", "Q1 and Q2 sales exceeded targets."])
 with open("/tmp/sales.docx", "wb") as f:
     f.write(docx)
