@@ -8,32 +8,31 @@
 [![Security: Bandit](https://img.shields.io/badge/security-bandit-yellow.svg)](https://bandit.readthedocs.io/)
 [![SBOM: CycloneDX](https://img.shields.io/badge/SBOM-CycloneDX-blue.svg)](https://cyclonedx.org/)
 
-Production-ready Python sandbox with PostgreSQL-backed virtual filesystem and document processing helpers for LangGraph agents.
+Production-ready Python sandbox implementing the [DeepAgents](https://github.com/mayflower/deepagents) `SandboxBackendProtocol`, with PostgreSQL-backed virtual filesystem and document processing helpers.
 
 ## Overview
 
-Mayflower Sandbox provides secure, isolated Python code execution with persistent file storage, designed for LangChain and LangGraph applications. Execute untrusted Python code, process documents (Word, Excel, PowerPoint, PDF), and maintain persistent state across sessions—all with complete thread isolation.
+Mayflower Sandbox provides secure, isolated Python and shell execution with persistent file storage. It implements the `SandboxBackendProtocol` and `BackendProtocol` interfaces from DeepAgents, making it a drop-in backend for any DeepAgents-based application. Execute untrusted Python code via Pyodide WebAssembly, run shell commands via BusyBox WASM, process documents (Word, Excel, PowerPoint, PDF), and maintain persistent state across sessions -- all with complete thread isolation.
 
 ## Key Features
 
-- ✅ **Secure Python Execution** - Pyodide WebAssembly sandbox with configurable network access
-- ✅ **Shell Execution** - BusyBox WASM sandbox with pipe support (`echo | cat | grep`)
-- ✅ **Persistent Virtual Filesystem** - PostgreSQL-backed storage (20MB file limit per file)
-- ✅ **Document Processing Helpers** - Built-in helpers for Word, Excel, PowerPoint, and PDF
-- ✅ **Stateful Execution** - Variables and state persist across executions and restarts
-- ✅ **Thread Isolation** - Complete isolation between users/sessions via `thread_id`
-- ✅ **LangChain Integration** - All tools extend `BaseTool` for seamless LangGraph integration
-- ✅ **DeepAgents Integration** - `SandboxBackendProtocol` adapter for DeepAgents framework
-- ✅ **HITL Support** - Human-in-the-Loop approval for destructive operations (CopilotKit integration)
-- ✅ **HTTP File Server** - Download files via REST API
-- ✅ **Automatic Cleanup** - Configurable session expiration (180 days default)
+- **Secure Python Execution** -- Pyodide WebAssembly sandbox with configurable network access
+- **Shell Execution** -- BusyBox WASM sandbox with pipe support (`echo | cat | grep`)
+- **Persistent Virtual Filesystem** -- PostgreSQL-backed storage (20MB per file)
+- **Document Processing** -- Built-in helpers for Word, Excel, PowerPoint, and PDF
+- **Stateful Execution** -- Variables and state persist across executions and restarts
+- **Thread Isolation** -- Complete isolation between users/sessions via `thread_id`
+- **DeepAgents Integration** -- Implements `SandboxBackendProtocol` and `BackendProtocol`
+- **Skills & MCP** -- Install Claude Skills and bind MCP servers as typed Python code
+- **Worker Pool** -- 70-95% faster execution by keeping Pyodide loaded in memory
+- **Automatic Cleanup** -- Configurable session expiration (180 days default)
 
 ## Quick Start
 
 ### Installation
 
 ```bash
-# Install Deno (required for Pyodide)
+# Install Deno (required for Pyodide and BusyBox WASM)
 curl -fsSL https://deno.land/x/install/install.sh | sh
 
 # Install package
@@ -44,290 +43,119 @@ createdb mayflower_test
 psql -d mayflower_test -f migrations/001_sandbox_schema.sql
 ```
 
-See [Installation Guide](docs/getting-started/installation.md) for detailed setup instructions.
-
 ### Basic Usage
 
 ```python
 import asyncpg
-from mayflower_sandbox.tools import create_sandbox_tools
-from langgraph.prebuilt import create_react_agent
-from langchain_anthropic import ChatAnthropic
+from mayflower_sandbox import MayflowerSandboxBackend
 
-# Setup database
 db_pool = await asyncpg.create_pool(
     host="localhost",
     database="mayflower_test",
     user="postgres",
-    password="postgres"
+    password="postgres",
 )
-
-# Create tools for a specific user
-tools = create_sandbox_tools(db_pool, thread_id="user_123")
-
-# Create LangGraph agent
-llm = ChatAnthropic(model="claude-sonnet-4.5")
-agent = create_react_agent(llm, tools)
-
-# Use the agent
-result = await agent.ainvoke({
-    "messages": [("user", "Create a CSV file and calculate the sum")]
-})
-```
-
-See [Quick Start Guide](docs/getting-started/quickstart.md) for a complete tutorial.
-
-## Documentation
-
-### Getting Started
-- **[Installation Guide](docs/getting-started/installation.md)** - Install and configure Mayflower Sandbox
-- **[Quick Start](docs/getting-started/quickstart.md)** - Get started in 5 minutes
-- **[Examples](docs/user-guide/examples.md)** - Complete working examples
-
-### Reference
-- **[Tools Reference](docs/user-guide/tools.md)** - Documentation for the 12 LangChain tools
-- **[Helpers Reference](docs/user-guide/helpers.md)** - Document processing helpers (Word, Excel, PowerPoint, PDF)
-- **[HITL Guide](#human-in-the-loop-hitl-approval)** - Human-in-the-Loop approval for destructive operations
-- **[Advanced Features](docs/advanced/stateful-execution.md)** - Stateful execution, file server, cleanup
-- **[Worker Pool](docs/advanced/worker-pool.md)** - Performance optimization with worker pool
-- **[MCP Integration](docs/advanced/mcp.md)** - Model Context Protocol support
-- **[API Reference](docs/reference/api.md)** - Low-level API documentation
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│ LangGraph Agent              OR      DeepAgents     │
-│ ├─ ExecutePythonTool                 Framework      │
-│ ├─ RunPythonFileTool          ┌──────────────────┐  │
-│ ├─ ExecuteCodeTool            │ MayflowerSandbox │  │
-│ ├─ FileReadTool               │ Backend          │  │
-│ ├─ FileWriteTool              │ (implements      │  │
-│ ├─ FileEditTool               │  SandboxBackend  │  │
-│ ├─ FileListTool               │  Protocol)       │  │
-│ ├─ FileDeleteTool             └──────────────────┘  │
-│ ├─ FileGlobTool                                     │
-│ └─ FileGrepTool                                     │
-└──────────────────┬──────────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────────┐
-│ Mayflower Sandbox                                   │
-│ ├─ SandboxExecutor (VFS + Pyodide integration)     │
-│ ├─ ShellExecutor (BusyBox WASM + pipes)            │
-│ ├─ VirtualFilesystem (PostgreSQL storage)          │
-│ ├─ Helper Modules (auto-loaded into VFS)           │
-│ ├─ SandboxManager (Session lifecycle)              │
-│ └─ CleanupJob (Automatic expiration)               │
-└──────────────────┬──────────────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────────────┐
-│ Infrastructure                                      │
-│ ├─ PostgreSQL (Persistent storage)                 │
-│ ├─ Deno + Pyodide (Python execution)               │
-│ └─ Deno + BusyBox WASM (Shell execution)           │
-└─────────────────────────────────────────────────────┘
-```
-
-## The 12 Tools
-
-Mayflower Sandbox provides 12 LangChain tools:
-
-### Code Execution Tools
-
-1. **ExecutePythonTool** (`python_run`) - Execute Python code directly via tool parameter
-   - Best for: Small code snippets, simple calculations, quick operations
-   - Code passed as tool parameter (subject to serialization limits)
-
-2. **RunPythonFileTool** (`python_run_file`) - Execute existing Python files from VFS
-   - Best for: Re-running scripts, organized multi-file projects
-   - Reads and executes .py files already stored in VFS
-
-3. **ExecuteCodeTool** (`python_run_prepared`) - Execute code from graph state (state-based extraction)
-   - Best for: Large/complex code (20+ lines), subplots, multi-step analysis
-   - Solves AG-UI/LangGraph tool parameter serialization issues
-   - LLM generates code, stores in graph state, tool extracts and executes
-   - **Use this for complex visualizations and large code blocks**
-
-### File Management Tools
-
-4. **FileReadTool** (`file_read`) - Read files from PostgreSQL VFS
-5. **FileWriteTool** (`file_write`) - Write files to PostgreSQL VFS (20MB limit, HITL approval)
-6. **FileEditTool** (`file_edit`) - Edit files by replacing unique strings
-7. **FileListTool** (`file_list`) - List files with optional prefix filtering
-8. **FileDeleteTool** (`file_delete`) - Delete files from VFS (HITL approval required)
-
-### File Search Tools
-
-9. **FileGlobTool** (`file_glob`) - Find files matching glob patterns
-10. **FileGrepTool** (`file_grep`) - Search file contents with regex
-
-### Skills & MCP Tools (Code Mode)
-
-11. **SkillInstallTool** (`skill_install`) - Install Claude Skills into sandbox
-12. **MCPBindHttpTool** (`mcp_bind_http`) - Bind Streamable HTTP MCP servers
-
-**Code Mode Pattern:** MCP tools are converted to **typed local Python code** rather than tool-call tokens. This follows [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode/) approach—LLMs write Python code that calls typed functions with IDE-style autocompletion, improving batching and context efficiency.
-
-```python
-# After binding an MCP server, LLM writes code like:
-from servers.deepwiki import read_wiki_structure
-result = await read_wiki_structure(repoName="langchain-ai/langchain")
-```
-
-See [MCP Integration Guide](docs/advanced/mcp.md) for detailed documentation.
-
-### When to Use Which Execution Tool?
-
-**Use `python_run`** for:
-- Simple calculations and data processing
-- Code under ~10 lines
-- Quick operations where code fits comfortably in tool parameters
-
-**Use `python_run_file`** for:
-- Re-running previously created scripts
-- Organized multi-file projects
-- Scripts stored permanently in VFS
-
-**Use `python_run_prepared`** for:
-- Complex visualizations with subplots
-- Large code blocks (20+ lines)
-- Multi-step data analysis pipelines
-- When you encounter "missing required parameter" errors with `python_run`
-- Any code too large for tool parameter serialization
-
-**State-Based Code Execution Pattern (`python_run_prepared`):**
-
-The `python_run_prepared` tool solves a critical issue with LangGraph/AG-UI: when LLMs try to pass large code blocks through tool parameters, the serialization layer can drop or truncate them, causing "missing required parameter" errors.
-
-How it works:
-1. LLM generates Python code (automatically stored in graph state's `pending_code` field)
-2. LLM calls `python_run_prepared(file_path="/tmp/viz.py", description="Create subplot visualization")`
-3. Tool extracts code from state, saves to VFS, and executes
-4. Code is cleared from state after successful execution
-
-This pattern enables complex visualizations and large-scale data processing without serialization limits.
-
-## DeepAgents Backend
-
-Mayflower Sandbox provides a `SandboxBackendProtocol` adapter for the [DeepAgents](https://github.com/mayflower/deepagents) framework.
-
-### LangChain Tools vs DeepAgents Backend
-
-Mayflower Sandbox offers two integration options:
-
-| Feature | LangChain Tools (12 tools) | DeepAgents Backend |
-|---------|---------------------------|-------------------|
-| Execute Python code | `python_run` | `execute("python script.py")` |
-| Run .py files from VFS | `python_run_file` | `execute("python script.py")` |
-| State-based execution | `python_run_prepared` | ❌ |
-| Execute shell commands | ❌ | `execute("shell cmd")` |
-| Read files | `file_read` | `read()` |
-| Write files | `file_write` | `write()` |
-| Edit files | `file_edit` | `edit()` |
-| List files | `file_list` | `ls_info()` |
-| Delete files | `file_delete` | ❌ |
-| Glob search | `file_glob` | `glob_info()` |
-| Grep search | `file_grep` | `grep_raw()` |
-| Batch upload | ❌ | `upload_files()` |
-| Batch download | ❌ | `download_files()` |
-| Skills | `skill_install` | via SkillsMiddleware |
-| MCP servers | `mcp_bind_http` | ❌ |
-
-**Use LangChain Tools** for LangGraph agents with full features (MCP, state-based execution).
-
-**Use DeepAgents Backend** when integrating with DeepAgents framework (shell execution, batch operations, SkillsMiddleware).
-
-### Skills in DeepAgents
-
-Skills are NOT part of the `SandboxBackendProtocol` interface. Instead, DeepAgents handles skills via `SkillsMiddleware`, which uses the backend's existing file operations:
-
-1. Skills are directories containing a `SKILL.md` file with YAML frontmatter
-2. `SkillsMiddleware` scans for skills using `backend.ls_info()` and `backend.download_files()`
-3. Skill documentation is injected into the system prompt
-4. **Skill scripts execute via `backend.execute()`** - Python via `python script.py`, shell otherwise
-
-Since Mayflower's backend implements all required methods, it fully supports DeepAgents skills including executable scripts:
-
-```python
-from deepagents.middleware.skills import SkillsMiddleware
-from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
-
-backend = MayflowerSandboxBackend(db_pool, thread_id="user_123")
-
-# Upload a skill with a Python helper script
-await backend.aupload_files([
-    ("/skills/data-analysis/SKILL.md", b"""---
-name: data-analysis
-description: Analyze CSV data with statistical methods
----
-# Data Analysis Skill
-
-## Usage
-Run the analysis script:
-```
-python /skills/data-analysis/analyze.py /tmp/data.csv
-```
-
-Or use shell utilities directly:
-```
-cat /tmp/data.csv | grep "pattern" | wc -l
-```
-"""),
-    ("/skills/data-analysis/analyze.py", b'''
-import sys
-print(f"Analyzing: {sys.argv[1]}")
-# Analysis code...
-'''),
-])
-
-# SkillsMiddleware discovers skills via ls_info/download_files
-middleware = SkillsMiddleware(backend=backend, sources=["/skills/"])
-
-# Execution:
-# - Python scripts: backend.execute("python /path/to/script.py arg1 arg2")
-# - Shell commands: backend.execute("cat file | grep pattern")
-```
-
-### SandboxBackendProtocol Methods
-
-| Method | Async Version | Description |
-|--------|---------------|-------------|
-| `execute(command)` | `aexecute()` | Run shell commands or `python script.py` |
-| `read(path, offset, limit)` | `aread()` | Read file with line numbers |
-| `write(path, content)` | `awrite()` | Create new file (fails if exists) |
-| `edit(path, old, new)` | `aedit()` | Replace string in file |
-| `ls_info(path)` | `als_info()` | List directory |
-| `glob_info(pattern, path)` | `aglob_info()` | Find files by pattern |
-| `grep_raw(pattern, path)` | `agrep_raw()` | Search file contents |
-| `upload_files(files)` | `aupload_files()` | Batch upload |
-| `download_files(paths)` | `adownload_files()` | Batch download |
-
-### Usage
-
-```python
-import asyncpg
-from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
-
-db_pool = await asyncpg.create_pool(...)
 
 backend = MayflowerSandboxBackend(
     db_pool,
     thread_id="user_123",
-    allow_net=False,      # Network access for pip
-    stateful=True,        # Preserve Python state
-    timeout_seconds=60.0
+    allow_net=False,
+    stateful=True,
+    timeout_seconds=60.0,
 )
 
-# Shell commands
-result = await backend.aexecute("echo hello | grep hello")
-result = await backend.aexecute("cat /tmp/file.txt > /tmp/copy.txt")
-
-# Python scripts (auto-detected and executed via Pyodide)
+# Execute Python
 result = await backend.aexecute("python /tmp/script.py")
-result = await backend.aexecute("python3 /tmp/script.py arg1 arg2")
+print(result.output, result.exit_code)
+
+# Execute shell commands
+result = await backend.aexecute("echo hello | grep hello")
+
+# File operations
+await backend.awrite("/tmp/data.csv", "name,value\nfoo,42")
+content = await backend.aread("/tmp/data.csv")
+files = await backend.als_info("/tmp")
 ```
 
-### Shell Features
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ DeepAgents Framework                                    │
+│ ├─ ToolCallContentMiddleware  (routes code to backend)  │
+│ ├─ SkillsMiddleware           (discovers & loads skills)│
+│ └─ CompositeBackend           (routes paths to backends)│
+└──────────────────┬──────────────────────────────────────┘
+                   │ SandboxBackendProtocol
+┌──────────────────▼──────────────────────────────────────┐
+│ MayflowerSandboxBackend                                 │
+│ ├─ execute()    → routes to Pyodide or BusyBox          │
+│ ├─ read/write/edit/ls_info/glob_info/grep_raw           │
+│ └─ upload_files/download_files                          │
+│                                                         │
+│ PostgresBackend (file operations only)                  │
+│ └─ Can be used standalone or in CompositeBackend routes │
+├─────────────────────────────────────────────────────────┤
+│ Core Engine                                             │
+│ ├─ SandboxExecutor   (VFS + Pyodide integration)        │
+│ ├─ ShellExecutor     (BusyBox WASM + pipes)             │
+│ ├─ VirtualFilesystem (PostgreSQL storage)               │
+│ ├─ Helper Modules    (auto-loaded into VFS)             │
+│ ├─ SandboxManager    (session lifecycle)                │
+│ └─ CleanupJob        (automatic expiration)             │
+├─────────────────────────────────────────────────────────┤
+│ Infrastructure                                          │
+│ ├─ PostgreSQL  (persistent storage)                     │
+│ ├─ Deno + Pyodide    (Python execution)                 │
+│ └─ Deno + BusyBox WASM (shell execution)                │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Backend API
+
+### SandboxBackendProtocol Methods
+
+`MayflowerSandboxBackend` implements the full `SandboxBackendProtocol` interface. Every method has both sync and async variants (`method()` / `amethod()`).
+
+| Method | Description |
+|--------|-------------|
+| `execute(command)` | Run shell commands or `python script.py` |
+| `read(path, offset, limit)` | Read file with line numbers |
+| `write(path, content)` | Create new file (fails if exists) |
+| `edit(path, old, new)` | Replace string in file |
+| `ls_info(path)` | List directory |
+| `glob_info(pattern, path)` | Find files by pattern |
+| `grep_raw(pattern, path)` | Search file contents |
+| `upload_files(files)` | Batch upload `list[tuple[path, bytes]]` |
+| `download_files(paths)` | Batch download |
+
+### Command Routing
+
+`execute()` automatically detects the command type:
+
+| Pattern | Routed to |
+|---------|-----------|
+| `python script.py` / `python3 script.py arg1` | Pyodide (file-based) |
+| `python -c "print('hello')"` | Pyodide (inline) |
+| `__PYTHON__\n<code>` sentinel | Pyodide (direct, used by ToolCallContentMiddleware) |
+| Everything else | BusyBox WASM shell |
+
+### PostgresBackend (File-Only)
+
+`PostgresBackend` implements `BackendProtocol` for file operations without execution. Use it standalone or as a route in `CompositeBackend`:
+
+```python
+from deepagents.backends import CompositeBackend, StateBackend
+from mayflower_sandbox import PostgresBackend
+
+# Persistent storage for /memories/, in-memory for everything else
+composite = CompositeBackend(
+    default=StateBackend(runtime),
+    routes={"/memories/": PostgresBackend(db_pool, thread_id)},
+)
+```
+
+## Shell Execution
 
 BusyBox WASM provides Unix shell execution:
 
@@ -340,185 +168,86 @@ Each pipe stage runs in a separate Deno Worker with SharedArrayBuffer ring buffe
 
 ## Document Processing Helpers
 
-Built-in helpers for document processing (automatically available in sandbox):
+Built-in helpers are automatically available inside the sandbox at `/home/pyodide/`:
 
-- **Word (DOCX)** - Extract text, read tables, find/replace, add comments, convert to markdown
-- **Excel (XLSX)** - Read/write cells, convert to dictionaries, detect formulas
-- **PowerPoint (PPTX)** - Extract text, replace content, inventory slides, generate HTML
-- **PDF** - Merge, split, extract text, rotate pages, get metadata
+- **Word (DOCX)** -- Extract text, read tables, find/replace, add comments, convert to markdown
+- **Excel (XLSX)** -- Read/write cells, convert to dictionaries, detect formulas
+- **PowerPoint (PPTX)** -- Extract text, replace content, inventory slides, generate HTML
+- **PDF** -- Merge, split, extract text, rotate pages, get metadata
 
-See [Helpers Reference](docs/helpers.md) for complete documentation.
+## Skills & MCP Integration
 
-## Human-in-the-Loop (HITL) Approval
-
-Mayflower Sandbox supports Human-in-the-Loop approval for destructive operations, allowing users to confirm actions before they execute. This is particularly important for file deletions and modifications.
-
-### How HITL Works
-
-The HITL mechanism uses CopilotKit's `renderAndWaitForResponse` pattern to create a seamless approval workflow:
-
-```
-┌─────────┐      ┌─────────┐      ┌──────────┐      ┌──────┐
-│   LLM   │─────▶│ Backend │─────▶│ Frontend │─────▶│ User │
-└─────────┘      └─────────┘      └──────────┘      └──────┘
-     │                │                  │               │
-     │ 1. Call tool   │                  │               │
-     │ (no approval)  │                  │               │
-     ├───────────────▶│                  │               │
-     │                │ 2. Return        │               │
-     │                │ "WAIT_FOR_USER_  │               │
-     │                │ APPROVAL"        │               │
-     │◀───────────────┤                  │               │
-     │                │ 3. Trigger       │               │
-     │                │ approval dialog  │               │
-     │                ├─────────────────▶│               │
-     │                │                  │ 4. Show UI    │
-     │                │                  ├──────────────▶│
-     │                │                  │ 5. User       │
-     │                │                  │ approves      │
-     │                │                  │◀──────────────┤
-     │                │ 6. Re-call with │               │
-     │                │ approved=true   │               │
-     │                │◀─────────────────┤               │
-     │ 7. Execute     │                  │               │
-     │ & return       │                  │               │
-     │◀───────────────┤─────────────────▶│──────────────▶│
-```
-
-### Implementation Example
-
-**Backend (file_delete.py):**
+Skills and MCP servers are managed via direct function calls in `mayflower_sandbox.integrations`:
 
 ```python
-class FileDeleteInput(BaseModel):
-    file_path: str = Field(description="Path to the file to delete")
-    approved: bool = Field(
-        default=False,
-        description="User approval status for deletion"
-    )
+from mayflower_sandbox.integrations import install_skill, add_http_mcp_server
 
-class FileDeleteTool(SandboxTool):
-    async def _arun(
-        self,
-        file_path: str,
-        approved: bool = False,
-        run_manager: AsyncCallbackManagerForToolRun | None = None,
-    ) -> str:
-        # HITL: If not approved, return special message
-        if not approved:
-            return "WAIT_FOR_USER_APPROVAL"
+# Install a Claude Skill from GitHub
+skill = await install_skill(db_pool, thread_id, "github:anthropics/skills/algorithmic-art")
 
-        # User approved - proceed with deletion
-        vfs = VirtualFilesystem(self.db_pool, thread_id)
-        deleted = await vfs.delete_file(file_path)
-        return f"Successfully deleted: {file_path}"
+# Bind an MCP server -- generates typed Python wrappers
+server = await add_http_mcp_server(
+    db_pool, thread_id,
+    name="deepwiki",
+    url="https://mcp.deepwiki.com/mcp",
+)
 ```
 
-**Frontend (CopilotKit integration):**
+After binding, the LLM writes Python code that calls typed functions (no tool-call tokens):
 
-```typescript
-useCopilotAction({
-    name: 'file_delete',
-    description: 'Delete a file. Requires user approval.',
-    parameters: [
-        {
-            name: 'file_path',
-            type: 'string',
-            required: true,
-        },
-        // NOTE: 'approved' parameter intentionally NOT defined here
-        // CopilotKit detects it's missing and triggers approval flow
-    ],
-    renderAndWaitForResponse: ({ args, respond }) => {
-        // Show confirmation dialog
-        // When user approves: respond({ approved: true })
-        // When user cancels: respond({ approved: false })
-    },
-});
+```python
+# Generated wrapper code, available inside the sandbox:
+from servers.deepwiki import read_wiki_structure
+result = await read_wiki_structure(repoName="langchain-ai/langchain")
 ```
 
-### Key Design Patterns
+This follows the [Code Mode](https://blog.cloudflare.com/code-mode/) pattern -- LLMs write typed Python instead of tool calls, improving batching and context efficiency.
 
-1. **Parameter Omission Detection**
-   - Frontend omits `approved` parameter from tool definition
-   - Backend requires `approved` parameter with `default=False`
-   - CopilotKit detects the mismatch and triggers approval flow
+In DeepAgents, skills are discovered via `SkillsMiddleware` which uses the backend's file operations (`ls_info`, `download_files`) and executes scripts via `backend.execute()`.
 
-2. **Special Return Value**
-   - `"WAIT_FOR_USER_APPROVAL"` signals approval needed
-   - Not an error—it's a control flow signal
+## Performance
 
-3. **Stateless Re-invocation**
-   - Frontend re-calls tool with `approved` parameter
-   - No server-side state needed
+### Worker Pool (Default in Production)
 
-4. **Security by Default**
-   - Default is always `approved=False` (safe)
-   - Destructive operations require explicit user consent
+The worker pool keeps Pyodide loaded in memory for **70-95% faster execution**:
 
-### Tools with HITL Support
+| Operation | Without Pool | With Pool | Improvement |
+|-----------|-------------|-----------|-------------|
+| Simple code | 4.5s | **0.5s** | 89% faster |
+| With numpy | 4.5s | **0.2s** | 96% faster |
+| With matplotlib | 14s | **1.5s** | 89% faster |
 
-- **FileDeleteTool** - Requires approval before deleting files
-- **FileWriteTool** - Requires approval for overwriting existing files
+```bash
+export PYODIDE_USE_POOL=true          # Enable (recommended)
+export PYODIDE_POOL_SIZE=3            # Number of workers (default: 3)
+export PYODIDE_WORKER_REQUEST_LIMIT=1000  # Recycle after N requests
+export PYODIDE_HEALTH_CHECK_INTERVAL=30   # Health check seconds
+```
 
-### Adding HITL to Your Tools
+### Legacy Mode
 
-To add HITL approval to any tool:
-
-1. Add `approved: bool = Field(default=False)` to input schema
-2. Check approval status at the start of `_arun()`
-3. Return `"WAIT_FOR_USER_APPROVAL"` if not approved
-4. Omit `approved` from frontend parameter definition
-5. Implement `renderAndWaitForResponse` in frontend
+Without the pool (`PYODIDE_USE_POOL=false`), each execution starts a fresh Deno process (~4-5s per execution).
 
 ## Testing
 
-### Quick Start with Docker
-
 ```bash
-# Setup PostgreSQL in Docker and run migrations
+# Setup PostgreSQL and run migrations
 make db-setup
 
-# Install dependencies and run tests
-uv venv
-uv pip install -e ".[dev]"
+# Install dependencies
+uv venv && uv pip install -e ".[dev]"
+
+# Run tests
 POSTGRES_PORT=5433 uv run pytest -v
 
-# When done, stop database
-make db-down
-```
-
-### Manual Testing
-
-```bash
-# Start database
-make db-up
-
-# Run all tests
-pytest -v
-
-# Run specific test suites
-pytest tests/test_executor.py -v
-pytest tests/test_pptx_helpers.py -v
+# Run quality checks
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run mypy src/ --ignore-missing-imports
 
 # Stop database
 make db-down
 ```
-
-### Test Status
-
-**Core Tests:** ✅ All passing
-- Executor: 12/12
-- Filesystem: 12/12
-- Manager: 9/9
-- Tools: 10/10
-- Session Recovery: 16/16
-
-**Helper Tests:** ✅ All passing
-- PPTX: 5/5
-- XLSX: 4/4
-- Word: 4/4
-- PDF: 4/4
 
 ## Configuration
 
@@ -534,91 +263,26 @@ export POSTGRES_PORT=5432
 
 ### Database Schema
 
-- **sandbox_sessions** - Session tracking (180-day expiration)
-- **sandbox_filesystem** - File storage (20MB per file limit)
-- **sandbox_session_bytes** - Stateful execution support
-
-See [API Reference](docs/api.md#database-schema) for complete schema.
-
-## Performance
-
-### Worker Pool (Enabled by default in production)
-
-The worker pool provides **70-95% performance improvement** by keeping Pyodide loaded in memory:
-
-| Operation | Without Pool | With Pool | Improvement |
-|-----------|--------------|-----------|-------------|
-| Simple code | 4.5s | **0.5s** | 89% faster |
-| With numpy | 4.5s | **0.2s** | 96% faster |
-| With matplotlib | 14s | **1.5s** | 89% faster |
-
-**Enable worker pool:**
-```python
-import os
-os.environ["PYODIDE_USE_POOL"] = "true"  # Enable (recommended)
-
-# Optional configuration
-os.environ["PYODIDE_POOL_SIZE"] = "3"  # Number of workers (default: 3)
-os.environ["PYODIDE_WORKER_REQUEST_LIMIT"] = "1000"  # Recycle after N requests
-os.environ["PYODIDE_HEALTH_CHECK_INTERVAL"] = "30"  # Health check seconds
-```
-
-**How it works:**
-- 3 long-running Deno workers keep Pyodide + micropip loaded
-- Round-robin load balancing across workers
-- Automatic health monitoring and recovery
-- Session state preserved between executions
-
-See [Worker Pool Documentation](docs/WORKER_POOL.md) for details.
-
-### Legacy Mode (One-shot execution)
-
-When worker pool is disabled (`PYODIDE_USE_POOL=false`):
-- File operations: < 50ms
-- Python execution: ~4-5s per execution (loads Pyodide each time)
-- Helper loading: < 100ms
-- Thread isolation: 100% via PostgreSQL
+- **sandbox_sessions** -- Session tracking (180-day expiration)
+- **sandbox_filesystem** -- File storage (20MB per file limit)
+- **sandbox_session_bytes** -- Stateful execution support
 
 ## Security
 
-- ✅ WebAssembly sandboxing (Pyodide for Python, BusyBox WASM for shell)
-- ✅ Worker-based isolation (each shell pipeline stage in separate Deno Worker)
-- ✅ Path validation (prevents directory traversal)
-- ✅ Size limits (20MB per file)
-- ✅ Thread isolation (complete separation via PostgreSQL)
-- ✅ Configurable network access
-- ✅ Automatic session expiration
-- ✅ HITL approval for destructive operations (file deletion, overwrites)
-
-## Development
-
-```bash
-# Setup
-git clone <repo>
-cd mayflower-sandbox
-pip install -e ".[dev]"
-
-# Run linters
-ruff check src/ tests/
-ruff format src/ tests/
-
-# Run tests
-pytest -v
-```
+- WebAssembly sandboxing (Pyodide for Python, BusyBox WASM for shell)
+- Worker-based isolation (each shell pipeline stage in separate Deno Worker)
+- Path validation (prevents directory traversal)
+- Size limits (20MB per file)
+- Thread isolation (complete separation via PostgreSQL)
+- Configurable network access
+- Automatic session expiration
 
 ## License
 
 MIT
 
-## Support
-
-- **Documentation**: See [docs/](docs/) directory
-- **Issues**: [GitHub Issues](https://github.com/mayflower/mayflower-sandbox/issues)
-
 ## Related Projects
 
-- [DeepAgents](https://github.com/mayflower/deepagents) - Advanced agent framework with sandbox support
-- [LangChain](https://github.com/langchain-ai/langchain) - Framework for LLM applications
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Build stateful agents
-- [Pyodide](https://pyodide.org/) - Python in WebAssembly
-- [BusyBox](https://busybox.net/) - Unix utilities in a single executable
+- [DeepAgents](https://github.com/mayflower/deepagents) -- Agent framework with `SandboxBackendProtocol`
+- [Pyodide](https://pyodide.org/) -- Python in WebAssembly
+- [BusyBox](https://busybox.net/) -- Unix utilities in a single executable

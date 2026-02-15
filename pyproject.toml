@@ -117,6 +117,10 @@ ignore = [
     "S108",   # /tmp paths in tests refer to sandbox VFS, not host filesystem
     "S311",   # pseudo-random generator ok in tests
 ]
+# Examples use /tmp paths for sandbox VFS demonstrations
+"examples/**" = [
+    "S108",   # /tmp paths in examples refer to sandbox VFS, not host filesystem
+]
 # Document helpers run in Pyodide sandbox - /tmp paths are VFS, not host filesystem
 "**/helpers/document/*.py" = [
     "S108",   # /tmp paths are sandbox VFS paths, not host filesystem

@@ -1,10 +1,10 @@
 """
-Complete end-to-end example: LangGraph agent with Mayflower Sandbox tools.
+Example: Using MayflowerSandboxBackend directly.
 
-This example demonstrates how to create a LangGraph ReAct agent that can:
-- Execute Python code in a sandbox
-- Read and write files
-- List and delete files
+This example demonstrates the SandboxBackendProtocol interface:
+- Execute Python code in a Pyodide sandbox
+- Execute shell commands via BusyBox WASM
+- Read, write, and list files
 - All with persistent PostgreSQL storage
 
 Run this example:
@@ -15,14 +15,12 @@ import asyncio
 import os
 
 import asyncpg
-from langchain_anthropic import ChatAnthropic
-from langgraph.prebuilt import create_react_agent
 
-from mayflower_sandbox.tools import create_sandbox_tools
+from mayflower_sandbox import MayflowerSandboxBackend
 
 
 async def main():
-    """Run the example agent."""
+    """Run the example."""
     # 1. Setup PostgreSQL connection
     db_pool = await asyncpg.create_pool(
         host=os.getenv("POSTGRES_HOST", "localhost"),
@@ -32,60 +30,59 @@ async def main():
         port=int(os.getenv("POSTGRES_PORT", "5432")),
     )
 
-    # 2. Create sandbox tools for a specific user/thread
+    # 2. Create sandbox backend for a specific user/thread
     thread_id = "demo_user_123"
-    tools = create_sandbox_tools(db_pool, thread_id=thread_id)
+    backend = MayflowerSandboxBackend(
+        db_pool,
+        thread_id=thread_id,
+        allow_net=False,
+        stateful=True,
+        timeout_seconds=60.0,
+    )
 
-    print(f"Created {len(tools)} tools for thread: {thread_id}")
-    for tool in tools:
-        print(f"  - {tool.name}: {tool.description.split(chr(10))[0]}")
+    print(f"Created sandbox backend for thread: {thread_id}")
 
-    # 3. Create LangGraph ReAct agent
-    llm = ChatAnthropic(model="claude-sonnet-4.5", temperature=0)
-    agent = create_react_agent(llm, tools)
+    # 3. Write a Python script via the backend
+    print("\n--- Writing a script ---")
+    await backend.awrite(
+        "/tmp/analysis.py",
+        """\
+import csv
+import io
 
-    # 4. Example interactions
-    examples = [
-        {
-            "name": "Data Analysis",
-            "query": """Create a CSV file with sample sales data and analyze it:
-1. Write a file /tmp/sales.csv with columns: date, product, quantity, price
-2. Add 5 rows of sample data
-3. Read the file back and calculate total revenue
-4. Save the analysis to /tmp/analysis.txt""",
-        },
-        {
-            "name": "List Files",
-            "query": "List all files in the /tmp directory",
-        },
-        {
-            "name": "File Operations",
-            "query": "Read the analysis file and then create a summary in /tmp/summary.txt",
-        },
-        {
-            "name": "Cleanup",
-            "query": "Delete all files in /tmp/",
-        },
-    ]
+data = "name,value\\nfoo,42\\nbar,17\\nbaz,99"
+reader = csv.DictReader(io.StringIO(data))
+rows = list(reader)
+total = sum(int(r["value"]) for r in rows)
+print(f"Total: {total}")
+print(f"Rows: {len(rows)}")
+""",
+    )
+    print("Wrote /tmp/analysis.py")
 
-    for i, example in enumerate(examples, 1):
-        print(f"\n{'=' * 70}")
-        print(f"Example {i}: {example['name']}")
-        print(f"{'=' * 70}")
-        print(f"Query: {example['query']}\n")
+    # 4. Execute the script
+    print("\n--- Executing Python script ---")
+    result = await backend.aexecute("python /tmp/analysis.py")
+    print(f"Exit code: {result.exit_code}")
+    print(f"Output: {result.output}")
 
-        # Run the agent
-        result = agent.invoke({"messages": [("user", example["query"])]})
+    # 5. Run a shell command
+    print("\n--- Running shell command ---")
+    result = await backend.aexecute("echo 'hello world' | grep hello")
+    print(f"Output: {result.output}")
 
-        # Print response
-        last_message = result["messages"][-1]
-        print(f"Response: {last_message.content}\n")
+    # 6. List files
+    print("\n--- Listing files ---")
+    files = await backend.als_info("/tmp")
+    for f in files:
+        print(f"  {f['path']} ({f['size']} bytes)")
 
-        # Optional: pause between examples
-        if i < len(examples):
-            input("Press Enter to continue to next example...")
+    # 7. Read a file back
+    print("\n--- Reading file ---")
+    content = await backend.aread("/tmp/analysis.py")
+    print(content[:200])
 
-    # 5. Cleanup
+    # 8. Cleanup
     await db_pool.close()
     print("\nDemo complete!")
 
