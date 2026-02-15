@@ -42,6 +42,13 @@ class PyodideWorker:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._read_buffer = b""
 
+    def _split_at_newline(self, data: bytes) -> bytes:
+        """Split data at the first newline, stash remainder in buffer, return the line."""
+        newline_pos = data.find(b"\n")
+        if newline_pos < len(data) - 1:
+            self._read_buffer = data[newline_pos + 1 :]
+        return data[: newline_pos + 1]
+
     async def _read_large_line(self, reader: asyncio.StreamReader) -> bytes:
         """Read a line with support for large responses (up to 10MB)."""
         chunks = []
@@ -53,13 +60,8 @@ class PyodideWorker:
             chunks.append(self._read_buffer)
             total_size += len(self._read_buffer)
             self._read_buffer = b""
-            # Check if the leftover already contains a full line
-            full_data = chunks[0]
-            if b"\n" in full_data:
-                newline_pos = full_data.find(b"\n")
-                if newline_pos < len(full_data) - 1:
-                    self._read_buffer = full_data[newline_pos + 1 :]
-                return full_data[: newline_pos + 1]
+            if b"\n" in chunks[0]:
+                return self._split_at_newline(chunks[0])
 
         while True:
             chunk = await reader.read(8192)
@@ -72,14 +74,8 @@ class PyodideWorker:
             if total_size > max_size:
                 raise RuntimeError("Response exceeded 10MB limit")
 
-            # Check if we've read a complete line
             if b"\n" in chunk:
-                full_data = b"".join(chunks)
-                newline_pos = full_data.find(b"\n")
-                # Store extra data for next call
-                if newline_pos < len(full_data) - 1:
-                    self._read_buffer = full_data[newline_pos + 1 :]
-                return full_data[: newline_pos + 1]
+                return self._split_at_newline(b"".join(chunks))
 
         return b"".join(chunks)
 
