@@ -26,6 +26,9 @@ cd mayflower-sandbox
 # Install package
 pip install -e .
 
+# Install with DeepAgents integration (optional)
+pip install -e ".[deepagents]"
+
 # Install development dependencies (optional)
 pip install -e ".[dev]"
 ```
@@ -77,6 +80,6 @@ pytest tests/test_executor.py -v
 
 ## Next Steps
 
-- [Quick Start Guide](quickstart.md) - Get started with basic usage
-- [Tools Reference](../user-guide/tools.md) - Learn about the 12 LangChain tools
-- [Helpers Reference](../user-guide/helpers.md) - Document processing helpers
+- [Quick Start Guide](quickstart.md) - Get started with the Backend API
+- [Backend API Reference](../reference/backend-api.md) - Full method signatures
+- [Document Helpers](../reference/document-helpers.md) - Document processing helpers

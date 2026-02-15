@@ -1,7 +1,7 @@
 site_name: Mayflower Sandbox
-site_description: Production-ready Python sandbox with PostgreSQL-backed virtual filesystem for LangGraph agents
-repo_url: https://github.com/mayflower/mayflower-sandbox
-repo_name: mayflower/mayflower-sandbox
+site_description: Production-ready Python sandbox implementing the DeepAgents SandboxBackendProtocol
+repo_url: https://github.com/mayflower/mayflower_sandbox
+repo_name: mayflower/mayflower_sandbox
 
 theme:
   name: material
@@ -51,15 +51,18 @@ nav:
   - Getting Started:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quickstart.md
-  - User Guide:
-      - Tools Reference: user-guide/tools.md
-      - Document Helpers: user-guide/helpers.md
-      - Examples: user-guide/examples.md
-  - Advanced:
-      - Stateful Execution: advanced/stateful-execution.md
-      - Worker Pool: advanced/worker-pool.md
-      - MCP Integration: advanced/mcp.md
+  - How-To Guides:
+      - Document Processing: how-to/document-processing.md
+      - Skills & MCP: how-to/skills-and-mcp.md
+      - Deployment: how-to/deployment.md
+      - Troubleshooting: how-to/troubleshooting.md
   - Reference:
-      - API Reference: reference/api.md
-  - Development:
-      - Architecture: development/architecture.md
+      - Backend API: reference/backend-api.md
+      - Configuration: reference/configuration.md
+      - Document Helpers: reference/document-helpers.md
+      - Internal API: reference/api.md
+  - Architecture:
+      - System Design: architecture/system-design.md
+      - Command Routing: architecture/command-routing.md
+      - Security Model: architecture/security-model.md
+      - Performance: architecture/performance.md

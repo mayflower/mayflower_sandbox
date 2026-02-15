@@ -1,6 +1,8 @@
-# API Reference
+# Internal API Reference
 
-Low-level API documentation for Mayflower Sandbox components.
+Low-level API documentation for Mayflower Sandbox internal components.
+
+For the primary backend API (`MayflowerSandboxBackend`, `PostgresBackend`), see [Backend API Reference](backend-api.md).
 
 ## SandboxExecutor
 
@@ -296,47 +298,6 @@ cleanup.stop()
 
 Stop periodic cleanup.
 
-## Tools
-
-### create_sandbox_tools()
-
-```python
-from mayflower_sandbox.tools import create_sandbox_tools
-
-tools = create_sandbox_tools(
-    db_pool: asyncpg.Pool,
-    thread_id: str | None = None,
-    include_tools: list[str] | None = None
-) -> list[SandboxTool]
-```
-
-Create sandbox tools for LangGraph integration.
-
-**Parameters:**
-- `db_pool` (asyncpg.Pool): PostgreSQL connection pool
-- `thread_id` (str | None): Thread ID for session isolation. If None, tools will read thread_id from callback context at runtime (recommended for LangGraph).
-- `include_tools` (list[str] | None): List of tool names to include (default: all tools)
-
-**Available tool names:**
-- `python_run`, `python_run_file`, `python_run_prepared`
-- `file_read`, `file_write`, `file_list`, `file_delete`, `file_edit`
-- `file_glob`, `file_grep`
-- `skill_install`, `mcp_bind_http`
-
-**Returns list of (12 tools by default):**
-- `ExecutePythonTool` - Execute Python code directly
-- `RunPythonFileTool` - Execute .py files from VFS
-- `ExecuteCodeTool` - State-based execution for large code
-- `FileReadTool` - Read files from VFS
-- `FileWriteTool` - Write files to VFS
-- `FileEditTool` - Edit files by string replacement
-- `FileListTool` - List files with prefix filtering
-- `FileDeleteTool` - Delete files from VFS
-- `FileGlobTool` - Find files with glob patterns
-- `FileGrepTool` - Search file contents with regex
-- `SkillInstallTool` - Install Claude Skills
-- `MCPBindHttpTool` - Bind MCP servers
-
 ## Database Schema
 
 ### sandbox_sessions
@@ -387,7 +348,7 @@ from document.xlsx_helpers import xlsx_read_cells
 from document.pdf_manipulation import pdf_merge
 ```
 
-See [Helpers Reference](../user-guide/helpers.md) for complete documentation.
+See [Document Helpers Reference](document-helpers.md) for complete documentation.
 
 ## Error Handling
 
@@ -400,7 +361,7 @@ All operations can raise:
 
 ## Related Documentation
 
-- [Tools Reference](../user-guide/tools.md) - The 12 LangChain tools
-- [Advanced Features](../advanced/stateful-execution.md) - Stateful execution, file server, cleanup
-- [MCP Integration](../advanced/mcp.md) - Skills and MCP server binding
-- [Examples](../user-guide/examples.md) - Complete working examples
+- [Backend API Reference](backend-api.md) - MayflowerSandboxBackend and PostgresBackend
+- [Configuration](configuration.md) - Environment variables and database schema
+- [Document Helpers](document-helpers.md) - Document processing helper functions
+- [Skills & MCP](../how-to/skills-and-mcp.md) - Skills and MCP server binding
