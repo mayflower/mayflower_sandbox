@@ -90,7 +90,7 @@ except Exception:  # pragma: no cover - optional dependency
         pass
 
     # SandboxBackendProtocol is the same as BackendProtocol for fallback
-    SandboxBackendProtocol = BackendProtocol  # type: ignore[misc]
+    SandboxBackendProtocol = BackendProtocol  # type: ignore[misc, assignment]
 
 
 from .filesystem import FileNotFoundError, InvalidPathError, VirtualFilesystem  # noqa: E402
@@ -511,7 +511,7 @@ class PostgresBackend(BackendProtocol):
                 responses.append(FileUploadResponse(path=path, error="permission_denied"))
             except Exception as e:
                 logger.error(f"Unexpected error uploading file {path}: {e}", exc_info=True)
-                responses.append(FileUploadResponse(path=path, error="write_error"))
+                responses.append(FileUploadResponse(path=path, error="permission_denied"))
             else:
                 responses.append(FileUploadResponse(path=normalized, error=None))
         return responses
