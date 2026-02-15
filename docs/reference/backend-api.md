@@ -191,16 +191,16 @@ composite = CompositeBackend(
 
 ## Return Types
 
-All return types are dataclasses:
+These types are defined in the [DeepAgents protocol](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/backends/protocol.py).
 
 ### ExecuteResponse
 
 ```python
 @dataclass
 class ExecuteResponse:
-    output: str = ""          # stdout + stderr combined
-    exit_code: int = 0        # 0 = success
-    truncated: bool = False   # output was truncated
+    output: str                    # combined stdout and stderr
+    exit_code: int | None = None   # 0 = success, non-zero = failure
+    truncated: bool = False        # output was truncated
 ```
 
 ### WriteResult
@@ -210,7 +210,7 @@ class ExecuteResponse:
 class WriteResult:
     error: str | None = None
     path: str | None = None
-    files_update: dict[str, Any] | None = None
+    files_update: dict[str, Any] | None = None  # None for external backends
 ```
 
 ### EditResult
@@ -220,19 +220,20 @@ class WriteResult:
 class EditResult:
     error: str | None = None
     path: str | None = None
-    files_update: dict[str, Any] | None = None
+    files_update: dict[str, Any] | None = None  # None for external backends
     occurrences: int | None = None
 ```
 
 ### FileInfo
 
+`FileInfo` is a `TypedDict`. Only `path` is required; other fields are best-effort.
+
 ```python
-@dataclass
-class FileInfo:
-    path: str = ""
-    is_dir: bool = False
-    size: int = 0
-    modified_at: str = ""
+class FileInfo(TypedDict):
+    path: str                          # required
+    is_dir: NotRequired[bool]
+    size: NotRequired[int]             # bytes
+    modified_at: NotRequired[str]      # ISO timestamp
 ```
 
 ### FileUploadResponse
@@ -240,8 +241,8 @@ class FileInfo:
 ```python
 @dataclass
 class FileUploadResponse:
-    path: str = ""
-    error: str | None = None
+    path: str
+    error: FileOperationError | None = None
 ```
 
 ### FileDownloadResponse
@@ -249,17 +250,31 @@ class FileUploadResponse:
 ```python
 @dataclass
 class FileDownloadResponse:
-    path: str = ""
-    content: bytes | None = b""
-    error: str | None = None
+    path: str
+    content: bytes | None = None
+    error: FileOperationError | None = None
 ```
 
 ### GrepMatch
 
+`GrepMatch` is a `TypedDict`.
+
 ```python
-@dataclass
-class GrepMatch:
-    path: str = ""
-    line: int = 0
-    text: str = ""
+class GrepMatch(TypedDict):
+    path: str
+    line: int     # 1-indexed
+    text: str     # full line content
+```
+
+### FileOperationError
+
+Standardized error codes for file upload/download operations:
+
+```python
+FileOperationError = Literal[
+    "file_not_found",
+    "permission_denied",
+    "is_directory",
+    "invalid_path",
+]
 ```
