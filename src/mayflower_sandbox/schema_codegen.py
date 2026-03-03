@@ -10,8 +10,7 @@ import logging
 import re
 from typing import Any
 
-from datamodel_code_generator import DataModelType, generate
-from datamodel_code_generator.parser.jsonschema import JsonSchemaParser
+from datamodel_code_generator import DataModelType, InputFileType, generate
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ def generate_model_for_tool(
         try:
             generate(
                 json.dumps(schema),
-                input_file_type=JsonSchemaParser,
+                input_file_type=InputFileType.JsonSchema,
                 output_model_type=DataModelType.PydanticV2BaseModel,
                 output=output_path,
                 use_standard_collections=True,
@@ -84,50 +83,54 @@ def generate_model_for_tool(
         return None
 
 
-def generate_models_module(
-    tools: list[dict[str, Any]],
-) -> str:
+def _extract_class_from_model_code(model_code: str) -> tuple[str | None, set[str]]:
     """
-    Generate a complete models.py module with all tool schemas.
+    Extract class definition and imports from generated model code.
 
     Args:
-        tools: List of MCP tool definitions with 'name' and 'inputSchema'
+        model_code: Generated Python code for a Pydantic model
 
     Returns:
-        Complete Python module code string
+        Tuple of (class_definition, imports_needed)
     """
-    # Collect all generated models
-    models: list[str] = []
+    lines = model_code.split("\n")
+    class_lines: list[str] = []
     imports_needed: set[str] = set()
+    in_class = False
 
-    for tool in tools:
-        tool_name = tool.get("name", "")
-        input_schema = tool.get("inputSchema", {})
+    for line in lines:
+        if line.startswith("class "):
+            in_class = True
 
-        if not tool_name or not input_schema:
-            continue
+        if in_class:
+            class_lines.append(line)
+        elif line.startswith("from ") or line.startswith("import "):
+            imports_needed.add(line)
 
-        model_code = generate_model_for_tool(tool_name, input_schema)
-        if model_code:
-            # Extract just the class definition (skip imports)
-            lines = model_code.split("\n")
-            in_class = False
-            class_lines: list[str] = []
+    class_def = "\n".join(class_lines) if class_lines else None
+    return class_def, imports_needed
 
-            for line in lines:
-                if line.startswith("class "):
-                    in_class = True
-                if in_class:
-                    class_lines.append(line)
-                elif line.startswith("from ") or line.startswith("import "):
-                    # Track needed imports
-                    imports_needed.add(line)
 
-            if class_lines:
-                models.append("\n".join(class_lines))
+def _filter_extra_imports(imports_needed: set[str]) -> list[str]:
+    """
+    Filter imports to exclude ones already in module header.
 
-    # Build complete module
-    module_parts = [
+    Args:
+        imports_needed: Set of import statements
+
+    Returns:
+        List of extra imports not in standard header
+    """
+    extra_imports = []
+    for imp in sorted(imports_needed):
+        if "pydantic" not in imp and "typing" not in imp and "__future__" not in imp:
+            extra_imports.append(imp)
+    return extra_imports
+
+
+def _build_module_header() -> list[str]:
+    """Build standard module header."""
+    return [
         '"""',
         "Auto-generated Pydantic models from MCP tool schemas.",
         "",
@@ -142,12 +145,45 @@ def generate_models_module(
         "",
     ]
 
-    # Add any extra imports from generated code
-    for imp in sorted(imports_needed):
-        if "pydantic" not in imp and "typing" not in imp:
-            module_parts.append(imp)
 
-    if imports_needed:
+def generate_models_module(
+    tools: list[dict[str, Any]],
+) -> str:
+    """
+    Generate a complete models.py module with all tool schemas.
+
+    Args:
+        tools: List of MCP tool definitions with 'name' and 'inputSchema'
+
+    Returns:
+        Complete Python module code string
+    """
+    models: list[str] = []
+    all_imports: set[str] = set()
+
+    for tool in tools:
+        tool_name = tool.get("name", "")
+        input_schema = tool.get("inputSchema", {})
+
+        if not tool_name or not input_schema:
+            continue
+
+        model_code = generate_model_for_tool(tool_name, input_schema)
+        if not model_code:
+            continue
+
+        class_def, imports = _extract_class_from_model_code(model_code)
+        if class_def:
+            models.append(class_def)
+        all_imports.update(imports)
+
+    # Build complete module
+    module_parts = _build_module_header()
+
+    # Add extra imports
+    extra_imports = _filter_extra_imports(all_imports)
+    if extra_imports:
+        module_parts.extend(extra_imports)
         module_parts.append("")
 
     # Add all model classes
@@ -156,33 +192,88 @@ def generate_models_module(
     return "\n".join(module_parts)
 
 
+_JSON_TO_PYTHON_TYPE = {
+    "string": "str",
+    "integer": "int",
+    "number": "float",
+    "boolean": "bool",
+    "null": "None",
+    "object": "dict[str, Any]",
+}
+
+
+def _get_union_type(json_types: list, items: dict | None) -> str:
+    """Convert JSON Schema union type to Python union."""
+    types = [_get_python_type(t, items) for t in json_types if t != "null"]
+    has_null = "null" in json_types
+
+    if not has_null:
+        return " | ".join(types)
+    if len(types) == 1:
+        return f"{types[0]} | None"
+    return f"({' | '.join(types)}) | None"
+
+
+def _get_array_type(items: dict | None) -> str:
+    """Convert JSON Schema array type to Python list type."""
+    if not items:
+        return "list[Any]"
+    item_type = _get_python_type(items.get("type", "Any"), items.get("items"))
+    return f"list[{item_type}]"
+
+
 def _get_python_type(json_type: str | list, items: dict | None = None) -> str:
     """Convert JSON Schema type to Python type annotation."""
-    type_map = {
-        "string": "str",
-        "integer": "int",
-        "number": "float",
-        "boolean": "bool",
-        "null": "None",
-        "object": "dict[str, Any]",
-    }
-
     if isinstance(json_type, list):
-        # Union type
-        types = [_get_python_type(t, items) for t in json_type if t != "null"]
-        if "null" in json_type:
-            if len(types) == 1:
-                return f"{types[0]} | None"
-            return f"({' | '.join(types)}) | None"
-        return " | ".join(types)
+        return _get_union_type(json_type, items)
 
     if json_type == "array":
-        if items:
-            item_type = _get_python_type(items.get("type", "Any"), items.get("items"))
-            return f"list[{item_type}]"
-        return "list[Any]"
+        return _get_array_type(items)
 
-    return type_map.get(json_type, "Any")
+    return _JSON_TO_PYTHON_TYPE.get(json_type, "Any")
+
+
+def _build_param_signature(prop_name: str, prop_schema: dict[str, Any], is_required: bool) -> str:
+    """Build a single parameter signature."""
+    prop_type = _get_python_type(
+        prop_schema.get("type", "Any"),
+        prop_schema.get("items"),
+    )
+    if is_required:
+        return f"{prop_name}: {prop_type}"
+    return f"{prop_name}: {prop_type} | None = None"
+
+
+def _build_function_params(
+    properties: dict[str, Any], required: set[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Build function parameters, docs, and kwargs assignment."""
+    params: list[str] = []
+    param_docs: list[str] = []
+    kwargs_assignment: list[str] = []
+
+    for prop_name, prop_schema in properties.items():
+        is_required = prop_name in required
+        params.append(_build_param_signature(prop_name, prop_schema, is_required))
+
+        prop_desc = prop_schema.get("description", "")
+        if prop_desc:
+            param_docs.append(f"        {prop_name}: {prop_desc}")
+
+        kwargs_assignment.append(f"{prop_name}={prop_name}")
+
+    return params, param_docs, kwargs_assignment
+
+
+def _build_docstring(description: str, param_docs: list[str]) -> str:
+    """Build function docstring."""
+    docstring_parts = [f'    """{description}']
+    if param_docs:
+        docstring_parts.append("")
+        docstring_parts.append("    Args:")
+        docstring_parts.extend(param_docs)
+    docstring_parts.append('    """')
+    return "\n".join(docstring_parts)
 
 
 def generate_typed_wrapper(
@@ -206,42 +297,11 @@ def generate_typed_wrapper(
     func_name = _to_snake_case(tool_name)
     class_name = f"{_to_pascal_case(tool_name)}Args"
 
-    # Parse schema properties
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
 
-    # Build function signature
-    params: list[str] = []
-    param_docs: list[str] = []
-    kwargs_assignment: list[str] = []
-
-    for prop_name, prop_schema in properties.items():
-        prop_type = _get_python_type(
-            prop_schema.get("type", "Any"),
-            prop_schema.get("items"),
-        )
-        prop_desc = prop_schema.get("description", "")
-
-        if prop_name in required:
-            params.append(f"{prop_name}: {prop_type}")
-        else:
-            params.append(f"{prop_name}: {prop_type} | None = None")
-
-        if prop_desc:
-            param_docs.append(f"        {prop_name}: {prop_desc}")
-
-        kwargs_assignment.append(f"{prop_name}={prop_name}")
-
-    # Build docstring
-    docstring_parts = [f'    """{description}']
-    if param_docs:
-        docstring_parts.append("")
-        docstring_parts.append("    Args:")
-        docstring_parts.extend(param_docs)
-    docstring_parts.append('    """')
-    docstring = "\n".join(docstring_parts)
-
-    # Build function
+    params, param_docs, kwargs_assignment = _build_function_params(properties, required)
+    docstring = _build_docstring(description, param_docs)
     params_str = ", ".join(params) if params else ""
 
     return f'''

@@ -1,6 +1,8 @@
-# API Reference
+# Internal API Reference
 
-Low-level API documentation for Mayflower Sandbox components.
+Low-level API documentation for Mayflower Sandbox internal components.
+
+For the primary backend API (`MayflowerSandboxBackend`, `PostgresBackend`), see [Backend API Reference](backend-api.md).
 
 ## SandboxExecutor
 
@@ -296,30 +298,6 @@ cleanup.stop()
 
 Stop periodic cleanup.
 
-## Tools
-
-### create_sandbox_tools()
-
-```python
-from mayflower_sandbox.tools import create_sandbox_tools
-
-tools = create_sandbox_tools(
-    db_pool: asyncpg.Pool,
-    thread_id: str,
-    allow_net: bool = True,
-    timeout_seconds: float = 120.0
-) -> list[BaseTool]
-```
-
-Create all 5 LangChain tools.
-
-Returns list of:
-- `ExecutePythonTool`
-- `FileReadTool`
-- `FileWriteTool`
-- `FileListTool`
-- `FileDeleteTool`
-
 ## Database Schema
 
 ### sandbox_sessions
@@ -370,7 +348,7 @@ from document.xlsx_helpers import xlsx_read_cells
 from document.pdf_manipulation import pdf_merge
 ```
 
-See [Helpers Reference](../user-guide/helpers.md) for complete documentation.
+See [Document Helpers Reference](document-helpers.md) for complete documentation.
 
 ## Error Handling
 
@@ -383,6 +361,7 @@ All operations can raise:
 
 ## Related Documentation
 
-- [Tools Reference](../user-guide/tools.md) - The 10 LangChain tools
-- [Advanced Features](../advanced/stateful-execution.md) - Stateful execution, file server, cleanup
-- [Examples](../user-guide/examples.md) - Complete working examples
+- [Backend API Reference](backend-api.md) - MayflowerSandboxBackend and PostgresBackend
+- [Configuration](configuration.md) - Environment variables and database schema
+- [Document Helpers](document-helpers.md) - Document processing helper functions
+- [Skills & MCP](../how-to/skills-and-mcp.md) - Skills and MCP server binding

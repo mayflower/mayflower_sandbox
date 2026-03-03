@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, SBOM & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+          uv pip install cyclonedx-bom build
+
+      - name: Build package
+        run: |
+          uv run python -m build
+
+      # Generate Python SBOM from installed environment
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          uv run cyclonedx-py environment \
+            --of JSON \
+            -o sbom.cdx.json \
+            --mc-type library \
+            --pyproject pyproject.toml \
+            .venv
+
+      # Generate broad SBOM with Syft (catches non-Python artifacts: .wasm, .ts)
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom-syft.cdx.json
+
+      # Extract version from tag safely via environment variable
+      - name: Extract version
+        id: version
+        env:
+          GIT_REF: ${{ github.ref }}
+        run: echo "version=${GIT_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ steps.version.outputs.version }}"
+          body: |
+            ## Mayflower Sandbox v${{ steps.version.outputs.version }}
+
+            See [CHANGELOG.md](https://github.com/mayflower/mayflower_sandbox/blob/main/CHANGELOG.md) for details.
+
+            ### Artifacts
+            - `sbom.cdx.json` -- CycloneDX SBOM (Python dependencies)
+            - `sbom-syft.cdx.json` -- CycloneDX SBOM (full repository scan)
+
+            ### Install
+            ```bash
+            pip install mayflower-sandbox==${{ steps.version.outputs.version }}
+            ```
+          files: |
+            sbom.cdx.json
+            sbom-syft.cdx.json
+            dist/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

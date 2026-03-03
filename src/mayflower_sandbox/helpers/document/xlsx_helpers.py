@@ -16,7 +16,7 @@ try:
     from . import ensure_package
 except ImportError:
     # Fallback for when called from document.xlsx_helpers directly in Pyodide
-    from document import ensure_package
+    from document import ensure_package  # type: ignore[no-redef]
 
 
 def xlsx_get_sheet_names(xlsx_bytes: bytes) -> list[str]:
@@ -141,10 +141,10 @@ def xlsx_to_dict(
     if has_header:
         headers = rows[0]
         data_rows = rows[1:]
-        return [dict(zip(headers, row)) for row in data_rows]
+        return [dict(zip(headers, row, strict=False)) for row in data_rows]
     else:
         # Use column indices as keys
-        return [dict(enumerate(row)) for row in rows]
+        return [dict(enumerate(row)) for row in rows]  # type: ignore[arg-type]  # int keys intentional
 
 
 def xlsx_has_formulas(xlsx_bytes: bytes) -> dict[str, list[str]]:
@@ -218,7 +218,7 @@ def xlsx_read_with_formulas(xlsx_bytes: bytes) -> dict[str, dict[str, Any]]:
     # Load with cached values
     wb_values = load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
 
-    result = {"values": {}, "formulas": {}}
+    result: dict[str, dict[str, dict[str, Any]]] = {"values": {}, "formulas": {}}
 
     for sheet_name in wb_formulas.sheetnames:
         ws_formulas = wb_formulas[sheet_name]

@@ -16,6 +16,9 @@ NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
 
+# File paths within pptx archive
+_PRESENTATION_XML = "ppt/presentation.xml"
+
 
 def unzip_pptx_like(pptx_bytes: bytes) -> dict[str, bytes]:
     """Extract all files from a pptx (zip archive)."""
@@ -151,6 +154,31 @@ def pptx_replace_text(pptx_bytes: bytes, replacements: dict[str, dict[str, str]]
     return zip_pptx_like(parts)
 
 
+def _extract_slide_number(target: str) -> int | None:
+    """Extract slide number from a relationship target like 'slides/slide1.xml'."""
+    try:
+        basename = target.split("/")[-1]
+        return int(basename.replace("slide", "").replace(".xml", ""))
+    except (IndexError, ValueError):
+        return None
+
+
+def _build_slide_to_rid(ids, relmap: dict) -> dict[int, str]:
+    """Build mapping of slide number -> relationship ID."""
+    slide_to_rid: dict[int, str] = {}
+    for sld in ids:
+        rid = sld.get(f"{{{NS['r']}}}id")
+        if rid not in relmap:
+            continue
+        target = relmap[rid].get("Target")
+        if target is None:
+            continue
+        slide_num = _extract_slide_number(target)
+        if slide_num is not None:
+            slide_to_rid[slide_num] = rid
+    return slide_to_rid
+
+
 def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
     """
     Rearrange slides in PowerPoint presentation.
@@ -172,14 +200,14 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
     """
     parts = unzip_pptx_like(pptx_bytes)
 
-    if "ppt/presentation.xml" not in parts:
+    if _PRESENTATION_XML not in parts:
         return pptx_bytes
 
     try:
-        pres = ET.fromstring(parts["ppt/presentation.xml"])
-        sldIdLst = pres.find(".//p:sldIdLst", NS)
+        pres = ET.fromstring(parts[_PRESENTATION_XML])
+        slide_id_list = pres.find(".//p:sldIdLst", NS)
 
-        if sldIdLst is None:
+        if slide_id_list is None:
             return pptx_bytes
 
         # Load relationships to map rId -> slide file
@@ -188,37 +216,22 @@ def pptx_rearrange(pptx_bytes: bytes, new_order: list[int]) -> bytes:
             return pptx_bytes
 
         rels = ET.fromstring(parts[rels_path])
-        relmap = {}
-        for rel in rels.findall(".//Relationship"):
-            relmap[rel.get("Id")] = rel
+        relmap = {rel.get("Id"): rel for rel in rels.findall(".//Relationship")}
 
         # Get current slide IDs
-        ids = sldIdLst.findall("./p:sldId", NS)
+        ids = slide_id_list.findall("./p:sldId", NS)
         if len(ids) != len(new_order):
             return pptx_bytes
 
-        # Build mapping of slide number -> rId
-        slide_to_rid = {}
-        for sld in ids:
-            rid = sld.get(f"{{{NS['r']}}}id")
-            if rid in relmap:
-                target = relmap[rid].get("Target")
-                # Extract slide number from target like "slides/slide1.xml"
-                try:
-                    # Get basename and extract number
-                    basename = target.split("/")[-1]  # slide1.xml
-                    slide_num = int(basename.replace("slide", "").replace(".xml", ""))
-                    slide_to_rid[slide_num] = rid
-                except (IndexError, ValueError):
-                    continue
+        slide_to_rid = _build_slide_to_rid(ids, relmap)
 
         # Reorder by updating the rId references
         for i, sld in enumerate(ids):
-            new_slide_num = new_order[i]
-            if new_slide_num in slide_to_rid:
-                sld.set(f"{{{NS['r']}}}id", slide_to_rid[new_slide_num])
+            new_rid = slide_to_rid.get(new_order[i])
+            if new_rid is not None:
+                sld.set(f"{{{NS['r']}}}id", new_rid)
 
-        parts["ppt/presentation.xml"] = ET.tostring(pres, encoding="utf-8", xml_declaration=True)
+        parts[_PRESENTATION_XML] = ET.tostring(pres, encoding="utf-8", xml_declaration=True)
         parts[rels_path] = ET.tostring(rels, encoding="utf-8", xml_declaration=True)
     except (ET.ParseError, KeyError, ValueError):
         return pptx_bytes

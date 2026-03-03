@@ -13,11 +13,11 @@ from mayflower_sandbox.integrations import add_http_mcp_server
 @pytest.mark.asyncio
 async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
     db = await asyncpg.create_pool(
-        database=os.environ.get("PGDATABASE", "mayflower_test"),
-        user=os.environ.get("PGUSER", "postgres"),
-        password=os.environ.get("PGPASSWORD", "postgres"),
-        host=os.environ.get("PGHOST", "localhost"),
-        port=int(os.environ.get("PGPORT", "5433")),
+        database=os.environ.get("POSTGRES_DB", "mayflower_test"),
+        user=os.environ.get("POSTGRES_USER", "postgres"),
+        password=os.environ.get("POSTGRES_PASSWORD", "postgres"),
+        host=os.environ.get("POSTGRES_HOST", "localhost"),
+        port=int(os.environ.get("POSTGRES_PORT", "5432")),
     )
 
     try:
@@ -37,7 +37,13 @@ async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
                 {
                     "name": "echo",
                     "description": "Echo tool",
-                    "inputSchema": {"type": "object"},
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string", "description": "Message to echo"}
+                        },
+                        "required": ["message"],
+                    },
                 }
             ]
 
@@ -62,7 +68,7 @@ async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
             return {"echoed": args}
 
         stub_module = ModuleType("mayflower_mcp")
-        stub_module.call = stub_call
+        stub_module.call = stub_call  # type: ignore[attr-defined]  # dynamic stub module
         monkeypatch.setitem(sys.modules, "mayflower_mcp", stub_module)
 
         ffi_module = ModuleType("pyodide.ffi")
@@ -70,20 +76,45 @@ async def test_mcp_bind_creates_wrapper_and_calls_host(monkeypatch):
         def to_py(value, **_kwargs):
             return value
 
-        ffi_module.to_py = to_py
+        ffi_module.to_py = to_py  # type: ignore[attr-defined]  # dynamic stub module
         pyodide_module = ModuleType("pyodide")
-        pyodide_module.ffi = SimpleNamespace(to_py=to_py)
+        pyodide_module.ffi = SimpleNamespace(to_py=to_py)  # type: ignore[attr-defined]  # dynamic stub module
         monkeypatch.setitem(sys.modules, "pyodide", pyodide_module)
         monkeypatch.setitem(sys.modules, "pyodide.ffi", ffi_module)
 
         vfs = VirtualFilesystem(db, thread_id)
+
+        # Read both generated modules
         tools_entry = await vfs.read_file(f"{server_info['path']}/tools.py")
-        code = tools_entry["content"].decode("utf-8")
+        tools_code = tools_entry["content"].decode("utf-8")
 
-        module = ModuleType("servers.demo.tools")
-        exec(code, module.__dict__)
+        models_entry = await vfs.read_file(f"{server_info['path']}/models.py")
+        models_code = models_entry["content"].decode("utf-8")
 
-        result = await module.echo(message="hello")
+        # Set up the module hierarchy for relative imports to work
+        # Create servers package
+        servers_pkg = ModuleType("servers")
+        servers_pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "servers", servers_pkg)
+
+        # Create servers.demo package
+        demo_pkg = ModuleType("servers.demo")
+        demo_pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "servers.demo", demo_pkg)
+
+        # Create and execute models module
+        models_module = ModuleType("servers.demo.models")
+        models_module.__package__ = "servers.demo"
+        exec(models_code, models_module.__dict__)
+        monkeypatch.setitem(sys.modules, "servers.demo.models", models_module)
+
+        # Create and execute tools module
+        tools_module = ModuleType("servers.demo.tools")
+        tools_module.__package__ = "servers.demo"
+        exec(tools_code, tools_module.__dict__)
+        monkeypatch.setitem(sys.modules, "servers.demo.tools", tools_module)
+
+        result = await tools_module.echo(message="hello")
         assert result == {"echoed": {"message": "hello"}}
         assert calls == [("echo", {"message": "hello"})]
     finally:

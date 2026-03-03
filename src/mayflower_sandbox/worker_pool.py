@@ -6,6 +6,7 @@ Provides 70-95% performance improvement over one-shot processes.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -39,12 +40,28 @@ class PyodideWorker:
         self.lock = asyncio.Lock()
         self._request_id = 0
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._read_buffer = b""
+
+    def _split_at_newline(self, data: bytes) -> bytes:
+        """Split data at the first newline, stash remainder in buffer, return the line."""
+        newline_pos = data.find(b"\n")
+        if newline_pos < len(data) - 1:
+            self._read_buffer = data[newline_pos + 1 :]
+        return data[: newline_pos + 1]
 
     async def _read_large_line(self, reader: asyncio.StreamReader) -> bytes:
         """Read a line with support for large responses (up to 10MB)."""
         chunks = []
         total_size = 0
         max_size = 10 * 1024 * 1024  # 10MB
+
+        # Use leftover data from a previous read
+        if self._read_buffer:
+            chunks.append(self._read_buffer)
+            total_size += len(self._read_buffer)
+            self._read_buffer = b""
+            if b"\n" in chunks[0]:
+                return self._split_at_newline(chunks[0])
 
         while True:
             chunk = await reader.read(8192)
@@ -57,16 +74,8 @@ class PyodideWorker:
             if total_size > max_size:
                 raise RuntimeError("Response exceeded 10MB limit")
 
-            # Check if we've read a complete line
             if b"\n" in chunk:
-                # Find the newline and keep only up to it
-                full_data = b"".join(chunks)
-                newline_pos = full_data.find(b"\n")
-                # Put back the extra data
-                if newline_pos < len(full_data) - 1:
-                    extra = full_data[newline_pos + 1 :]
-                    reader._buffer = extra + reader._buffer  # type: ignore[attr-defined]
-                return full_data[: newline_pos + 1]
+                return self._split_at_newline(b"".join(chunks))
 
         return b"".join(chunks)
 
@@ -96,22 +105,32 @@ class PyodideWorker:
         try:
             await asyncio.wait_for(self._wait_ready(), timeout=15.0)
             logger.info(f"[Worker {self.worker_id}] Ready (PID: {self.process.pid})")
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as err:
             logger.error(f"[Worker {self.worker_id}] Initialization timeout")
             await self.kill()
-            raise RuntimeError(f"Worker {self.worker_id} failed to initialize")
+            raise RuntimeError(f"Worker {self.worker_id} failed to initialize") from err
 
     async def _wait_ready(self) -> None:
-        """Wait for worker to print 'Ready' to stderr."""
+        """Wait for worker to print 'Ready' to stderr.
+
+        Uses chunked read() instead of readline() to avoid pipe buffering issues
+        that can cause readline() to block indefinitely.
+        """
         if not self.process or not self.process.stderr:
             raise RuntimeError("Process not started")
 
+        buffer = b""
         while True:
-            line = await self.process.stderr.readline()
-            if not line:
+            # Use read() with small chunks - readline() can block on pipes due to buffering
+            chunk = await self.process.stderr.read(1024)
+            if not chunk:
                 raise RuntimeError("Worker process terminated during initialization")
-            if b"Ready" in line:
-                logger.debug(f"[Worker {self.worker_id}] {line.decode().strip()}")
+            buffer += chunk
+            if b"Ready" in buffer:
+                # Log the ready message
+                for line in buffer.decode(errors="replace").splitlines():
+                    if "Ready" in line:
+                        logger.debug(f"[Worker {self.worker_id}] {line.strip()}")
                 return
 
     async def execute(
@@ -144,26 +163,26 @@ class PyodideWorker:
 
             try:
                 # Build JSON-RPC request
-                request = {
-                    "jsonrpc": "2.0",
-                    "id": self._request_id,
-                    "method": "execute",
-                    "params": {
-                        "code": code,
-                        "thread_id": thread_id,
-                        "stateful": stateful,
-                        "timeout_ms": timeout_ms,
-                    },
+                params: dict[str, Any] = {
+                    "code": code,
+                    "thread_id": thread_id,
+                    "stateful": stateful,
+                    "timeout_ms": timeout_ms,
                 }
 
                 if session_bytes:
-                    request["params"]["session_bytes"] = list(session_bytes)  # type: ignore[index]
+                    params["session_bytes"] = list(session_bytes)
                 if session_metadata:
-                    request["params"]["session_metadata"] = session_metadata  # type: ignore[index]
+                    params["session_metadata"] = session_metadata
                 if files:
-                    request["params"]["files"] = {  # type: ignore[index]
-                        path: list(content) for path, content in files.items()
-                    }
+                    params["files"] = {path: list(content) for path, content in files.items()}
+
+                request: dict[str, Any] = {
+                    "jsonrpc": "2.0",
+                    "id": self._request_id,
+                    "method": "execute",
+                    "params": params,
+                }
 
                 # Send request
                 request_line = json.dumps(request) + "\n"
@@ -185,8 +204,8 @@ class PyodideWorker:
                         self._read_large_line(self.process.stdout),
                         timeout=timeout_ms / 1000.0 + 5.0,
                     )
-                except asyncio.LimitOverrunError:
-                    raise RuntimeError("Response too large (>10MB)")
+                except asyncio.LimitOverrunError as err:
+                    raise RuntimeError("Response too large (>10MB)") from err
 
                 if not response_line:
                     raise RuntimeError("Worker closed stdout")
@@ -227,6 +246,7 @@ class PyodideWorker:
             except asyncio.TimeoutError:
                 return {"status": "timeout", "error": "Health check timeout"}
             except Exception as e:
+                logger.warning("[Worker %d] Health check exception: %s", self.worker_id, e)
                 return {"status": "error", "error": str(e)}
 
     async def shutdown(self) -> None:
@@ -276,6 +296,7 @@ class WorkerPool:
         self.started = False
         self._health_task: asyncio.Task[None] | None = None
         self._allowed_hosts: set[str] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         """Start all workers in the pool."""
@@ -326,6 +347,8 @@ class WorkerPool:
         if not self.started:
             raise RuntimeError("Worker pool not started")
 
+        failures: list[tuple[int, str]] = []
+
         # Try to find idle worker
         for _ in range(self.size):
             worker = self.workers[self.next_worker_idx]
@@ -344,23 +367,30 @@ class WorkerPool:
                     )
                 except Exception as e:
                     logger.error(f"Worker {worker.worker_id} execution failed: {e}")
-                    # Try to restart worker
-                    asyncio.create_task(self._restart_worker(worker))
+                    failures.append((worker.worker_id, str(e)))
+                    # Try to restart worker (store reference to prevent GC)
+                    task = asyncio.create_task(self._restart_worker(worker))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                     # Continue to next worker
 
         # All busy or failed, use next in rotation anyway
         worker = self.workers[self.next_worker_idx]
         self.next_worker_idx = (self.next_worker_idx + 1) % self.size
 
-        return await worker.execute(
-            code=code,
-            thread_id=thread_id,
-            stateful=stateful,
-            session_bytes=session_bytes,
-            session_metadata=session_metadata,
-            files=files,
-            timeout_ms=timeout_ms,
-        )
+        try:
+            return await worker.execute(
+                code=code,
+                thread_id=thread_id,
+                stateful=stateful,
+                session_bytes=session_bytes,
+                session_metadata=session_metadata,
+                files=files,
+                timeout_ms=timeout_ms,
+            )
+        except Exception as e:
+            failures.append((worker.worker_id, str(e)))
+            raise RuntimeError(f"All workers failed. Failures: {failures}") from e
 
     async def _restart_worker(self, worker: PyodideWorker) -> None:
         """Restart a failed worker."""
@@ -425,10 +455,8 @@ class WorkerPool:
         # Cancel health monitoring
         if self._health_task:
             self._health_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._health_task
-            except asyncio.CancelledError:
-                pass
 
         # Shutdown all workers
         await asyncio.gather(*[w.shutdown() for w in self.workers], return_exceptions=True)

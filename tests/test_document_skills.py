@@ -1,46 +1,60 @@
 """
 Comprehensive document processing tests matching maistack skills.
+Uses MayflowerSandboxBackend to execute Python code in the sandbox.
 
-Tests all operations from:
-- excel_skill.py
-- pdf_skill.py
-- powerpoint_skill.py
-- word_skill.py
+Tests all operations from the helpers/document/ package:
+- xlsx_helpers.py  (Excel: openpyxl-based read/write)
+- pdf_creation.py  (PDF: fpdf2-based creation)
+- pdf_manipulation.py (PDF: pypdf-based merge/split/extract)
+- pptx_ooxml.py    (PowerPoint: pure OOXML manipulation)
+- docx_ooxml.py    (Word: pure OOXML creation/extraction)
+
+Test Strategy:
+- All assertions use deterministic VFS verification
+- Execute Python scripts directly via backend.aexecute("python script.py")
+- Verify file existence and format directly in database
 """
 
 import os
-import sys
 
 import asyncpg
 import pytest
 from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 load_dotenv()
 
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
+from mayflower_sandbox.deepagents_backend import MayflowerSandboxBackend
 
-from mayflower_sandbox.tools import create_sandbox_tools
+
+async def vfs_read_file(db_pool, thread_id: str, path: str) -> bytes | None:
+    """Read file content from VFS. Returns None if file doesn't exist."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT content FROM sandbox_filesystem
+            WHERE thread_id = $1 AND file_path = $2
+            """,
+            thread_id,
+            path,
+        )
+        return row["content"] if row else None
+
+
+async def vfs_file_exists(db_pool, thread_id: str, path: str) -> bool:
+    """Check if file exists in VFS."""
+    return await vfs_read_file(db_pool, thread_id, path) is not None
 
 
 @pytest.fixture
 async def db_pool():
     """Create test database connection pool."""
-    db_config = {
-        "host": os.getenv("POSTGRES_HOST", "localhost"),
-        "database": os.getenv("POSTGRES_DB", "mayflower_test"),
-        "user": os.getenv("POSTGRES_USER", "postgres"),
-        "password": os.getenv("POSTGRES_PASSWORD", "postgres"),
-        "port": int(os.getenv("POSTGRES_PORT", "5432")),
-        "min_size": 10,
-        "max_size": 50,
-        "command_timeout": 60,
-    }
-
-    pool = await asyncpg.create_pool(**db_config)
+    pool = await asyncpg.create_pool(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        database=os.getenv("POSTGRES_DB", "mayflower_test"),
+        user=os.getenv("POSTGRES_USER", "postgres"),
+        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+    )
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -56,334 +70,349 @@ async def db_pool():
 
 
 @pytest.fixture
-async def clean_files(db_pool):
-    """Clean files and error history before each test."""
-    async with db_pool.acquire() as conn:
-        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'doc_skills'")
-
-    from mayflower_sandbox.tools.execute import _error_history
-
-    _error_history.clear()
-
-    yield
+async def backend(db_pool):
+    """Create MayflowerSandboxBackend instance."""
+    return MayflowerSandboxBackend(db_pool, thread_id="doc_skills", allow_net=True)
 
 
 @pytest.fixture
-async def agent(db_pool):
-    """Create LangGraph agent with sandbox tools."""
-    tools = create_sandbox_tools(db_pool, thread_id="doc_skills")
-    llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
-    agent = create_agent(llm, tools, checkpointer=MemorySaver())
-    return agent
+async def clean_files(db_pool):
+    """Clean files before each test."""
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM sandbox_filesystem WHERE thread_id = 'doc_skills'")
+    yield
 
 
 # ============================================================================
-# EXCEL TESTS (matching excel_skill.py)
+# EXCEL TESTS (helpers/document/xlsx_helpers.py)
 # ============================================================================
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_excel_create_workbook(agent, clean_files):
-    """Test: ExcelSkill.create_workbook()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create an Excel file at /tmp/sales.xlsx using openpyxl with:
-- Headers: Product, Quantity, Price, Total
-- Row 1: Laptop, 5, 1200, =B2*C2
-- Row 2: Mouse, 25, 30, =B3*C3
-Format headers with bold font and light blue background.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "excel-create"}},
-    )
+@pytest.mark.asyncio
+async def test_excel_create_workbook(backend, db_pool, clean_files):
+    """Test: Create Excel workbook using openpyxl (auto-installed by ensure_package)."""
+    code = """
+from document import ensure_package
+ensure_package("openpyxl")
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "success", "xlsx", "excel"])
+from openpyxl import Workbook
 
+wb = Workbook()
+ws = wb.active
+ws.title = "Sales"
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_excel_read_workbook(agent, clean_files):
-    """Test: ExcelSkill.read_workbook()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create an Excel file at /tmp/data.xlsx with data:
-Headers: Name, Score
-Alice, 95
-Bob, 87
+# Write headers and data
+ws.append(["Product", "Quantity", "Price"])
+ws.append(["Laptop", 5, 1200])
+ws.append(["Mouse", 25, 30])
 
-Then read the Excel file back and tell me Alice's score.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "excel-read"}},
-    )
+import io
+buf = io.BytesIO()
+wb.save(buf)
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "95" in response
+with open("/tmp/sales.xlsx", "wb") as f:
+    f.write(buf.getvalue())
+
+print("Excel file created successfully")
+"""
+
+    await backend.aupload_files([("/tmp/create_excel.py", code.encode())])
+    result = await backend.aexecute("python /tmp/create_excel.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+
+    # Deterministic VFS verification - Excel files are ZIP-based (PK magic bytes)
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.xlsx")
+    assert content is not None, "Excel file was not created"
+    assert len(content) > 100, "Excel file seems too small"
+    assert content[:2] == b"PK", "Excel file should be ZIP-based (OOXML)"
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_excel_extract_text(agent, clean_files):
-    """Test: ExcelSkill.extract_text()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create Excel at /tmp/report.xlsx with text:
-Sheet1: "Q4 Financial Summary"
-A1: Revenue
-A2: $100,000
+@pytest.mark.asyncio
+async def test_excel_read_with_helpers(backend, db_pool, clean_files):
+    """Test: Create Excel then read back with xlsx_to_dict helper."""
+    code = """
+from document import ensure_package
+ensure_package("openpyxl")
 
-Then extract all text content from the Excel file.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "excel-extract"}},
-    )
+from openpyxl import Workbook
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert any(word in response for word in ["revenue", "100", "financial"])
+# Create workbook with data
+wb = Workbook()
+ws = wb.active
+ws.title = "Data"
+ws.append(["Name", "Score"])
+ws.append(["Alice", 95])
+ws.append(["Bob", 87])
 
+import io
+buf = io.BytesIO()
+wb.save(buf)
+xlsx_bytes = buf.getvalue()
 
-# ============================================================================
-# PDF TESTS (matching pdf_skill.py)
-# ============================================================================
+with open("/tmp/data.xlsx", "wb") as f:
+    f.write(xlsx_bytes)
 
+# Read back using the helper
+from document.xlsx_helpers import xlsx_to_dict
+result = xlsx_to_dict(xlsx_bytes, "Data")
+print(f"Read {len(result)} rows")
+print(f"Alice's score: {result[0]['Score']}")
+"""
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_pdf_create(agent, clean_files):
-    """Test: PDFCreator.create_pdf()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a PDF at /tmp/report.pdf using fpdf2 with:
-Title: Q4 Financial Report
-Section 1: Executive Summary - Revenue increased 25%
-Section 2: Key Metrics - Customer growth at 40%""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "pdf-create"}},
-    )
+    await backend.aupload_files([("/tmp/read_excel.py", code.encode())])
+    result = await backend.aexecute("python /tmp/read_excel.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "pdf", "success"])
-
-
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_pdf_extract_text(agent, clean_files):
-    """Test: PDFReader.extract_text()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a PDF at /tmp/test.pdf with text "Secret Code: ALPHA123".
-Then extract and tell me the secret code from the PDF.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "pdf-extract"}, "recursion_limit": 50},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "ALPHA123" in response or "alpha123" in response.lower()
-
-
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_pdf_merge(agent, clean_files):
-    """Test: PDFSkill.merge_pdfs()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Using fpdf2 and pypdf:
-1. Create /tmp/doc1.pdf with text "Page 1 Content"
-2. Create /tmp/doc2.pdf with text "Page 2 Content"
-3. Merge both into /tmp/merged.pdf using pypdf
-4. Confirm the merged PDF was created""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "pdf-merge"}, "recursion_limit": 50},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["merged", "success", "created"])
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/data.xlsx")
+    assert content is not None, "Excel file was not created"
+    assert content[:2] == b"PK", "Excel file should be ZIP-based (OOXML)"
 
 
 # ============================================================================
-# POWERPOINT TESTS (matching powerpoint_skill.py)
+# PDF TESTS (helpers/document/pdf_creation.py, pdf_manipulation.py)
 # ============================================================================
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_powerpoint_create_simple_presentation(agent, clean_files):
-    """Test: PowerPointSkill.create_simple_presentation()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a PowerPoint at /tmp/pitch.pptx using python-pptx with:
-Slide 1: Title "Company Overview 2024"
-Slide 2: Title "Mission" with bullets:
-  - Innovate
-  - Lead
-  - Grow
-Slide 3: Title "Metrics" with text "40% growth""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "pptx-create"}},
-    )
+@pytest.mark.asyncio
+async def test_pdf_create(backend, db_pool, clean_files):
+    """Test: pdf_create_simple() from document.pdf_creation."""
+    code = """
+from document.pdf_creation import pdf_create_simple
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "powerpoint", "presentation", "success"])
+path = pdf_create_simple(
+    "Q4 Financial Report",
+    ["Revenue increased 25%", "Customer growth at 40%"],
+    output_path="/tmp/report.pdf",
+)
 
+print(f"PDF created at {path}")
+"""
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_powerpoint_read_presentation(agent, clean_files):
-    """Test: PowerPointSkill.read_presentation()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a PowerPoint at /tmp/test.pptx with 3 slides:
-Slide 1: "Title Slide"
-Slide 2: "Content Slide"
-Slide 3: "End Slide"
+    await backend.aupload_files([("/tmp/create_pdf.py", code.encode())])
+    result = await backend.aexecute("python /tmp/create_pdf.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
 
-Then read the presentation and tell me how many slides it has.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "pptx-read"}, "recursion_limit": 50},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "3" in response or "three" in response.lower()
+    # Deterministic VFS verification - PDF files start with %PDF
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/report.pdf")
+    assert content is not None, "PDF file was not created"
+    assert content[:4] == b"%PDF", "PDF file should start with %PDF header"
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_powerpoint_extract_text(agent, clean_files):
-    """Test: PowerPointSkill.extract_text()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create PowerPoint at /tmp/info.pptx with:
-Slide 1: Title "Company Code: XYZ789"
+@pytest.mark.asyncio
+async def test_pdf_merge(backend, db_pool, clean_files):
+    """Test: pdf_merge() from document.pdf_manipulation."""
+    code = """
+from document.pdf_creation import pdf_create_simple
+from document.pdf_manipulation import pdf_merge
 
-Then extract all text from the presentation and tell me the company code.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "pptx-extract"}, "recursion_limit": 50},
-    )
+# Create two PDFs
+pdf_create_simple("Page 1", ["Content for page 1"], output_path="/tmp/doc1.pdf")
+pdf_create_simple("Page 2", ["Content for page 2"], output_path="/tmp/doc2.pdf")
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "XYZ789" in response or "xyz789" in response.lower()
+# Read them back
+with open("/tmp/doc1.pdf", "rb") as f1, open("/tmp/doc2.pdf", "rb") as f2:
+    merged = pdf_merge([f1.read(), f2.read()])
+
+with open("/tmp/merged.pdf", "wb") as f:
+    f.write(merged)
+
+print("PDFs merged successfully")
+"""
+
+    await backend.aupload_files([("/tmp/merge_pdf.py", code.encode())])
+    result = await backend.aexecute("python /tmp/merge_pdf.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+
+    # Deterministic VFS verification - all three PDFs should exist
+    for path in ["/tmp/doc1.pdf", "/tmp/doc2.pdf", "/tmp/merged.pdf"]:
+        content = await vfs_read_file(db_pool, "doc_skills", path)
+        assert content is not None, f"{path} was not created"
+        assert content[:4] == b"%PDF", f"{path} should be a valid PDF"
 
 
 # ============================================================================
-# WORD TESTS (matching word_skill.py)
+# POWERPOINT TESTS (helpers/document/pptx_ooxml.py)
 # ============================================================================
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_word_create_document(agent, clean_files):
-    """Test: WordSkill.create_document()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/report.docx using python-docx with:
-Title: Annual Report 2024
-Section 1: Overview - Business performance summary
-Section 2: Achievements:
-  • Revenue growth 35%
-  • Customer satisfaction 95%
-Section 3: Next Steps (numbered list)""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-create"}},
-    )
+@pytest.mark.asyncio
+async def test_powerpoint_create_and_extract(backend, db_pool, clean_files):
+    """Test: Build a minimal PPTX using OOXML, then extract text with pptx_extract_text."""
+    code = """
+import io
+import zipfile
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert any(word in response for word in ["created", "word", "document", "docx", "success"])
+# Build a minimal valid PPTX with one slide containing text.
+# A PPTX is a ZIP with specific OOXML XML files.
+
+content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>'''
+
+rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+    Target="ppt/presentation.xml"/>
+</Relationships>'''
+
+presentation = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId2"/>
+  </p:sldIdLst>
+</p:presentation>'''
+
+ppt_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId2"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
+    Target="slides/slide1.xml"/>
+</Relationships>'''
+
+slide1 = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+      <p:grpSpPr/>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+        <p:spPr/>
+        <p:txBody>
+          <a:bodyPr/>
+          <a:p><a:r><a:t>Company Code: XYZ789</a:t></a:r></a:p>
+          <a:p><a:r><a:t>Important info</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>'''
+
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr("[Content_Types].xml", content_types)
+    zf.writestr("_rels/.rels", rels)
+    zf.writestr("ppt/presentation.xml", presentation)
+    zf.writestr("ppt/_rels/presentation.xml.rels", ppt_rels)
+    zf.writestr("ppt/slides/slide1.xml", slide1)
+
+pptx_bytes = buf.getvalue()
+
+with open("/tmp/pitch.pptx", "wb") as f:
+    f.write(pptx_bytes)
+
+# Extract text with the helper
+from document.pptx_ooxml import pptx_extract_text
+texts = pptx_extract_text(pptx_bytes)
+print(f"Extracted from {len(texts)} slides")
+for slide_num, slide_texts in texts.items():
+    print(f"  Slide {slide_num}: {slide_texts}")
+
+# Write extracted text to verify
+with open("/tmp/extracted.txt", "w") as f:
+    for slide_texts in texts.values():
+        f.write("\\n".join(slide_texts))
+
+print("PowerPoint created and text extracted successfully")
+"""
+
+    await backend.aupload_files([("/tmp/create_pptx.py", code.encode())])
+    result = await backend.aexecute("python /tmp/create_pptx.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+
+    # Verify PPTX file
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/pitch.pptx")
+    assert content is not None, "PowerPoint file was not created"
+    assert content[:2] == b"PK", "PowerPoint file should be ZIP-based (OOXML)"
+
+    # Verify extraction worked
+    extracted = await vfs_read_file(db_pool, "doc_skills", "/tmp/extracted.txt")
+    assert extracted is not None, "Extracted text file was not created"
+    assert b"XYZ789" in extracted, f"Expected company code. Got: {extracted.decode()}"
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_word_read_document(agent, clean_files):
-    """Test: WordSkill.read_document()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a Word document at /tmp/data.docx with:
-Paragraph 1: Project Alpha Status
-Paragraph 2: Completion: 75%
-
-Then read the document and tell me the completion percentage.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-read"}},
-    )
-
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "75" in response
+# ============================================================================
+# WORD TESTS (helpers/document/docx_ooxml.py)
+# ============================================================================
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_word_extract_text(agent, clean_files):
-    """Test: WordSkill.extract_text()"""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create Word document at /tmp/secret.docx with text:
-"Access Code: BETA456"
+@pytest.mark.asyncio
+async def test_word_create_document(backend, db_pool, clean_files):
+    """Test: create_docx_bytes() from document.docx_ooxml."""
+    code = """
+from document.docx_ooxml import create_docx_bytes
 
-Then extract all text from the document and tell me the access code.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "docx-extract"}, "recursion_limit": 50},
-    )
+paragraphs = [
+    "Annual Report 2024",
+    "Overview - Business performance summary",
+    "Achievements:",
+    "Revenue growth 35%",
+    "Customer satisfaction 95%",
+]
 
-    last_message = result["messages"][-1]
-    response = last_message.content
-    assert "BETA456" in response or "beta456" in response.lower()
+docx_bytes = create_docx_bytes(paragraphs)
+
+with open("/tmp/report.docx", "wb") as f:
+    f.write(docx_bytes)
+
+print("Word document created successfully")
+"""
+
+    await backend.aupload_files([("/tmp/create_docx.py", code.encode())])
+    result = await backend.aexecute("python /tmp/create_docx.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+
+    # Deterministic VFS verification - DOCX files are ZIP-based (PK magic bytes)
+    content = await vfs_read_file(db_pool, "doc_skills", "/tmp/report.docx")
+    assert content is not None, "Word document was not created"
+    assert content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
+
+
+@pytest.mark.asyncio
+async def test_word_extract_text(backend, db_pool, clean_files):
+    """Test: create_docx_bytes() + docx_to_markdown() from document.docx_ooxml."""
+    code = """
+from document.docx_ooxml import create_docx_bytes, docx_to_markdown
+
+paragraphs = ["Access Code: BETA456", "Additional info here"]
+docx_bytes = create_docx_bytes(paragraphs)
+
+with open("/tmp/secret.docx", "wb") as f:
+    f.write(docx_bytes)
+
+# Extract text
+with open("/tmp/secret.docx", "rb") as f:
+    text = docx_to_markdown(f.read())
+
+with open("/tmp/extracted.txt", "w") as f:
+    f.write(text)
+
+print("Text extracted:", text)
+"""
+
+    await backend.aupload_files([("/tmp/extract_docx.py", code.encode())])
+    result = await backend.aexecute("python /tmp/extract_docx.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+
+    # Verify Word document was created with correct format
+    docx_content = await vfs_read_file(db_pool, "doc_skills", "/tmp/secret.docx")
+    assert docx_content is not None, "Word document was not created"
+    assert docx_content[:2] == b"PK", "Word document should be ZIP-based (OOXML)"
+
+    # Verify extraction worked
+    extracted = await vfs_read_file(db_pool, "doc_skills", "/tmp/extracted.txt")
+    assert extracted is not None, "Extracted text file was not created"
+    assert b"BETA456" in extracted, f"Expected access code. Got: {extracted.decode()}"
 
 
 # ============================================================================
@@ -391,28 +420,53 @@ Then extract all text from the document and tell me the access code.""",
 # ============================================================================
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
-async def test_multi_format_workflow(agent, clean_files):
+@pytest.mark.asyncio
+async def test_multi_format_workflow(backend, db_pool, clean_files):
     """Test creating multiple document formats in one workflow."""
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                (
-                    "user",
-                    """Create a sales report in multiple formats:
-1. Excel /tmp/sales.xlsx: Headers (Product, Q1, Q2) with 2 data rows
-2. PDF /tmp/sales.pdf: Title "Sales Report" with summary
-3. Word /tmp/sales.docx: Executive summary paragraph
+    code = """
+# Excel - use openpyxl directly (auto-installed by ensure_package)
+from document import ensure_package
+ensure_package("openpyxl")
+from openpyxl import Workbook
+import io
 
-Tell me when all three files are created.""",
-                )
-            ]
-        },
-        config={"configurable": {"thread_id": "multi-format"}, "recursion_limit": 50},
-    )
+wb = Workbook()
+ws = wb.active
+ws.title = "Sales"
+ws.append(["Product", "Q1", "Q2"])
+ws.append(["Widget", 100, 150])
+ws.append(["Gadget", 200, 250])
+buf = io.BytesIO()
+wb.save(buf)
+with open("/tmp/sales.xlsx", "wb") as f:
+    f.write(buf.getvalue())
 
-    last_message = result["messages"][-1]
-    response = last_message.content.lower()
-    assert all(word in response for word in ["excel", "pdf", "word"]) or (
-        "created" in response and "three" in response
-    )
+# PDF - use pdf_create_simple helper
+from document.pdf_creation import pdf_create_simple
+pdf_create_simple("Sales Report", ["Quarterly sales summary"], output_path="/tmp/sales.pdf")
+
+# Word - use create_docx_bytes helper
+from document.docx_ooxml import create_docx_bytes
+docx = create_docx_bytes(["Executive Summary", "Q1 and Q2 sales exceeded targets."])
+with open("/tmp/sales.docx", "wb") as f:
+    f.write(docx)
+
+print("All three documents created successfully")
+"""
+
+    await backend.aupload_files([("/tmp/multi_format.py", code.encode())])
+    result = await backend.aexecute("python /tmp/multi_format.py")
+    assert result.exit_code == 0, f"Failed: {result.output}"
+
+    # Deterministic VFS verification - all three files should exist
+    xlsx = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.xlsx")
+    assert xlsx is not None, "Excel file was not created"
+    assert xlsx[:2] == b"PK", "Excel file should be ZIP-based"
+
+    pdf = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.pdf")
+    assert pdf is not None, "PDF file was not created"
+    assert pdf[:4] == b"%PDF", "PDF file should start with %PDF header"
+
+    docx = await vfs_read_file(db_pool, "doc_skills", "/tmp/sales.docx")
+    assert docx is not None, "Word document was not created"
+    assert docx[:2] == b"PK", "Word document should be ZIP-based"
