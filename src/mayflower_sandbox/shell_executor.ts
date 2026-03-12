@@ -1,16 +1,18 @@
 /**
  * Mayflower Sandbox - Busybox Shell Executor (WASM + VFS)
  *
- * All shell commands run in isolated Deno Workers with BusyBox WASM.
- * VFS files from PostgreSQL are mounted into MEMFS before execution,
- * and modified files are returned to Python for persistence.
+ * Shell workflows are evaluated with POSIX-style precedence for:
+ * - `|` pipelines
+ * - `&&` / `||` AND-OR lists
+ * - `;` sequential lists
  *
- * Pipeline commands (with |) use multiple Workers connected via
- * SharedArrayBuffer ring buffer pipes with Atomics synchronization.
+ * BusyBox `sh -c` is not used because `waitpid`/`fork` are not available in
+ * this environment. Instead, this file parses the shell subset directly and
+ * executes applets against BusyBox WASM modules.
  */
 
 import { parseArgs } from "jsr:@std/cli@1.0.23/parse-args";
-import { fromFileUrl, join, resolve, toFileUrl } from "@std/path";
+import { fromFileUrl, join, resolve, toFileUrl } from "jsr:@std/path@1";
 
 interface ShellExecutionOptions {
   command: string;
@@ -29,7 +31,7 @@ interface ShellExecutionResult {
 
 type BusyboxModule = {
   FS: any;
-  callMain: (args: string[]) => number;  // Returns exit code
+  callMain: (args: string[]) => number;
   quit?: (status: number, toThrow?: unknown) => void;
   print?: (text: string) => void;
   printErr?: (text: string) => void;
@@ -39,112 +41,149 @@ type BusyboxModule = {
   noInitialRun?: boolean;
 };
 
-type BusyboxModuleFactory = (options: Record<string, unknown>) => Promise<BusyboxModule>;
+type BusyboxModuleFactory = (
+  options: Record<string, unknown>,
+) => Promise<BusyboxModule>;
+type FileMap = Record<string, Uint8Array>;
 
 const IGNORE_PREFIXES = ["/dev", "/proc", "/sys"];
+const CONTROL_OPERATORS = new Set(["|", "&&", "||", ";"]);
+const REDIRECT_OPERATORS = new Set([">", ">>", "<"]);
 
-// Shell command parsing types
 interface ParsedCommand {
   argv: string[];
-  redirectOut?: string;  // > file
-  redirectAppend?: string;  // >> file
-  redirectIn?: string;  // < file
+  redirectOut?: string;
+  redirectAppend?: string;
+  redirectIn?: string;
 }
 
-interface ParsedShell {
-  commands: Array<ParsedCommand & { type: "always" | "stop_on_error" | "stop_on_success" }>;
+interface Token {
+  type: "word" | "operator";
+  value: string;
 }
 
-/**
- * Simple shell command parser - handles basic cases without full shell complexity.
- *
- * Limitations:
- * - Does not support pipes (|)
- * - Does not support || (or-chaining)
- * - Does not support subshells ($(...) or backticks)
- * - Does not support variable expansion ($VAR)
- * - Does not support here-documents (<<EOF)
- * - Quoted delimiters (e.g., "&&") may not be handled correctly
- * - Escape sequences within quotes are not processed
- */
-function parseShellCommand(command: string): ParsedShell {
-  const result: ParsedShell = { commands: [] };
+interface SequenceNode {
+  type: "sequence";
+  items: AndOrNode[];
+}
 
-  // Split on && and ; (basic splitting, doesn't handle quotes perfectly)
-  // Use simple split pattern without \s* to avoid ReDoS, trim parts afterward
-  const parts = command.split(/(&&|;)/);
+interface AndOrNode {
+  type: "and_or";
+  first: ExecutableNode;
+  rest: Array<{ operator: "&&" | "||"; right: ExecutableNode }>;
+}
 
-  let i = 0;
-  while (i < parts.length) {
-    const cmdStr = parts[i].trim();
-    if (!cmdStr || cmdStr === "&&" || cmdStr === ";") {
+interface SimpleCommandNode {
+  type: "command";
+  command: ParsedCommand;
+}
+
+interface PipelineNode {
+  type: "pipeline";
+  commands: ParsedCommand[];
+}
+
+type ExecutableNode = SimpleCommandNode | PipelineNode;
+
+interface OutputCapture {
+  stdout: string[];
+  stderr: string[];
+  currentRedirect?: string;
+  redirectBuffer?: string[];
+}
+
+interface StdinState {
+  read: () => number | null;
+}
+
+interface CommandExecutionResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  changedFiles: Array<{ path: string; content: number[] }>;
+}
+
+interface EvaluationState {
+  files: FileMap;
+  stdoutParts: string[];
+  stderrParts: string[];
+  changedFiles: Map<string, Uint8Array>;
+  lastExitCode: number;
+}
+
+interface WorkerExecutionResult {
+  exitCode: number;
+  output: string;
+  stderr: string;
+  createdFiles: Array<{ path: string; content: number[] }>;
+}
+
+function cloneFiles(files: FileMap = {}): FileMap {
+  const cloned: FileMap = {};
+  for (const [path, content] of Object.entries(files)) {
+    cloned[path] = new Uint8Array(content);
+  }
+  return cloned;
+}
+
+function tokenizeShell(command: string): Token[] {
+  const tokens: Token[] = [];
+  let current = "";
+  let inQuote: string | null = null;
+
+  function pushWord(): void {
+    if (current) {
+      tokens.push({ type: "word", value: current });
+      current = "";
+    }
+  }
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+
+    if (inQuote) {
+      current += char;
+      if (char === inQuote) {
+        inQuote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      current += char;
+      inQuote = char;
+      continue;
+    }
+
+    if (char === " " || char === "\t" || char === "\n") {
+      pushWord();
+      continue;
+    }
+
+    const nextTwo = command.slice(i, i + 2);
+    if (nextTwo === "&&" || nextTwo === "||" || nextTwo === ">>") {
+      pushWord();
+      tokens.push({ type: "operator", value: nextTwo });
       i++;
       continue;
     }
 
-    const type = (i > 0 && parts[i - 1] === "&&") ? "stop_on_error" : "always";
-    const parsed = parseSingleCommand(cmdStr);
-    result.commands.push({ ...parsed, type });
-    i++;
+    if (char === "|" || char === ";" || char === ">" || char === "<") {
+      pushWord();
+      tokens.push({ type: "operator", value: char });
+      continue;
+    }
+
+    current += char;
   }
 
-  return result;
+  pushWord();
+  return tokens;
 }
 
-/**
- * Extract the first non-whitespace token from a string.
- * Returns the token or empty string if none found.
- */
-function extractFirstToken(str: string): string {
-  const trimmed = str.trim();
-  const spaceIdx = trimmed.indexOf(" ");
-  return spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
-}
-
-function parseSingleCommand(cmdStr: string): ParsedCommand {
-  const result: ParsedCommand = { argv: [] };
-  let remaining = cmdStr.trim();
-
-  // >> append redirection (check first since >> contains >)
-  const appendIdx = remaining.lastIndexOf(">>");
-  if (appendIdx >= 0) {
-    const afterRedirect = remaining.slice(appendIdx + 2).trim();
-    const target = extractFirstToken(afterRedirect);
-    if (target) {
-      result.redirectAppend = target;
-      remaining = remaining.slice(0, appendIdx).trim();
-    }
-  }
-
-  // > output redirection (only if no append)
-  if (!result.redirectAppend) {
-    const outIdx = remaining.lastIndexOf(">");
-    if (outIdx >= 0) {
-      const afterRedirect = remaining.slice(outIdx + 1).trim();
-      const target = extractFirstToken(afterRedirect);
-      if (target) {
-        result.redirectOut = target;
-        remaining = remaining.slice(0, outIdx).trim();
-      }
-    }
-  }
-
-  // < input redirection
-  const inIdx = remaining.indexOf("<");
-  if (inIdx >= 0) {
-    const afterRedirect = remaining.slice(inIdx + 1).trim();
-    const target = extractFirstToken(afterRedirect);
-    if (target) {
-      result.redirectIn = target;
-      // Remove the redirection from remaining
-      const targetStart = remaining.indexOf(target, inIdx);
-      const targetEnd = targetStart + target.length;
-      remaining = (remaining.slice(0, inIdx) + " " + remaining.slice(targetEnd)).trim();
-    }
-  }
-
-  result.argv = parseArgv(remaining);
-  return result;
+function parseWord(raw: string): string {
+  const parsed = parseArgv(raw);
+  return parsed[0] ?? "";
 }
 
 function parseArgv(str: string): string[] {
@@ -178,6 +217,150 @@ function parseArgv(str: string): string[] {
   return args;
 }
 
+function parseSimpleCommandTokens(tokens: Token[]): ParsedCommand {
+  const result: ParsedCommand = { argv: [] };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type === "operator") {
+      if (!REDIRECT_OPERATORS.has(token.value)) {
+        throw new Error(
+          `Unexpected operator ${token.value} inside simple command`,
+        );
+      }
+
+      const targetToken = tokens[i + 1];
+      if (!targetToken || targetToken.type !== "word") {
+        throw new Error(`Expected redirect target after ${token.value}`);
+      }
+
+      const target = parseWord(targetToken.value);
+      if (!target) {
+        throw new Error(`Expected redirect target after ${token.value}`);
+      }
+
+      if (token.value === ">") {
+        result.redirectOut = target;
+      } else if (token.value === ">>") {
+        result.redirectAppend = target;
+      } else {
+        result.redirectIn = target;
+      }
+
+      i++;
+      continue;
+    }
+
+    result.argv.push(parseWord(token.value));
+  }
+
+  return result;
+}
+
+class ShellParser {
+  constructor(private readonly tokens: Token[], private index = 0) {}
+
+  parse(): SequenceNode {
+    if (this.tokens.length === 0) {
+      return { type: "sequence", items: [] };
+    }
+
+    const items: AndOrNode[] = [this.parseAndOr()];
+    while (this.match(";")) {
+      if (this.isAtEnd()) break;
+      items.push(this.parseAndOr());
+    }
+
+    if (!this.isAtEnd()) {
+      throw new Error(`Unexpected token ${this.peek()?.value ?? ""}`);
+    }
+
+    return { type: "sequence", items };
+  }
+
+  private parseAndOr(): AndOrNode {
+    const first = this.parsePipeline();
+    const rest: Array<{ operator: "&&" | "||"; right: ExecutableNode }> = [];
+
+    while (this.match("&&", "||")) {
+      const operator = this.previous().value as "&&" | "||";
+      rest.push({ operator, right: this.parsePipeline() });
+    }
+
+    return { type: "and_or", first, rest };
+  }
+
+  private parsePipeline(): ExecutableNode {
+    const commands: ParsedCommand[] = [this.parseSimpleCommand().command];
+    while (this.match("|")) {
+      commands.push(this.parseSimpleCommand().command);
+    }
+
+    if (commands.length === 1) {
+      return { type: "command", command: commands[0] };
+    }
+
+    return { type: "pipeline", commands };
+  }
+
+  private parseSimpleCommand(): SimpleCommandNode {
+    const tokens: Token[] = [];
+    while (!this.isAtEnd() && !this.checkControlOperator()) {
+      tokens.push(this.advance());
+    }
+
+    if (tokens.length === 0) {
+      throw new Error(
+        `Expected command before ${this.peek()?.value ?? "end of input"}`,
+      );
+    }
+
+    return {
+      type: "command",
+      command: parseSimpleCommandTokens(tokens),
+    };
+  }
+
+  private checkControlOperator(): boolean {
+    const token = this.peek();
+    return !!token && token.type === "operator" &&
+      CONTROL_OPERATORS.has(token.value);
+  }
+
+  private match(...operators: string[]): boolean {
+    const token = this.peek();
+    if (
+      !token || token.type !== "operator" || !operators.includes(token.value)
+    ) {
+      return false;
+    }
+    this.index++;
+    return true;
+  }
+
+  private advance(): Token {
+    const token = this.tokens[this.index];
+    this.index++;
+    return token;
+  }
+
+  private previous(): Token {
+    return this.tokens[this.index - 1];
+  }
+
+  private peek(): Token | undefined {
+    return this.tokens[this.index];
+  }
+
+  private isAtEnd(): boolean {
+    return this.index >= this.tokens.length;
+  }
+}
+
+export function parseShellExpression(command: string): SequenceNode {
+  return new ShellParser(tokenizeShell(command)).parse();
+}
+
 function isExitStatusError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const name = (err as { name?: string }).name;
@@ -185,16 +368,16 @@ function isExitStatusError(err: unknown): boolean {
   return name === "ExitStatus" || message === "ExitStatus";
 }
 
-// Emscripten errno values
-const ENOENT = 44;  // No such file or directory
-const EEXIST = 20;  // File exists (actually ENOTDIR in some contexts)
-const ENOTDIR = 54; // Not a directory
+const ENOENT = 44;
+const EEXIST = 20;
+const ENOTDIR = 54;
 
 function getErrorCode(err: unknown): string {
-  const info = err as { code?: string; errno?: string | number; name?: string } | undefined;
+  const info = err as
+    | { code?: string; errno?: string | number; name?: string }
+    | undefined;
   if (info?.code) return info.code;
   if (info?.name === "ErrnoError") {
-    // Emscripten ErrnoError - convert numeric errno to string
     const errno = info.errno;
     if (errno === ENOENT || errno === 44) return "ENOENT";
     if (errno === EEXIST || errno === 17) return "EEXIST";
@@ -212,15 +395,21 @@ function ensureParentDir(fs: any, path: string): void {
       fs.mkdirTree(dir);
     } catch (err) {
       const code = getErrorCode(err);
-      // Ignore EEXIST and ENOTDIR (Emscripten errno quirks)
-      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
+      if (
+        code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")
+      ) {
         throw err;
       }
     }
   }
 }
 
-function writeRedirectContent(fs: any, path: string, content: string, append: boolean): void {
+function writeRedirectContent(
+  fs: any,
+  path: string,
+  content: string,
+  append: boolean,
+): void {
   if (append) {
     try {
       const existing = fs.readFile(path, { encoding: "utf8" }) as string;
@@ -228,7 +417,6 @@ function writeRedirectContent(fs: any, path: string, content: string, append: bo
     } catch (err) {
       const code = getErrorCode(err);
       if (code === "ENOENT") {
-        // File doesn't exist yet, create it
         fs.writeFile(path, content);
       } else {
         throw err;
@@ -239,6 +427,18 @@ function writeRedirectContent(fs: any, path: string, content: string, append: bo
   }
 }
 
+function createByteReader(bytes: Uint8Array): () => number | null {
+  let offset = 0;
+  return () => {
+    if (offset >= bytes.length) return null;
+    return bytes[offset++];
+  };
+}
+
+function createDefaultStdinReader(): () => number | null {
+  return () => null;
+}
+
 function handleRedirection(
   module: BusyboxModule,
   cmd: ParsedCommand,
@@ -246,7 +446,8 @@ function handleRedirection(
 ): number {
   if (!output.redirectBuffer) return 0;
 
-  const content = output.redirectBuffer.join("\n") + (output.redirectBuffer.length ? "\n" : "");
+  const content = output.redirectBuffer.join("\n") +
+    (output.redirectBuffer.length ? "\n" : "");
   const path = cmd.redirectOut || cmd.redirectAppend!;
 
   try {
@@ -267,18 +468,37 @@ function executeApplet(
   module: BusyboxModule,
   cmd: ParsedCommand,
   output: OutputCapture,
+  stdinState: StdinState,
+  defaultStdin: () => number | null = createDefaultStdinReader(),
 ): number {
   if (cmd.argv.length === 0) return 0;
 
   let exitCode = 0;
   const hasRedirect = !!(cmd.redirectOut || cmd.redirectAppend);
+  const originalQuit = module.quit;
+  const originalStdin = stdinState.read;
+
+  if (cmd.redirectIn) {
+    try {
+      const inputData = module.FS.readFile(cmd.redirectIn, {
+        encoding: "binary",
+      }) as Uint8Array;
+      stdinState.read = createByteReader(inputData);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      output.stderr.push(`Cannot redirect from ${cmd.redirectIn}: ${errMsg}`);
+      stdinState.read = originalStdin;
+      return 1;
+    }
+  } else {
+    stdinState.read = defaultStdin;
+  }
 
   if (hasRedirect) {
     output.currentRedirect = cmd.redirectOut || cmd.redirectAppend;
     output.redirectBuffer = [];
   }
 
-  const originalQuit = module.quit;
   module.quit = (status: number, toThrow?: unknown) => {
     exitCode = status;
     if (toThrow) throw toThrow;
@@ -286,7 +506,6 @@ function executeApplet(
   };
 
   try {
-    // callMain returns the exit code directly
     const result = module.callMain(["busybox", ...cmd.argv]);
     if (typeof result === "number") {
       exitCode = result;
@@ -295,6 +514,7 @@ function executeApplet(
     if (!isExitStatusError(err)) throw err;
   } finally {
     module.quit = originalQuit;
+    stdinState.read = originalStdin;
   }
 
   if (hasRedirect) {
@@ -305,8 +525,8 @@ function executeApplet(
   return exitCode;
 }
 
-async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
-  const files: Record<string, Uint8Array> = {};
+async function readStdinFiles(): Promise<FileMap> {
+  const files: FileMap = {};
   const chunks: Uint8Array[] = [];
   const buffer = new Uint8Array(8192);
 
@@ -316,7 +536,9 @@ async function readStdinFiles(): Promise<Record<string, Uint8Array>> {
     chunks.push(buffer.slice(0, bytesRead));
   }
 
-  const stdinData = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
+  const stdinData = new Uint8Array(
+    chunks.reduce((acc, chunk) => acc + chunk.length, 0),
+  );
   let offset = 0;
   for (const chunk of chunks) {
     stdinData.set(chunk, offset);
@@ -355,8 +577,9 @@ function ensureDir(fs: any, path: string): void {
       fs.mkdir(current);
     } catch (err) {
       const code = getErrorCode(err);
-      // Ignore EEXIST and ENOTDIR (Emscripten errno quirks)
-      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
+      if (
+        code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")
+      ) {
         throw err;
       }
     }
@@ -369,8 +592,9 @@ function ensureBaseDirs(fs: any): void {
       fs.mkdir(dir);
     } catch (err) {
       const code = getErrorCode(err);
-      // Ignore EEXIST and ENOTDIR (Emscripten sometimes returns ENOTDIR for existing dirs)
-      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
+      if (
+        code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")
+      ) {
         throw err;
       }
     }
@@ -381,7 +605,7 @@ function normalizePath(path: string): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
 
-async function mountFiles(fs: any, files: Record<string, Uint8Array>): Promise<void> {
+async function mountFiles(fs: any, files: FileMap): Promise<void> {
   for (const [path, content] of Object.entries(files)) {
     const normalized = normalizePath(path);
     ensureDir(fs, normalized);
@@ -400,7 +624,9 @@ function statStamp(stat: any): number {
 }
 
 function shouldIgnorePath(path: string): boolean {
-  return IGNORE_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+  return IGNORE_PREFIXES.some((prefix) =>
+    path === prefix || path.startsWith(`${prefix}/`)
+  );
 }
 
 function isSpecialEntry(entry: string): boolean {
@@ -416,7 +642,6 @@ function tryReadDir(fs: any, path: string): string[] {
     return fs.readdir(path) as string[];
   } catch (err) {
     const code = getErrorCode(err);
-    // Return empty for expected cases: path doesn't exist or isn't a directory
     if (code === "ENOENT" || code === "ENOTDIR") {
       return [];
     }
@@ -439,7 +664,6 @@ function processEntry(
     }
   } catch (err) {
     const code = getErrorCode(err);
-    // Only ignore entries that were deleted between readdir and stat
     if (code !== "ENOENT") {
       throw err;
     }
@@ -466,7 +690,10 @@ function snapshotFs(fs: any, root: string): Map<string, number> {
   return snapshot;
 }
 
-function findChangedFiles(before: Map<string, number>, after: Map<string, number>): string[] {
+function findChangedFiles(
+  before: Map<string, number>,
+  after: Map<string, number>,
+): string[] {
   const changed: string[] = [];
   for (const [path, stamp] of after.entries()) {
     if (!before.has(path) || before.get(path) !== stamp) {
@@ -476,7 +703,10 @@ function findChangedFiles(before: Map<string, number>, after: Map<string, number
   return changed;
 }
 
-function collectFiles(fs: any, paths: string[]): Array<{ path: string; content: number[] }> {
+function collectFiles(
+  fs: any,
+  paths: string[],
+): Array<{ path: string; content: number[] }> {
   const collected: Array<{ path: string; content: number[] }> = [];
   for (const path of paths) {
     try {
@@ -484,9 +714,12 @@ function collectFiles(fs: any, paths: string[]): Array<{ path: string; content: 
       collected.push({ path, content: Array.from(content) });
     } catch (err) {
       const code = getErrorCode(err);
-      // File may have been deleted between snapshot and collect - that's expected
       if (code !== "ENOENT") {
-        console.error(`Warning: Could not read file ${path}: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(
+          `Warning: Could not read file ${path}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
     }
   }
@@ -505,7 +738,9 @@ async function resolveBusyboxDir(explicitDir?: string): Promise<string> {
   candidates.push(join(scriptDir, "busybox"));
   candidates.push(join(scriptDir, "..", "busybox"));
   candidates.push(resolve(scriptDir, "../../../..", "busybox-wasm", "release"));
-  candidates.push(resolve(scriptDir, "../../../..", "busybox-wasm", "build", "wasm"));
+  candidates.push(
+    resolve(scriptDir, "../../../..", "busybox-wasm", "build", "wasm"),
+  );
 
   for (const dir of candidates) {
     try {
@@ -522,15 +757,11 @@ async function resolveBusyboxDir(explicitDir?: string): Promise<string> {
   );
 }
 
-interface OutputCapture {
-  stdout: string[];
-  stderr: string[];
-  // For handling per-command redirection
-  currentRedirect?: string;
-  redirectBuffer?: string[];
-}
-
-async function loadBusyboxModule(dir: string, output: OutputCapture): Promise<BusyboxModule> {
+async function loadBusyboxModule(
+  dir: string,
+  output: OutputCapture,
+  stdinState: StdinState,
+): Promise<BusyboxModule> {
   const moduleUrl = toFileUrl(join(dir, "busybox.js"));
   const wasmPath = join(dir, "busybox.wasm");
   const mod = await import(moduleUrl.href);
@@ -542,10 +773,7 @@ async function loadBusyboxModule(dir: string, output: OutputCapture): Promise<Bu
   const module = await factory({
     noInitialRun: true,
     noExitRuntime: true,
-    // Set thisProgram to "busybox" so applets can be invoked
     thisProgram: "busybox",
-    // Capture stdout/stderr during module initialization
-    // Check if we're in redirect mode and buffer accordingly
     print: (text: string) => {
       if (output.currentRedirect) {
         output.redirectBuffer?.push(text);
@@ -554,6 +782,7 @@ async function loadBusyboxModule(dir: string, output: OutputCapture): Promise<Bu
       }
     },
     printErr: (text: string) => output.stderr.push(text),
+    stdin: () => stdinState.read(),
     locateFile(path: string) {
       if (path.endsWith(".wasm")) {
         return wasmPath;
@@ -574,53 +803,29 @@ async function loadBusyboxModule(dir: string, output: OutputCapture): Promise<Bu
   return module;
 }
 
-function runCommand(
-  module: BusyboxModule,
-  command: string,
-  output: OutputCapture,
-): { stdout: string; stderr: string; exit_code: number } {
-  let exitCode = 0;
+async function executeSimpleCommand(
+  command: ParsedCommand,
+  files: FileMap,
+  busyboxDir: string,
+): Promise<CommandExecutionResult> {
+  const output: OutputCapture = { stdout: [], stderr: [] };
+  const stdinState: StdinState = { read: createDefaultStdinReader() };
+  const module = await loadBusyboxModule(busyboxDir, output, stdinState);
+  ensureBaseDirs(module.FS);
+  await mountFiles(module.FS, files);
 
-  module.stdin = () => null;
-
-  const originalQuit = module.quit;
-  module.quit = (status: number, toThrow?: unknown) => {
-    exitCode = status;
-    if (toThrow) {
-      throw toThrow;
-    }
-    throw new Error("ExitStatus");
-  };
-
-  try {
-    // Parse command and execute applets directly to avoid vfork
-    const parsed = parseShellCommand(command);
-    for (const cmd of parsed.commands) {
-      if (cmd.type === "stop_on_error" && exitCode !== 0) {
-        break;
-      }
-      exitCode = executeApplet(module, cmd, output);
-    }
-  } catch (err) {
-    const name = (err && typeof err === "object") ? (err as { name?: string }).name : undefined;
-    const message = (err && typeof err === "object") ? (err as { message?: string }).message : undefined;
-    if (name != "ExitStatus" && message != "ExitStatus") {
-      throw err;
-    }
-  } finally {
-    module.quit = originalQuit;
-  }
+  const before = snapshotFs(module.FS, "/");
+  const exitCode = executeApplet(module, command, output, stdinState);
+  const after = snapshotFs(module.FS, "/");
+  const changedFiles = collectFiles(module.FS, findChangedFiles(before, after));
 
   return {
     stdout: output.stdout.join("\n"),
     stderr: output.stderr.join("\n"),
-    exit_code: exitCode,
+    exitCode,
+    changedFiles,
   };
 }
-
-// ============================================================================
-// Worker-based Pipeline Execution
-// ============================================================================
 
 const PIPE_HEADER_SIZE = 16;
 const PIPE_BUFFER_SIZE = 8192;
@@ -633,59 +838,12 @@ interface PipeBuffer {
 function createPipeBuffer(): PipeBuffer {
   const buffer = new SharedArrayBuffer(PIPE_HEADER_SIZE + PIPE_BUFFER_SIZE);
   const control = new Int32Array(buffer, 0, 4);
-  Atomics.store(control, 0, 0);  // readPtr
-  Atomics.store(control, 1, 0);  // writePtr
-  Atomics.store(control, 2, 0);  // closed
+  Atomics.store(control, 0, 0);
+  Atomics.store(control, 1, 0);
+  Atomics.store(control, 2, 0);
   return { buffer, control };
 }
 
-function readAllFromPipeBuffer(pipe: PipeBuffer): string {
-  const data = new Uint8Array(pipe.buffer, PIPE_HEADER_SIZE);
-  const chunks: Uint8Array[] = [];
-
-  const MAX_WAIT_MS = 30000; // 30 second timeout
-  let totalWaited = 0;
-
-  while (true) {
-    const readPtr = Atomics.load(pipe.control, 0);
-    const writePtr = Atomics.load(pipe.control, 1);
-    const closed = Atomics.load(pipe.control, 2);
-
-    const available = (writePtr - readPtr + PIPE_BUFFER_SIZE) % PIPE_BUFFER_SIZE;
-
-    if (available === 0) {
-      if (closed !== 0) break;
-      if (totalWaited >= MAX_WAIT_MS) {
-        throw new Error("Pipe read timeout: writer did not close pipe within 30 seconds");
-      }
-      Atomics.wait(pipe.control, 1, writePtr, 100);
-      totalWaited += 100;
-      continue;
-    }
-    totalWaited = 0; // Reset timeout when data is available
-
-    const chunk = new Uint8Array(available);
-    for (let i = 0; i < available; i++) {
-      chunk[i] = data[(readPtr + i) % PIPE_BUFFER_SIZE];
-    }
-    chunks.push(chunk);
-
-    Atomics.store(pipe.control, 0, (readPtr + available) % PIPE_BUFFER_SIZE);
-    Atomics.notify(pipe.control, 0, 1);
-  }
-
-  const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
-  const result = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return new TextDecoder().decode(result);
-}
-
-// Worker code for running BusyBox commands with pipe I/O
 const BUSYBOX_WORKER_CODE = `
 const PIPE_HEADER_SIZE = 16;
 const PIPE_BUFFER_SIZE = 8192;
@@ -695,6 +853,7 @@ class PipeWriter {
     this.control = new Int32Array(buffer, 0, 4);
     this.data = new Uint8Array(buffer, PIPE_HEADER_SIZE);
   }
+
   write(text) {
     const src = new TextEncoder().encode(text);
     let written = 0;
@@ -716,6 +875,7 @@ class PipeWriter {
       written += toWrite;
     }
   }
+
   close() {
     Atomics.store(this.control, 2, 1);
     Atomics.notify(this.control, 1, 1);
@@ -727,6 +887,7 @@ class PipeReader {
     this.control = new Int32Array(buffer, 0, 4);
     this.data = new Uint8Array(buffer, PIPE_HEADER_SIZE);
   }
+
   read(maxLen) {
     while (true) {
       const readPtr = Atomics.load(this.control, 0);
@@ -748,240 +909,225 @@ class PipeReader {
       return result;
     }
   }
-  readAll() {
-    const chunks = [];
-    while (true) {
-      const chunk = this.read(4096);
-      if (chunk === null) break;
-      chunks.push(chunk);
-    }
-    const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
-    const result = new Uint8Array(totalLen);
-    let offset = 0;
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return new TextDecoder().decode(result);
-  }
 }
 
+const ENOENT = 44;
+const EEXIST = 20;
+const ENOTDIR = 54;
 let stdoutPipe = null;
 let stdinPipe = null;
 let module = null;
 let vfsFiles = {};
+let command = null;
 const outputBuffer = [];
 const stderrBuffer = [];
-
-// State for per-command output redirection (checked by print function)
 let currentRedirect = null;
 let redirectBuffer = [];
+let currentStdin = () => null;
 
-// Snapshot filesystem to track changes
+function getErrorCode(err) {
+  if (err && err.code) return err.code;
+  if (err && err.name === "ErrnoError") {
+    const errno = err.errno;
+    if (errno === ENOENT || errno === 44) return "ENOENT";
+    if (errno === EEXIST || errno === 17) return "EEXIST";
+    if (errno === ENOTDIR || errno === 20) return "ENOTDIR";
+    return "ERRNO_" + errno;
+  }
+  if (err && typeof err.errno === "string") return err.errno;
+  return "";
+}
+
+function ensureDir(FS, path) {
+  const parts = path.split("/").filter(Boolean);
+  let current = "";
+  for (const part of parts.slice(0, -1)) {
+    current += "/" + part;
+    try {
+      FS.mkdir(current);
+    } catch (err) {
+      const code = getErrorCode(err);
+      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
+        throw err;
+      }
+    }
+  }
+}
+
+function ensureBaseDirs(FS) {
+  for (const dir of ["/tmp", "/home", "/root", "/bin"]) {
+    try {
+      FS.mkdir(dir);
+    } catch (err) {
+      const code = getErrorCode(err);
+      if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) {
+        throw err;
+      }
+    }
+  }
+}
+
 function snapshotFs(FS, path) {
   const snapshot = new Map();
-  function walk(dir) {
+  const stack = [path];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || current === "/dev" || current.startsWith("/dev/") || current === "/proc" || current.startsWith("/proc/") || current === "/sys" || current.startsWith("/sys/")) {
+      continue;
+    }
+    let entries = [];
     try {
-      const entries = FS.readdir(dir).filter(e => e !== '.' && e !== '..');
-      for (const entry of entries) {
-        const fullPath = dir === '/' ? '/' + entry : dir + '/' + entry;
-        try {
-          const stat = FS.stat(fullPath);
-          if (FS.isDir(stat.mode)) {
-            walk(fullPath);
-          } else if (FS.isFile(stat.mode)) {
-            snapshot.set(fullPath, { mtime: stat.mtime, size: stat.size });
-          }
-        } catch (e) {}
+      entries = FS.readdir(current);
+    } catch (err) {
+      const code = getErrorCode(err);
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      throw err;
+    }
+    for (const entry of entries) {
+      if (entry === "." || entry === "..") continue;
+      const fullPath = current === "/" ? "/" + entry : current + "/" + entry;
+      if (fullPath === "/dev" || fullPath.startsWith("/dev/") || fullPath === "/proc" || fullPath.startsWith("/proc/") || fullPath === "/sys" || fullPath.startsWith("/sys/")) {
+        continue;
       }
-    } catch (e) {}
+      try {
+        const stat = FS.stat(fullPath);
+        if (FS.isDir(stat.mode)) {
+          stack.push(fullPath);
+        } else if (FS.isFile(stat.mode)) {
+          const stamp = typeof stat.mtime === "number" ? stat.mtime : (stat.mtime instanceof Date ? stat.mtime.getTime() : stat.size || 0);
+          snapshot.set(fullPath, stamp);
+        }
+      } catch (err) {
+        if (getErrorCode(err) !== "ENOENT") throw err;
+      }
+    }
   }
-  walk(path);
   return snapshot;
 }
 
-// Find files that changed between snapshots
 function findChangedFiles(before, after) {
   const changed = [];
-  for (const [path, info] of after) {
-    const prev = before.get(path);
-    if (!prev || prev.mtime !== info.mtime || prev.size !== info.size) {
+  for (const [path, stamp] of after.entries()) {
+    if (!before.has(path) || before.get(path) !== stamp) {
       changed.push(path);
     }
   }
   return changed;
 }
 
-// Collect file contents
 function collectFiles(FS, paths) {
   const files = [];
   for (const path of paths) {
     try {
-      const content = FS.readFile(path);
+      const content = FS.readFile(path, { encoding: "binary" });
       files.push({ path, content: Array.from(content) });
-    } catch (e) {}
+    } catch (err) {
+      if (getErrorCode(err) !== "ENOENT") {
+        stderrBuffer.push("Warning: Could not read file " + path + ": " + String(err));
+      }
+    }
   }
   return files;
 }
 
-// Parse shell command (&&, ;, redirections) - mirrors main thread parser
-// Uses indexOf-based parsing to avoid ReDoS from complex regex patterns
-function parseShellCommand(command) {
-  const result = { commands: [] };
-  // Simple split without \\s* to avoid ReDoS, trim parts afterward
-  const parts = command.split(/(&&|;)/);
-  let i = 0;
-  while (i < parts.length) {
-    const cmdStr = parts[i].trim();
-    if (!cmdStr || cmdStr === "&&" || cmdStr === ";") {
-      i++;
-      continue;
-    }
-    const type = (i > 0 && parts[i - 1] === "&&") ? "stop_on_error" : "always";
-    const parsed = parseSingleCommand(cmdStr);
-    result.commands.push({ ...parsed, type });
-    i++;
-  }
-  return result;
+function createByteReader(bytes) {
+  let offset = 0;
+  return () => {
+    if (offset >= bytes.length) return null;
+    return bytes[offset++];
+  };
 }
 
-function parseSingleCommand(cmdStr) {
-  const result = { argv: [] };
-  let remaining = cmdStr.trim();
-
-  // >> append redirection (check first since >> contains >)
-  const appendIdx = remaining.lastIndexOf(">>");
-  if (appendIdx >= 0) {
-    const afterRedirect = remaining.slice(appendIdx + 2).trim();
-    const spaceIdx = afterRedirect.indexOf(" ");
-    const target = spaceIdx >= 0 ? afterRedirect.slice(0, spaceIdx) : afterRedirect;
-    if (target) {
-      result.redirectAppend = target;
-      remaining = remaining.slice(0, appendIdx).trim();
-    }
-  }
-
-  // > output redirection (only if no append)
-  if (!result.redirectAppend) {
-    const outIdx = remaining.lastIndexOf(">");
-    if (outIdx >= 0) {
-      const afterRedirect = remaining.slice(outIdx + 1).trim();
-      const spaceIdx = afterRedirect.indexOf(" ");
-      const target = spaceIdx >= 0 ? afterRedirect.slice(0, spaceIdx) : afterRedirect;
-      if (target) {
-        result.redirectOut = target;
-        remaining = remaining.slice(0, outIdx).trim();
+function handleRedirection(module, cmd) {
+  if (!redirectBuffer) return 0;
+  const content = redirectBuffer.join("\\n") + (redirectBuffer.length ? "\\n" : "");
+  const path = cmd.redirectOut || cmd.redirectAppend;
+  try {
+    const dir = path.substring(0, path.lastIndexOf("/"));
+    if (dir && dir !== "/") {
+      try {
+        module.FS.mkdirTree(dir);
+      } catch (err) {
+        const code = getErrorCode(err);
+        if (code !== "EEXIST" && code !== "ENOTDIR" && !code.startsWith("ERRNO_")) throw err;
       }
     }
-  }
-
-  // < input redirection
-  const inIdx = remaining.indexOf("<");
-  if (inIdx >= 0) {
-    const afterRedirect = remaining.slice(inIdx + 1).trim();
-    const spaceIdx = afterRedirect.indexOf(" ");
-    const target = spaceIdx >= 0 ? afterRedirect.slice(0, spaceIdx) : afterRedirect;
-    if (target) {
-      result.redirectIn = target;
-      // Remove < and target from remaining
-      const targetEnd = remaining.indexOf(target, inIdx) + target.length;
-      remaining = (remaining.slice(0, inIdx) + " " + remaining.slice(targetEnd)).trim();
-    }
-  }
-
-  result.argv = parseArgv(remaining);
-  return result;
-}
-
-function parseArgv(str) {
-  const args = [];
-  let current = "";
-  let inQuote = null;
-  for (const c of str) {
-    if (inQuote) {
-      if (c === inQuote) inQuote = null;
-      else current += c;
-    } else if (c === '"' || c === "'") {
-      inQuote = c;
-    } else if (c === " " || c === "\\t") {
-      if (current) { args.push(current); current = ""; }
+    if (cmd.redirectAppend) {
+      try {
+        const existing = module.FS.readFile(path, { encoding: "utf8" });
+        module.FS.writeFile(path, existing + content);
+      } catch (err) {
+        if (getErrorCode(err) === "ENOENT") {
+          module.FS.writeFile(path, content);
+        } else {
+          throw err;
+        }
+      }
     } else {
-      current += c;
+      module.FS.writeFile(path, content);
     }
+    return 0;
+  } catch (err) {
+    stderrBuffer.push("Cannot redirect to " + path + ": " + String(err));
+    return 1;
+  } finally {
+    currentRedirect = null;
+    redirectBuffer = [];
   }
-  if (current) args.push(current);
-  return args;
 }
 
-// Execute a single applet with optional redirection
-function executeApplet(module, cmd) {
-  if (cmd.argv.length === 0) return 0;
-  const FS = module.FS;
-
+function executeApplet(module, cmd, defaultStdin) {
+  if (!cmd.argv || cmd.argv.length === 0) return 0;
   let exitCode = 0;
-  const hasRedirect = !!(cmd.redirectOut || cmd.redirectAppend);
-
-  // Set redirect state - print function will check this
-  if (hasRedirect) {
+  const originalQuit = module.quit;
+  const originalStdin = currentStdin;
+  if (cmd.redirectIn) {
+    try {
+      const inputData = module.FS.readFile(cmd.redirectIn, { encoding: "binary" });
+      currentStdin = createByteReader(inputData);
+    } catch (err) {
+      stderrBuffer.push("Cannot redirect from " + cmd.redirectIn + ": " + String(err));
+      currentStdin = originalStdin;
+      return 1;
+    }
+  } else if (defaultStdin) {
+    currentStdin = defaultStdin;
+  } else {
+    currentStdin = () => null;
+  }
+  if (cmd.redirectOut || cmd.redirectAppend) {
     currentRedirect = cmd.redirectOut || cmd.redirectAppend;
     redirectBuffer = [];
   }
-
-  const originalQuit = module.quit;
   module.quit = (status, toThrow) => {
     exitCode = status;
     if (toThrow) throw toThrow;
     throw new Error("ExitStatus");
   };
-
   try {
     const result = module.callMain(["busybox", ...cmd.argv]);
     if (typeof result === "number") exitCode = result;
   } catch (err) {
-    if (err.name !== "ExitStatus" && err.message !== "ExitStatus") throw err;
+    if (!err || (err.name !== "ExitStatus" && err.message !== "ExitStatus")) throw err;
   } finally {
     module.quit = originalQuit;
+    currentStdin = originalStdin;
   }
-
-  // Handle output redirection - write captured output to file
-  if (hasRedirect) {
-    const content = redirectBuffer.join("\\n") + (redirectBuffer.length ? "\\n" : "");
-    const path = currentRedirect;
-    try {
-      const dir = path.substring(0, path.lastIndexOf("/"));
-      if (dir && dir !== "/") {
-        try { FS.mkdirTree(dir); } catch (e) {}
-      }
-      if (cmd.redirectAppend) {
-        try {
-          const existing = FS.readFile(path, { encoding: "utf8" });
-          FS.writeFile(path, existing + content);
-        } catch (e) {
-          FS.writeFile(path, content);
-        }
-      } else {
-        FS.writeFile(path, content);
-      }
-    } catch (err) {
-      stderrBuffer.push("Cannot redirect to " + path + ": " + err);
-      exitCode = 1;
-    } finally {
-      currentRedirect = null;
-      redirectBuffer = [];
-    }
+  if (cmd.redirectOut || cmd.redirectAppend) {
+    const redirectResult = handleRedirection(module, cmd);
+    if (redirectResult !== 0) exitCode = redirectResult;
   }
-
   return exitCode;
 }
 
-self.onmessage = async (e) => {
-  const msg = e.data;
-
+self.onmessage = async (event) => {
+  const msg = event.data;
   if (msg.type === "init") {
     try {
       if (msg.stdoutBuffer) stdoutPipe = new PipeWriter(msg.stdoutBuffer);
       if (msg.stdinBuffer) stdinPipe = new PipeReader(msg.stdinBuffer);
       if (msg.files) vfsFiles = msg.files;
+      command = msg.command;
 
       const factory = (await import(msg.jsPath)).default;
       module = await factory({
@@ -998,67 +1144,48 @@ self.onmessage = async (e) => {
           }
         },
         printErr: (text) => stderrBuffer.push(text),
+        stdin: () => currentStdin(),
         locateFile(path) {
           if (path.endsWith(".wasm")) return msg.wasmPath;
           return path;
         },
-        stdin: stdinPipe ? () => {
-          const chunk = stdinPipe.read(1);
-          if (chunk === null) return null;
-          return chunk[0];
-        } : undefined,
       });
 
-      // Mount VFS files into MEMFS
       const FS = module.FS;
+      ensureBaseDirs(FS);
       for (const [filePath, content] of Object.entries(vfsFiles)) {
-        const dir = filePath.substring(0, filePath.lastIndexOf("/"));
-        if (dir && dir !== "/") {
-          try {
-            FS.mkdirTree(dir);
-          } catch (e) {
-            stderrBuffer.push(\`Warning: Failed to create directory \${dir}: \${e}\`);
-          }
-        }
-        try {
-          const data = typeof content === "string"
-            ? new TextEncoder().encode(content)
-            : new Uint8Array(content);
-          FS.writeFile(filePath, data);
-        } catch (e) {
-          stderrBuffer.push(\`Warning: Failed to write file \${filePath}: \${e}\`);
-        }
+        ensureDir(FS, filePath);
+        const data = typeof content === "string" ? new TextEncoder().encode(content) : new Uint8Array(content);
+        FS.writeFile(filePath, data);
       }
 
-      // Store command for later execution
-      self.command = msg.command;
       self.postMessage({ type: "ready" });
     } catch (err) {
       self.postMessage({ type: "error", error: String(err) });
     }
-  } else if (msg.type === "run") {
+    return;
+  }
+
+  if (msg.type === "run") {
     try {
-      const FS = module.FS;
-      const before = snapshotFs(FS, "/");
-
-      // Parse and execute commands directly (avoid sh -c which requires fork)
-      const parsed = parseShellCommand(self.command);
-      let exitCode = 0;
-      for (const cmd of parsed.commands) {
-        if (cmd.type === "stop_on_error" && exitCode !== 0) break;
-        exitCode = executeApplet(module, cmd);
-      }
-
-      const after = snapshotFs(FS, "/");
-      const changedPaths = findChangedFiles(before, after);
-      const createdFiles = changedPaths.length > 0 ? collectFiles(FS, changedPaths) : [];
+      const before = snapshotFs(module.FS, "/");
+      const defaultStdin = stdinPipe
+        ? () => {
+          const chunk = stdinPipe.read(1);
+          if (chunk === null) return null;
+          return chunk[0];
+        }
+        : undefined;
+      const exitCode = executeApplet(module, command, defaultStdin);
+      const after = snapshotFs(module.FS, "/");
+      const createdFiles = collectFiles(module.FS, findChangedFiles(before, after));
       if (stdoutPipe) stdoutPipe.close();
       self.postMessage({
         type: "done",
         exitCode,
         output: outputBuffer.join("\\n"),
         stderr: stderrBuffer.join("\\n"),
-        createdFiles
+        createdFiles,
       });
     } catch (err) {
       self.postMessage({ type: "error", error: String(err) });
@@ -1067,159 +1194,207 @@ self.onmessage = async (e) => {
 };
 `;
 
-/**
- * Parse a pipeline command into individual commands.
- */
-function parsePipeline(command: string): string[][] {
-  // Split on | but not ||
-  const parts = command.split(/(?<!\|)\|(?!\|)/);
-  return parts.map(part => {
-    const trimmed = part.trim();
-    // Simple tokenization - split on whitespace, respecting quotes
-    const tokens: string[] = [];
-    let current = "";
-    let inQuote = false;
-    let quoteChar = "";
+function mergePipelineChanges(
+  stageResults: WorkerExecutionResult[],
+): Array<{ path: string; content: number[] }> {
+  const merged = new Map<string, number[]>();
 
-    for (const char of trimmed) {
-      if (!inQuote && (char === '"' || char === "'")) {
-        inQuote = true;
-        quoteChar = char;
-      } else if (inQuote && char === quoteChar) {
-        inQuote = false;
-        quoteChar = "";
-      } else if (!inQuote && /\s/.test(char)) {
-        if (current) {
-          tokens.push(current);
-          current = "";
-        }
-      } else {
-        current += char;
+  for (const result of stageResults) {
+    for (const file of result.createdFiles) {
+      if (merged.has(file.path)) {
+        throw new Error(`Pipeline merge conflict for ${file.path}`);
       }
+      merged.set(file.path, file.content);
     }
-    if (current) tokens.push(current);
-
-    return tokens;
-  }).filter(tokens => tokens.length > 0);
-}
-
-/**
- * Execute a pipeline using Worker-based isolation.
- * Each command runs in its own Worker, connected via SharedArrayBuffer pipes.
- */
-async function executePipeline(
-  options: ShellExecutionOptions
-): Promise<ShellExecutionResult> {
-  const start = Date.now();
-  const commands = parsePipeline(options.command);
-
-  if (commands.length === 0) {
-    return {
-      success: true,
-      stdout: "",
-      stderr: "",
-      exit_code: 0,
-      execution_time_ms: Date.now() - start,
-    };
   }
 
-  const busyboxDir = await resolveBusyboxDir(options.busyboxDir);
+  return Array.from(merged.entries()).map(([path, content]) => ({
+    path,
+    content,
+  }));
+}
+
+async function executePipeline(
+  commands: ParsedCommand[],
+  files: FileMap,
+  busyboxDir: string,
+): Promise<CommandExecutionResult> {
+  if (commands.length === 0) {
+    return { stdout: "", stderr: "", exitCode: 0, changedFiles: [] };
+  }
+
+  if (commands.length === 1) {
+    return executeSimpleCommand(commands[0], files, busyboxDir);
+  }
+
   const jsPath = "file://" + join(busyboxDir, "busybox.js");
   const wasmPath = "file://" + join(busyboxDir, "busybox.wasm");
-
-  // Create pipes between commands
   const pipes: PipeBuffer[] = [];
   for (let i = 0; i < commands.length - 1; i++) {
     pipes.push(createPipeBuffer());
   }
 
-  const blob = new Blob([BUSYBOX_WORKER_CODE], { type: "application/javascript" });
+  const blob = new Blob([BUSYBOX_WORKER_CODE], {
+    type: "application/javascript",
+  });
   const workerUrl = URL.createObjectURL(blob);
   const workers: Worker[] = [];
 
   try {
-    // Start all workers
-    const promises: Promise<{ exitCode: number; output: string; stderr: string; createdFiles: Array<{path: string; content: number[]}> }>[] = [];
+    const promises: Promise<WorkerExecutionResult>[] = [];
 
     for (let i = 0; i < commands.length; i++) {
       const stdinBuffer = i > 0 ? pipes[i - 1].buffer : undefined;
-      const stdoutBuffer = i < commands.length - 1 ? pipes[i].buffer : undefined;
-
+      const stdoutBuffer = i < commands.length - 1
+        ? pipes[i].buffer
+        : undefined;
       const worker = new Worker(workerUrl, { type: "module" });
       workers.push(worker);
 
-      const promise = new Promise<{ exitCode: number; output: string; stderr: string; createdFiles: Array<{path: string; content: number[]}> }>((resolve, reject) => {
-        worker.onmessage = (e) => {
-          if (e.data.type === "ready") {
+      const promise = new Promise<WorkerExecutionResult>((resolve, reject) => {
+        worker.onmessage = (event) => {
+          if (event.data.type === "ready") {
             worker.postMessage({ type: "run" });
-          } else if (e.data.type === "done") {
+          } else if (event.data.type === "done") {
             resolve({
-              exitCode: e.data.exitCode,
-              output: e.data.output || "",
-              stderr: e.data.stderr || "",
-              createdFiles: e.data.createdFiles || [],
+              exitCode: event.data.exitCode,
+              output: event.data.output || "",
+              stderr: event.data.stderr || "",
+              createdFiles: event.data.createdFiles || [],
             });
-          } else if (e.data.type === "error") {
-            reject(new Error(e.data.error));
+          } else if (event.data.type === "error") {
+            reject(new Error(event.data.error));
           }
         };
-        worker.onerror = (e) => reject(new Error(e.message));
-
-        // Use sh -c to let BusyBox shell handle parsing (redirections, &&, etc.)
-        const cmdString = commands[i].join(" ");
-
+        worker.onerror = (event) => reject(new Error(event.message));
         worker.postMessage({
           type: "init",
           jsPath,
           wasmPath,
           stdinBuffer,
           stdoutBuffer,
-          files: options.files || {},
-          command: cmdString,
+          files: cloneFiles(files),
+          command: commands[i],
         });
       });
 
       promises.push(promise);
     }
 
-    // Wait for all commands to complete
     const results = await Promise.all(promises);
-
-    // Collect output and files from the last command
     const lastResult = results[results.length - 1];
-    const allStderr = results.map(r => r.stderr).filter(Boolean).join("\n");
-
-    // Merge created files from all workers (last one has the final state)
-    const createdFiles = lastResult.createdFiles.length > 0 ? lastResult.createdFiles : undefined;
+    const changedFiles = mergePipelineChanges(results);
 
     return {
-      success: lastResult.exitCode === 0,
       stdout: lastResult.output,
-      stderr: allStderr,
-      exit_code: lastResult.exitCode,
-      execution_time_ms: Date.now() - start,
-      created_files: createdFiles,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      stdout: "",
-      stderr: err instanceof Error ? err.message : String(err),
-      exit_code: 1,
-      execution_time_ms: Date.now() - start,
+      stderr: results.map((result) => result.stderr).filter(Boolean).join("\n"),
+      exitCode: lastResult.exitCode,
+      changedFiles,
     };
   } finally {
-    workers.forEach(w => w.terminate());
+    workers.forEach((worker) => worker.terminate());
     URL.revokeObjectURL(workerUrl);
   }
 }
 
-/**
- * Execute shell command using Worker-based isolation.
- * Each command (or pipeline stage) runs in a separate Deno Worker with BusyBox WASM.
- */
-async function executeShell(options: ShellExecutionOptions): Promise<ShellExecutionResult> {
-  return executePipeline(options);
+function applyChangedFiles(
+  state: EvaluationState,
+  changedFiles: Array<{ path: string; content: number[] }>,
+): void {
+  for (const file of changedFiles) {
+    const content = new Uint8Array(file.content);
+    state.files[file.path] = content;
+    state.changedFiles.set(file.path, content);
+  }
+}
+
+function appendOutput(parts: string[], output: string): void {
+  if (output) {
+    parts.push(output);
+  }
+}
+
+async function executeNode(
+  node: ExecutableNode,
+  state: EvaluationState,
+  busyboxDir: string,
+): Promise<void> {
+  const result = node.type === "pipeline"
+    ? await executePipeline(node.commands, state.files, busyboxDir)
+    : await executeSimpleCommand(node.command, state.files, busyboxDir);
+
+  appendOutput(state.stdoutParts, result.stdout);
+  appendOutput(state.stderrParts, result.stderr);
+  applyChangedFiles(state, result.changedFiles);
+  state.lastExitCode = result.exitCode;
+}
+
+async function evaluateSequence(
+  sequence: SequenceNode,
+  state: EvaluationState,
+  busyboxDir: string,
+): Promise<void> {
+  for (const item of sequence.items) {
+    await executeNode(item.first, state, busyboxDir);
+
+    for (const segment of item.rest) {
+      const shouldRun = segment.operator === "&&"
+        ? state.lastExitCode === 0
+        : state.lastExitCode !== 0;
+      if (!shouldRun) {
+        continue;
+      }
+      await executeNode(segment.right, state, busyboxDir);
+    }
+  }
+}
+
+export async function executeShell(
+  options: ShellExecutionOptions,
+): Promise<ShellExecutionResult> {
+  const start = Date.now();
+  const state: EvaluationState = {
+    files: cloneFiles(options.files || {}),
+    stdoutParts: [],
+    stderrParts: [],
+    changedFiles: new Map(),
+    lastExitCode: 0,
+  };
+
+  try {
+    const busyboxDir = await resolveBusyboxDir(options.busyboxDir);
+    const sequence = parseShellExpression(options.command);
+    await evaluateSequence(sequence, state, busyboxDir);
+
+    const createdFiles = state.changedFiles.size > 0
+      ? Array.from(state.changedFiles.entries()).map(([path, content]) => ({
+        path,
+        content: Array.from(content),
+      }))
+      : undefined;
+
+    return {
+      success: state.lastExitCode === 0,
+      stdout: state.stdoutParts.join("\n"),
+      stderr: state.stderrParts.join("\n"),
+      exit_code: state.lastExitCode,
+      execution_time_ms: Date.now() - start,
+      created_files: createdFiles,
+    };
+  } catch (err) {
+    const stderr = [
+      ...state.stderrParts,
+      err instanceof Error ? err.message : String(err),
+    ].filter(Boolean).join("\n");
+
+    return {
+      success: false,
+      stdout: state.stdoutParts.join("\n"),
+      stderr,
+      exit_code: 1,
+      execution_time_ms: Date.now() - start,
+    };
+  }
 }
 
 async function main() {
@@ -1229,7 +1404,9 @@ async function main() {
   });
 
   if (!args.command) {
-    console.error("Usage: shell_executor.ts --command '<cmd>' [--busybox-dir <path>]");
+    console.error(
+      "Usage: shell_executor.ts --command '<cmd>' [--busybox-dir <path>]",
+    );
     Deno.exit(1);
   }
 

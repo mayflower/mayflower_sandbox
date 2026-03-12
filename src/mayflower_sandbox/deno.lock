@@ -6,6 +6,7 @@
     "jsr:@std/cli@^1.0.23": "1.0.23",
     "jsr:@std/internal@^1.0.10": "1.0.12",
     "jsr:@std/internal@^1.0.12": "1.0.12",
+    "jsr:@std/path@1": "1.1.2",
     "jsr:@std/path@^1.1.2": "1.1.2",
     "npm:pyodide@0.28.3": "0.28.3",
     "npm:pyodide@~0.28.3": "0.28.3"

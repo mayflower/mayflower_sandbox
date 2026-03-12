@@ -297,3 +297,121 @@ async def test_shell_pipe_with_file(db_pool, clean_files, monkeypatch):
     assert result.success is True
     assert "bar" in result.stdout
     assert "foo" not in result.stdout
+
+
+@requires_deno
+async def test_shell_or_fallback(db_pool, clean_files, monkeypatch):
+    """Test || fallback runs when the left side fails."""
+    busybox_dir = Path(__file__).resolve().parent.parent / "src" / "mayflower_sandbox" / "busybox"
+    if not (busybox_dir / "busybox.js").exists():
+        pytest.skip("busybox assets not available")
+
+    monkeypatch.setenv("MAYFLOWER_BUSYBOX_DIR", str(busybox_dir))
+
+    executor = SandboxExecutor(db_pool, "test_shell", allow_net=False)
+    result = await executor.execute_shell(
+        'cat config.yaml || echo "config not found, using defaults"'
+    )
+
+    assert result.success is True
+    assert result.exit_code == 0
+    assert "config not found, using defaults" in result.stdout
+
+
+@requires_deno
+async def test_shell_mixed_precedence(db_pool, clean_files, monkeypatch):
+    """Test && and || are left-associative with normal shell precedence."""
+    busybox_dir = Path(__file__).resolve().parent.parent / "src" / "mayflower_sandbox" / "busybox"
+    if not (busybox_dir / "busybox.js").exists():
+        pytest.skip("busybox assets not available")
+
+    monkeypatch.setenv("MAYFLOWER_BUSYBOX_DIR", str(busybox_dir))
+
+    executor = SandboxExecutor(db_pool, "test_shell", allow_net=False)
+
+    result1 = await executor.execute_shell("false && echo a || echo b && echo c")
+    assert result1.success is True
+    assert result1.exit_code == 0
+    assert result1.stdout == "b\nc"
+
+    result2 = await executor.execute_shell("true || echo a && echo b")
+    assert result2.success is True
+    assert result2.exit_code == 0
+    assert result2.stdout == "b"
+
+
+@requires_deno
+async def test_shell_pipeline_last_stage_status(db_pool, clean_files, monkeypatch):
+    """Test pipeline status comes from the last stage."""
+    busybox_dir = Path(__file__).resolve().parent.parent / "src" / "mayflower_sandbox" / "busybox"
+    if not (busybox_dir / "busybox.js").exists():
+        pytest.skip("busybox assets not available")
+
+    monkeypatch.setenv("MAYFLOWER_BUSYBOX_DIR", str(busybox_dir))
+
+    executor = SandboxExecutor(db_pool, "test_shell", allow_net=False)
+    result = await executor.execute_shell("false | true && echo ok")
+
+    assert result.success is True
+    assert result.exit_code == 0
+    assert "ok" in result.stdout
+
+
+@requires_deno
+async def test_shell_pipeline_persists_created_files(db_pool, clean_files, monkeypatch):
+    """Test files written in a pipeline are visible afterward and persisted."""
+    busybox_dir = Path(__file__).resolve().parent.parent / "src" / "mayflower_sandbox" / "busybox"
+    if not (busybox_dir / "busybox.js").exists():
+        pytest.skip("busybox assets not available")
+
+    monkeypatch.setenv("MAYFLOWER_BUSYBOX_DIR", str(busybox_dir))
+
+    executor = SandboxExecutor(db_pool, "test_shell", allow_net=False)
+    result = await executor.execute_shell("echo hi | tee /tmp/p.txt >/dev/null ; cat /tmp/p.txt")
+
+    assert result.success is True
+    assert result.exit_code == 0
+    assert "hi" in result.stdout
+    assert result.created_files is not None
+    assert "/tmp/p.txt" in result.created_files
+
+
+@requires_deno
+async def test_shell_local_download_inspect_equivalent(db_pool, clean_files, monkeypatch):
+    """Test a chained write then inspect workflow without relying on network."""
+    busybox_dir = Path(__file__).resolve().parent.parent / "src" / "mayflower_sandbox" / "busybox"
+    if not (busybox_dir / "busybox.js").exists():
+        pytest.skip("busybox assets not available")
+
+    monkeypatch.setenv("MAYFLOWER_BUSYBOX_DIR", str(busybox_dir))
+
+    executor = SandboxExecutor(db_pool, "test_shell", allow_net=False)
+    result = await executor.execute_shell(
+        "echo alpha > /tmp/data.csv && echo beta >> /tmp/data.csv && "
+        "echo gamma >> /tmp/data.csv && cat /tmp/data.csv | head -n 2"
+    )
+
+    assert result.success is True
+    assert result.exit_code == 0
+    assert result.stdout == "alpha\nbeta"
+
+
+@requires_deno
+async def test_shell_pipe_filter_sort_top(db_pool, clean_files, monkeypatch):
+    """Test a full read-filter-sort-top workflow."""
+    busybox_dir = Path(__file__).resolve().parent.parent / "src" / "mayflower_sandbox" / "busybox"
+    if not (busybox_dir / "busybox.js").exists():
+        pytest.skip("busybox assets not available")
+
+    monkeypatch.setenv("MAYFLOWER_BUSYBOX_DIR", str(busybox_dir))
+
+    executor = SandboxExecutor(db_pool, "test_shell", allow_net=False)
+    await executor.execute_shell(
+        "echo '200 ok' > /tmp/access.log && echo '500 z' >> /tmp/access.log && "
+        "echo '404 no' >> /tmp/access.log && echo '500 a' >> /tmp/access.log"
+    )
+    result = await executor.execute_shell('cat /tmp/access.log | grep "500" | sort | head -n 2')
+
+    assert result.success is True
+    assert result.exit_code == 0
+    assert result.stdout == "500 a\n500 z"
