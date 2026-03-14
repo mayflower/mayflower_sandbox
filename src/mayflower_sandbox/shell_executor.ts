@@ -613,14 +613,14 @@ async function mountFiles(fs: any, files: FileMap): Promise<void> {
   }
 }
 
-function statStamp(stat: any): number {
+function statStamp(stat: any): string {
+  let mtime = 0;
   if (typeof stat.mtime === "number") {
-    return stat.mtime;
+    mtime = stat.mtime;
+  } else if (stat.mtime instanceof Date) {
+    mtime = stat.mtime.getTime();
   }
-  if (stat.mtime instanceof Date) {
-    return stat.mtime.getTime();
-  }
-  return stat.size ?? 0;
+  return `${mtime}:${stat.size ?? 0}`;
 }
 
 function shouldIgnorePath(path: string): boolean {
@@ -652,7 +652,7 @@ function tryReadDir(fs: any, path: string): string[] {
 function processEntry(
   fs: any,
   entryPath: string,
-  snapshot: Map<string, number>,
+  snapshot: Map<string, string>,
   stack: string[],
 ): void {
   try {
@@ -670,8 +670,8 @@ function processEntry(
   }
 }
 
-function snapshotFs(fs: any, root: string): Map<string, number> {
-  const snapshot = new Map<string, number>();
+function snapshotFs(fs: any, root: string): Map<string, string> {
+  const snapshot = new Map<string, string>();
   const stack: string[] = [root];
 
   while (stack.length > 0) {
@@ -691,8 +691,8 @@ function snapshotFs(fs: any, root: string): Map<string, number> {
 }
 
 function findChangedFiles(
-  before: Map<string, number>,
-  after: Map<string, number>,
+  before: Map<string, string>,
+  after: Map<string, string>,
 ): string[] {
   const changed: string[] = [];
   for (const [path, stamp] of after.entries()) {
@@ -994,7 +994,10 @@ function snapshotFs(FS, path) {
         if (FS.isDir(stat.mode)) {
           stack.push(fullPath);
         } else if (FS.isFile(stat.mode)) {
-          const stamp = typeof stat.mtime === "number" ? stat.mtime : (stat.mtime instanceof Date ? stat.mtime.getTime() : stat.size || 0);
+          const mtime = typeof stat.mtime === "number"
+            ? stat.mtime
+            : (stat.mtime instanceof Date ? stat.mtime.getTime() : 0);
+          const stamp = String(mtime) + ":" + String(stat.size || 0);
           snapshot.set(fullPath, stamp);
         }
       } catch (err) {
