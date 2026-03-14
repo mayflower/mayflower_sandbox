@@ -130,6 +130,7 @@ function tokenizeShell(command: string): Token[] {
   const tokens: Token[] = [];
   let current = "";
   let inQuote: string | null = null;
+  let index = 0;
 
   function pushWord(): void {
     if (current) {
@@ -138,43 +139,48 @@ function tokenizeShell(command: string): Token[] {
     }
   }
 
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
+  while (index < command.length) {
+    const char = command[index];
 
     if (inQuote) {
       current += char;
       if (char === inQuote) {
         inQuote = null;
       }
+      index++;
       continue;
     }
 
     if (char === '"' || char === "'") {
       current += char;
       inQuote = char;
+      index++;
       continue;
     }
 
     if (char === " " || char === "\t" || char === "\n") {
       pushWord();
+      index++;
       continue;
     }
 
-    const nextTwo = command.slice(i, i + 2);
+    const nextTwo = command.slice(index, index + 2);
     if (nextTwo === "&&" || nextTwo === "||" || nextTwo === ">>") {
       pushWord();
       tokens.push({ type: "operator", value: nextTwo });
-      i++;
+      index += 2;
       continue;
     }
 
     if (char === "|" || char === ";" || char === ">" || char === "<") {
       pushWord();
       tokens.push({ type: "operator", value: char });
+      index++;
       continue;
     }
 
     current += char;
+    index++;
   }
 
   pushWord();
@@ -217,41 +223,58 @@ function parseArgv(str: string): string[] {
   return args;
 }
 
+function parseRedirectTarget(tokens: Token[], index: number): {
+  target: string;
+  nextIndex: number;
+} {
+  const targetToken = tokens[index + 1];
+  if (!targetToken || targetToken.type !== "word") {
+    throw new Error(`Expected redirect target after ${tokens[index].value}`);
+  }
+
+  const target = parseWord(targetToken.value);
+  if (!target) {
+    throw new Error(`Expected redirect target after ${tokens[index].value}`);
+  }
+
+  return { target, nextIndex: index + 2 };
+}
+
+function applyRedirect(result: ParsedCommand, operator: string, target: string): void {
+  switch (operator) {
+    case ">":
+      result.redirectOut = target;
+      break;
+    case ">>":
+      result.redirectAppend = target;
+      break;
+    case "<":
+      result.redirectIn = target;
+      break;
+    default:
+      throw new Error(`Unexpected operator ${operator} inside simple command`);
+  }
+}
+
 function parseSimpleCommandTokens(tokens: Token[]): ParsedCommand {
   const result: ParsedCommand = { argv: [] };
+  let index = 0;
 
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
+  while (index < tokens.length) {
+    const token = tokens[index];
     if (token.type === "operator") {
       if (!REDIRECT_OPERATORS.has(token.value)) {
-        throw new Error(
-          `Unexpected operator ${token.value} inside simple command`,
-        );
+        throw new Error(`Unexpected operator ${token.value} inside simple command`);
       }
 
-      const targetToken = tokens[i + 1];
-      if (!targetToken || targetToken.type !== "word") {
-        throw new Error(`Expected redirect target after ${token.value}`);
-      }
-
-      const target = parseWord(targetToken.value);
-      if (!target) {
-        throw new Error(`Expected redirect target after ${token.value}`);
-      }
-
-      if (token.value === ">") {
-        result.redirectOut = target;
-      } else if (token.value === ">>") {
-        result.redirectAppend = target;
-      } else {
-        result.redirectIn = target;
-      }
-
-      i++;
+      const { target, nextIndex } = parseRedirectTarget(tokens, index);
+      applyRedirect(result, token.value, target);
+      index = nextIndex;
       continue;
     }
 
     result.argv.push(parseWord(token.value));
+    index++;
   }
 
   return result;
@@ -404,26 +427,21 @@ function ensureParentDir(fs: any, path: string): void {
   }
 }
 
-function writeRedirectContent(
-  fs: any,
-  path: string,
-  content: string,
-  append: boolean,
-): void {
-  if (append) {
-    try {
-      const existing = fs.readFile(path, { encoding: "utf8" }) as string;
-      fs.writeFile(path, existing + content);
-    } catch (err) {
-      const code = getErrorCode(err);
-      if (code === "ENOENT") {
-        fs.writeFile(path, content);
-      } else {
-        throw err;
-      }
+function overwriteRedirectContent(fs: any, path: string, content: string): void {
+  fs.writeFile(path, content);
+}
+
+function appendRedirectContent(fs: any, path: string, content: string): void {
+  try {
+    const existing = fs.readFile(path, { encoding: "utf8" }) as string;
+    fs.writeFile(path, existing + content);
+  } catch (err) {
+    const code = getErrorCode(err);
+    if (code === "ENOENT") {
+      fs.writeFile(path, content);
+    } else {
+      throw err;
     }
-  } else {
-    fs.writeFile(path, content);
   }
 }
 
@@ -439,6 +457,18 @@ function createDefaultStdinReader(): () => number | null {
   return () => null;
 }
 
+function createRedirectContent(buffer: string[]): string {
+  return buffer.join("\n") + (buffer.length ? "\n" : "");
+}
+
+function beginOutputRedirection(
+  output: OutputCapture,
+  command: ParsedCommand,
+): void {
+  output.currentRedirect = command.redirectOut || command.redirectAppend;
+  output.redirectBuffer = [];
+}
+
 function handleRedirection(
   module: BusyboxModule,
   cmd: ParsedCommand,
@@ -446,13 +476,16 @@ function handleRedirection(
 ): number {
   if (!output.redirectBuffer) return 0;
 
-  const content = output.redirectBuffer.join("\n") +
-    (output.redirectBuffer.length ? "\n" : "");
+  const content = createRedirectContent(output.redirectBuffer);
   const path = cmd.redirectOut || cmd.redirectAppend!;
 
   try {
     ensureParentDir(module.FS, path);
-    writeRedirectContent(module.FS, path, content, !!cmd.redirectAppend);
+    if (cmd.redirectAppend) {
+      appendRedirectContent(module.FS, path, content);
+    } else {
+      overwriteRedirectContent(module.FS, path, content);
+    }
     return 0;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -464,6 +497,55 @@ function handleRedirection(
   }
 }
 
+function configureStdinReader(
+  module: BusyboxModule,
+  command: ParsedCommand,
+  output: OutputCapture,
+  stdinState: StdinState,
+  defaultStdin: () => number | null,
+): number | null {
+  if (!command.redirectIn) {
+    stdinState.read = defaultStdin;
+    return null;
+  }
+
+  try {
+    const inputData = module.FS.readFile(command.redirectIn, {
+      encoding: "binary",
+    }) as Uint8Array;
+    stdinState.read = createByteReader(inputData);
+    return null;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    output.stderr.push(`Cannot redirect from ${command.redirectIn}: ${errMsg}`);
+    return 1;
+  }
+}
+
+function runApplet(module: BusyboxModule, argv: string[]): number {
+  let exitCode = 0;
+  const originalQuit = module.quit;
+
+  module.quit = (status: number, toThrow?: unknown) => {
+    exitCode = status;
+    if (toThrow) throw toThrow;
+    throw new Error("ExitStatus");
+  };
+
+  try {
+    const result = module.callMain(["busybox", ...argv]);
+    if (typeof result === "number") {
+      exitCode = result;
+    }
+  } catch (err) {
+    if (!isExitStatusError(err)) throw err;
+  } finally {
+    module.quit = originalQuit;
+  }
+
+  return exitCode;
+}
+
 function executeApplet(
   module: BusyboxModule,
   cmd: ParsedCommand,
@@ -473,47 +555,29 @@ function executeApplet(
 ): number {
   if (cmd.argv.length === 0) return 0;
 
-  let exitCode = 0;
   const hasRedirect = !!(cmd.redirectOut || cmd.redirectAppend);
-  const originalQuit = module.quit;
   const originalStdin = stdinState.read;
 
-  if (cmd.redirectIn) {
-    try {
-      const inputData = module.FS.readFile(cmd.redirectIn, {
-        encoding: "binary",
-      }) as Uint8Array;
-      stdinState.read = createByteReader(inputData);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      output.stderr.push(`Cannot redirect from ${cmd.redirectIn}: ${errMsg}`);
-      stdinState.read = originalStdin;
-      return 1;
-    }
-  } else {
-    stdinState.read = defaultStdin;
+  const stdinError = configureStdinReader(
+    module,
+    cmd,
+    output,
+    stdinState,
+    defaultStdin,
+  );
+  if (stdinError !== null) {
+    stdinState.read = originalStdin;
+    return stdinError;
   }
 
   if (hasRedirect) {
-    output.currentRedirect = cmd.redirectOut || cmd.redirectAppend;
-    output.redirectBuffer = [];
+    beginOutputRedirection(output, cmd);
   }
 
-  module.quit = (status: number, toThrow?: unknown) => {
-    exitCode = status;
-    if (toThrow) throw toThrow;
-    throw new Error("ExitStatus");
-  };
-
+  let exitCode = 0;
   try {
-    const result = module.callMain(["busybox", ...cmd.argv]);
-    if (typeof result === "number") {
-      exitCode = result;
-    }
-  } catch (err) {
-    if (!isExitStatusError(err)) throw err;
+    exitCode = runApplet(module, cmd.argv);
   } finally {
-    module.quit = originalQuit;
     stdinState.read = originalStdin;
   }
 
