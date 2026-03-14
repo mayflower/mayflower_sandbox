@@ -303,35 +303,35 @@ jobs:
           fetch-depth: 0
 
       - name: Download test results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: test-results
           path: .
         continue-on-error: true
 
       - name: Download Ruff SARIF
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ruff-sarif
           path: .
         continue-on-error: true
 
       - name: Download Mypy SARIF
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mypy-sarif
           path: .
         continue-on-error: true
 
       - name: Download Bandit results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bandit-results
           path: .
         continue-on-error: true
 
       - name: Download ESLint results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: eslint-results
           path: .
